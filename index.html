@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tibbi Orbit · Staff web portal prototype</title>
+<link rel="stylesheet" href="assets/styles.css">
+<script src="assets/icons.js"></script><script src="assets/data.js"></script><script src="assets/data-core.js"></script><script src="assets/ui.js"></script>
+</head>
+<body>
+<main class="content" style="margin:0 auto;max-width:1240px">
+  <div class="hero" style="margin-bottom:18px">
+    <div class="row wrap" style="gap:16px">
+      <img src="assets/brand/app_icon.png" alt="" style="width:52px;height:52px;border-radius:14px;background:#fff;padding:5px">
+      <div class="grow"><h1>Tibbi Orbit · Staff web portal prototype</h1><p>Every module of SOW V4 (Modules 1 to 13) with dummy data, plus Login, Home and Administration from FRD v1.3.</p></div>
+      <div class="row wrap"><a class="btn lg" style="background:#fff;color:#16325C;border:0" href="login.html" id="start"></a></div>
+    </div>
+    <div class="ctx-line" id="stats"></div>
+  </div>
+  <div class="grid g3" style="margin-bottom:18px">
+    <div class="card card-pad"><b>1. Sign in</b><div class="small muted" style="margin-top:4px">Use <code>demo</code> / <code>Orbit@2026!</code> to see every module. Other accounts show role-based access (doctor, nurse, auditor, branch admin).</div></div>
+    <div class="card card-pad"><b>2. Move around</b><div class="small muted" style="margin-top:4px">Left rail switches module, the module menu lists its screens, and <span class="kbd">⌘K</span> / <span class="kbd">Ctrl K</span> searches patients and screens.</div></div>
+    <div class="card card-pad"><b>3. Start again</b><div class="small muted" style="margin-top:4px">Everything you change is kept in this browser. <button class="link-btn" id="reset">Reset demo data</button> restores the original data.</div></div>
+  </div>
+  <div class="card" style="margin-bottom:18px"><div class="card-head"><h3>Demo accounts</h3><div class="actions"><span class="small muted">Password for all: <code>Orbit@2026!</code> · MFA code: any 6 digits</span></div></div>
+    <div class="table-wrap"><table class="tbl compact"><thead><tr><th>Login</th><th>Role</th><th>What it shows</th></tr></thead><tbody id="accounts"></tbody></table></div></div>
+  <div id="mods" class="grid g2"></div>
+</main>
+<script>
+const { db, icon, esc, $, confirm, resetDb } = UI;
+$('#start').innerHTML = icon('log-in') + ' Open the sign-in screen';
+$('#reset').addEventListener('click', () => confirm({ title: 'Reset demo data?', body: 'All changes are removed and you are signed out.', confirm: 'Reset', onConfirm: resetDb }));
+const screens = db.modules.reduce((n, m) => n + m.subs.reduce((k, s) => k + s.opts.filter(o => o.page).length, 0) + (m.home ? 1 : 0), 0);
+$('#stats').innerHTML = `<span>${icon('layout-grid')}${db.modules.length} modules</span><span>${icon('monitor')}${screens} screens</span><span>${icon('users')}${(db.patients || []).length} patients</span><span>${icon('user-cog')}${db.users.length} staff accounts</span><span>${icon('shield-check')}Permission checked on every screen</span>`;
+const acc = [
+  ['demo', 'Demo: All Modules', 'Every module and screen. Best for a walkthrough.'],
+  ['sara.mutairi', 'System Administrator', 'Administration only; 3 contexts, so the context screen appears; MFA.'],
+  ['khalid.rashidi', 'Doctor (Cardiology)', 'EMR doctor workstation, appointments and results. Admin screens are denied.'],
+  ['maria.santos', 'Charge Nurse + Store Viewer', 'Nursing ward screens; Ward 3 sub-store in the context; MFA.'],
+  ['omar.haddad', 'Branch Administrator + Receptionist', 'Reception and appointments at Hawalli, some admin screens.'],
+  ['ahmed.farouk', 'Pharmacist', 'Pharmacy queues and dispensing.'],
+  ['layla.hussain', 'Auditor', 'Read-only reports and audit log.'],
+  ['fatima.kandari / Temp#4821', 'First login', 'Must set a new password.'],
+  ['bilal.qureshi', 'No access yet', 'Valid account whose access starts later.'],
+  ['reem.fadhli, rajesh.kumar', 'Blocked / locked', 'Generic sign-in error.'],
+];
+$('#accounts').innerHTML = acc.map(a => `<tr><td><span class="mono">${esc(a[0])}</span></td><td>${esc(a[1])}</td><td class="small">${esc(a[2])}</td></tr>`).join('');
+$('#mods').innerHTML = db.modules.map(m => `<div class="card">
+  <div class="card-head"><span class="tile ${m.tile}" style="width:34px;height:34px;border-radius:9px;display:grid;place-items:center;color:var(--primary)">${icon(m.icon)}</span><div class="grow"><h3>${esc(m.name)}</h3><div class="small muted">${esc(m.desc)}</div></div><span class="req-ref">${esc(m.sow || '')}</span></div>
+  <div class="list-rows pad">
+    ${m.home ? `<div><span class="mono small" style="min-width:210px">${esc(m.home)}</span><b class="grow small">Overview</b></div>` : ''}
+    ${m.subs.map(s => s.opts.filter(o => o.page).map(o => `<div><span class="mono small" style="min-width:210px">${esc(o.page)}</span><span class="grow small"><b>${esc(o.name)}</b> <span class="muted">· ${esc(s.name)}</span></span>${o.nav === false ? '<span class="tag">opened from a list</span>' : ''}</div>`).join('')).join('')}
+  </div></div>`).join('') + `<div class="card"><div class="card-head"><span class="tile t-sky" style="width:34px;height:34px;border-radius:9px;display:grid;place-items:center;color:var(--primary)">${icon('log-in')}</span><div class="grow"><h3>Login and Home</h3><div class="small muted">FRD v1.3 sections 2 and 3</div></div><span class="req-ref">FRD v1.3</span></div>
+  <div class="list-rows pad">${[['login.html', 'Sign in, first-login password, MFA, forgot password, no-access state'], ['context.html', 'Choose authorized company, branch, department, clinic and warehouse'], ['home.html', 'Launchpad: quick actions, today at a glance, modules, favourites, recent screens'], ['access-denied.html', 'Shown when a screen is opened without permission']].map(r => `<div><span class="mono small" style="min-width:210px">${r[0]}</span><b class="grow small">${r[1]}</b></div>`).join('')}</div></div>`;
+</script>
+</body>
+</html>

@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reports · Tibbi Orbit</title>
+<link rel="stylesheet" href="assets/styles.css">
+<script src="assets/icons.js"></script><script src="assets/data.js"></script><script src="assets/data-core.js"></script><script src="assets/ui.js"></script>
+<style>
+#page .rp-row { color: var(--ink); align-items: flex-start; padding: 12px 18px; }
+.rp-row .tile { width: 36px; height: 36px; border-radius: 9px; display: grid; place-items: center; color: var(--primary); flex: none; }
+.rp-row .tile .ico { width: 17px; height: 17px; }
+[data-theme="dark"] .rp-row .tile { color: #fff; }
+.rp-row b { font-size: 13.5px; }
+.rp-row:hover b { color: var(--primary-light); }
+.rp-p { margin-top: 2px; line-height: 1.45; }
+.rp-f { margin-top: 4px; display: flex; gap: 4px; align-items: center; }
+.rp-f .ico { width: 12px; height: 12px; flex: none; }
+.rp-row > .req-ref, .rp-row > .ico { margin-top: 8px; flex: none; }
+</style>
+</head>
+<body>
+<script>
+const { db, $, icon, esc, page } = UI;
+if (page({ active: 'reports.html', opt: 'admin.reports.view', title: 'Administration Reports', crumbs: [['Home', 'home.html'], ['Administration', 'admin.html'], ['Reports']],
+  subtitle: 'Access to each report and to export is separately permitted. Values show effective access at the selected as-of time.', body: '' })) {
+  $('#page').innerHTML = `<div class="banner info" style="margin-bottom:16px">${icon('info')}<span>Scope to be confirmed: SOW V4 lists 10 administration reports. All 13 from the requirements are shown here.</span></div>
+    <div class="grid g2" id="rgroups"></div>`;
+  const GROUPS = [['Access and permissions', 'key-round', ['RPT-03', 'RPT-04', 'RPT-05', 'RPT-08', 'RPT-15']], ['Organization and masters', 'building-2', ['RPT-01', 'RPT-02', 'RPT-14']],
+    ['Activity and audit', 'history', ['RPT-06', 'RPT-07', 'RPT-16']], ['People and profiles', 'users', ['RPT-12', 'RPT-13']]];
+  const known = GROUPS.reduce((a, g) => a.concat(g[2]), []), other = db.reports.filter(r => !known.includes(r.id)).map(r => r.id);
+  if (other.length) GROUPS.push(['Other reports', 'file-text', other]);
+  $('#rgroups').innerHTML = GROUPS.map(([g, ic, ids]) => { const rs = ids.map(id => db.reports.find(r => r.id === id)).filter(Boolean); return rs.length ? `<div class="card"><div class="card-head"><h3>${icon(ic)} ${esc(g)}</h3><div class="actions"><span class="tag">${rs.length}</span></div></div>
+    <div>${rs.map(r => `<a class="qitem rp-row" href="report.html?id=${r.id}"><span class="tile t-sky">${icon(r.icon)}</span><div class="grow" style="min-width:0"><b>${esc(r.name)}</b><div class="small muted rp-p">${esc(r.purpose)}</div><div class="xs muted rp-f">${icon('filter')} ${esc(r.filters)}</div></div><span class="req-ref">${r.id}</span>${icon('chevron-right', 'mute')}</a>`).join('')}</div></div>` : ''; }).join('');
+}
+</script>
+</body>
+</html>

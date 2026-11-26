@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Critical results · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-lab.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/lab.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, esc, icon, $, R } = UI;
+  const OPT = 'lab.critical';
+  if (!UI.page({ opt: OPT, title: 'Critical result alert console', subtitle: 'Critical values waiting for telephone notification. Log every call with read-back; escalate when the team cannot be reached.',
+    actions: `<a class="btn" href="${R('lab/masters.html')}">${icon('ruler')} Critical limits</a>` })) return;
+  $('#page').innerHTML = `<div class="banner info" style="margin-bottom:14px">${icon('info')}<span>Policy: notify the treating doctor or nurse in charge within 30 minutes. After 30 minutes or 2 failed attempts, escalate to the consultant on call.</span></div><div id="crit"></div>`;
+  Lab.criticalPage($('#crit'), { opt: OPT, kind: 'lab', key: 'labCalls', targetMins: 30,
+    items: () => Lab.orders().filter(o => /Resulted|Verified/.test(o.status) && (o.results || []).some(r => r.critical)).map(o => {
+      const rs = o.results.filter(r => r.critical);
+      return { o, detected: o.resultedAt, finding: rs.map(r => r.name + ' ' + r.value + ' ' + r.unit).join(', '), param: rs.map(r => r.name).join(', '), value: rs.map(r => r.value + ' ' + r.unit).join(', '), testName: o.name, ref: Lab.acc(o) };
+    }),
+    view: (o) => { location.href = R('lab/results.html?id=' + o.id); } });
+})();
+</script>
+</body>
+</html>

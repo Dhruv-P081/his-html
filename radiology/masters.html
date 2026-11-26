@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Radiology masters · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-radiology.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/lab.js"></script><script src="../assets/radiology.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, $ } = UI;
+  const OPT = 'radiology.masters';
+  if (!UI.page({ opt: OPT, title: 'Radiology masters', subtitle: 'Radiology master data and configuration (SOW V4 Module 6). Changes are audited.' })) return;
+  const mods = ['X-ray', 'Ultrasound', 'CT', 'MRI', 'Mammography', 'Fluoroscopy', 'Nuclear medicine'];
+  const parts = (db.radiologyBodyParts || []).map(b => b.name.split(' ')[0]);
+  $('#page').innerHTML = `<div id="m"></div><div style="margin-top:14px">${Kit.phase2('Modality, Contrast / Consumable and TAT and Priority masters are 2nd phase (SOW V4). Report TAT targets use STAT 1 h, urgent 4 h and routine 24 h for now.')}</div>`;
+  Kit.masters($('#m'), { opt: OPT, defs: [
+    { id: 'radExams', title: 'Exam Catalogue', icon: 'scan-line', key: 'radExams', note: 'Orderable imaging exams. Shared with EMR ordering and billing.',
+      columns: ['code', 'name', 'modality', 'bodyPart', 'price'],
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Exam name', req: true }, { key: 'modality', label: 'Modality', type: 'select', options: mods, req: true },
+        { key: 'bodyPart', label: 'Body part', type: 'select', options: [...new Set(db.radExams.map(x => x.bodyPart).concat(parts))], req: true }, { key: 'price', label: 'Price (KWD)', type: 'number', money: true, req: true },
+        { key: 'laterality', label: 'Needs laterality (left or right)', type: 'check' }, { key: 'contrast', label: 'With contrast', type: 'check' }] },
+    { id: 'radiologyTemplates', title: 'Radiology Report Template Master', icon: 'file-text', key: 'radiologyTemplates', note: 'Structured report text by modality and body part. Blanks marked [ ] must be completed before submitting.',
+      columns: ['code', 'name', 'modality', 'bodyPart'],
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Template name', req: true }, { key: 'modality', label: 'Modality', type: 'select', options: mods, req: true },
+        { key: 'bodyPart', label: 'Body part', req: true }, { key: 'technique', label: 'Technique', type: 'textarea', full: true }, { key: 'findings', label: 'Findings', type: 'textarea', req: true, full: true }, { key: 'impression', label: 'Impression', type: 'textarea', req: true, full: true }] },
+    { id: 'radiologyRejectReasons', title: 'Reject / Repeat Reason Master', icon: 'ban', key: 'radiologyRejectReasons', note: 'Reject reasons for requests and repeat reasons for images (quality monitoring).',
+      columns: ['code', 'name', 'type'],
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Reason', req: true }, { key: 'type', label: 'Type', type: 'select', options: ['Reject', 'Repeat'], req: true }] },
+    { id: 'radiologyPrep', title: 'Exam Prep / Patient Instruction Master', icon: 'clipboard-list', key: 'radiologyPrep', note: 'Preparation printed for the patient from Radiology orders. Exam codes separated by commas.',
+      columns: ['code', 'name', 'modality', 'fasting'],
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Name', req: true }, { key: 'modality', label: 'Modality', type: 'select', options: mods, req: true },
+        { key: 'fasting', label: 'Fasting (hours, 0 if none)', type: 'number', req: true }, { key: 'exams', label: 'Exam codes', full: true }, { key: 'instructions', label: 'Patient instructions', type: 'textarea', req: true, full: true }] },
+    { id: 'radiologyBodyParts', title: 'Body Part and Laterality Master', icon: 'person-standing', key: 'radiologyBodyParts', note: 'Body parts with the standard views and whether left or right must be recorded.',
+      columns: ['code', 'name', 'region', 'laterality', 'views'],
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Body part', req: true }, { key: 'region', label: 'Region', type: 'select', options: ['Head and neck', 'Thorax', 'Abdomen and pelvis', 'Spine', 'Upper limb', 'Lower limb'], req: true },
+        { key: 'views', label: 'Standard views' }, { key: 'laterality', label: 'Laterality required', type: 'check' }] },
+  ] });
+})();
+</script>
+</body>
+</html>

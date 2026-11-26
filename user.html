@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>User · Tibbi Orbit</title>
+<link rel="stylesheet" href="assets/styles.css">
+<script src="assets/icons.js"></script><script src="assets/data.js"></script><script src="assets/data-core.js"></script><script src="assets/ui.js"></script><script src="assets/mapping.js"></script>
+</head>
+<body>
+<script>
+const { db, save, $, $$, icon, esc, page, can, drawer, field, showErrors, badge, L, toast, audit, me, nowStamp, fmtDate, confirm, today, tupleText, assignmentUsable, historyDrawer } = UI;
+const OPT = 'admin.security.users';
+const u = L.user(UI.param('id'));
+if (!u) location.replace('users.html');
+const canEdit = can(OPT, 'edit'), canAdmin = can(OPT, 'admin'), canMap = can('admin.security.mapping', 'add');
+const emp = u.empId ? L.emp(u.empId) : null;
+let tab = UI.param('tab') || 'profile';
+function status() { if (u.blocked) return 'Blocked'; if (u.expiry && u.expiry < today()) return 'Expired'; return u.status; }
+// USR-13: effective access end = earliest of Active To, HR separation, account expiry.
+function cutoff() {
+  const c = [];
+  if (u.activeTo) c.push([u.activeTo, 'Active To']);
+  if (u.expiry) c.push([u.expiry, 'Account expiry']);
+  if (emp && emp.lastWorkingDate) c.push([emp.lastWorkingDate, 'HR last working day']);
+  c.sort((a, b) => a[0].localeCompare(b[0]));
+  return c[0] || null;
+}
+if (page({ active: 'users.html', opt: OPT, title: u.displayName, crumbs: [['Home', 'home.html'], ['Administration', 'admin.html'], ['Users', 'users.html'], [u.login]], body: '' })) {
+  $('.page-head').remove();
+  const cut = cutoff();
+  $('#page').innerHTML = `
+  <div class="crumbs" style="margin-bottom:10px"><a href="home.html">Home</a>${icon('chevron-right', 'mute')}<a href="admin.html">Administration</a>${icon('chevron-right', 'mute')}<a href="users.html">Users</a>${icon('chevron-right', 'mute')}<span>${esc(u.login)}</span></div>
+  <div class="card card-pad" style="margin-bottom:16px"><div class="row wrap" style="gap:18px">
+    <span class="avatar lg">${u.hasPhoto ? `<span style="font-size:20px">${UI.initials(u.displayName)}</span>` : UI.initials(u.displayName)}</span>
+    <div class="grow"><h1 style="font-size:22px;font-weight:800">${esc(u.displayName)}</h1>
+      <div class="row wrap" style="margin-top:6px;gap:8px"><span class="mono">${esc(u.login)}</span>${badge(status())}<span class="tag">${esc(u.type)}</span>${u.classification ? `<span class="tag">${esc(u.classification)}</span>` : ''}${u.isDoctor ? '<span class="chip">Doctor</span>' : ''}${u.isNurse ? '<span class="chip">Nurse</span>' : ''}${u.isTech ? '<span class="chip">Technician</span>' : ''}${u.mobileDisplay ? `<span class="chip">${icon('monitor-smartphone')} On mobile app</span>` : ''}</div>
+      ${u.blocked ? `<div class="banner err" style="margin-top:10px">${icon('ban')}<span>Blocked: ${esc(u.blockReason)}. No system access, hidden from selectors and mobile directories.</span></div>` : ''}
+      ${u.status === 'Locked' ? `<div class="banner warn" style="margin-top:10px">${icon('lock')}<span>Temporarily locked after failed sign-ins until ${fmtDate(u.lockedUntil)}.</span></div>` : ''}
+      ${u.inactiveReason ? `<div class="banner info" style="margin-top:10px">${icon('info')}<span>${esc(u.inactiveReason)}</span></div>` : ''}
+      ${emp && emp.hrStatus === 'Pending separation' ? `<div class="banner warn" style="margin-top:10px">${icon('user-x')}<span>HR reports last working day ${fmtDate(emp.lastWorkingDate)}. Access ends at the next local midnight.</span></div>` : ''}
+    </div>
+    <div class="row wrap">${canAdmin ? `<button class="btn" id="aReset">${icon('key-round')} Reset password</button>${u.status === 'Locked' ? `<button class="btn" id="aUnlock">${icon('lock-open')} Unlock</button>` : ''}<button class="btn" id="aRevoke">${icon('log-out')} Revoke sessions</button>
+      ${u.blocked ? `<button class="btn" id="aUnblock">${icon('user-check')} Unblock</button>` : `<button class="btn danger" id="aBlock">${icon('ban')} Block user</button>`}
+      ${u.status === 'Inactive' ? `<button class="btn" id="aEnable">${icon('circle-check')} Reactivate</button>` : `<button class="btn danger" id="aDisable">${icon('user-x')} Disable</button>`}` : ''}</div>
+  </div>
+  <div class="grid g4" style="margin-top:16px">
+    <div><div class="small muted">Account validity</div><b>${fmtDate(u.activeFrom)} to ${u.activeTo ? fmtDate(u.activeTo) : 'open'}</b></div>
+    <div><div class="small muted">Effective access end</div><b>${cut ? fmtDate(cut[0]) + ' · ' + cut[1] : 'No end date'}</b></div>
+    <div><div class="small muted">Authentication</div><b>${esc(u.authSource)}${u.mfa ? ' · MFA enrolled' : ''}</b></div>
+    <div><div class="small muted">Last login</div><b>${u.lastLogin ? fmtDate(u.lastLogin) : 'Never'}</b></div></div></div>
+  <div class="tabs" style="margin-bottom:16px" id="tabs">
+    <button data-t="profile">${icon('user')} Profile</button><button data-t="account">${icon('lock')} Account</button><button data-t="access">${icon('key-round')} Access <span class="count">${db.assignments.filter(a => a.userId === u.id).length}</span></button><button data-t="assoc">${icon('users')} Associated users</button><button data-t="history">${icon('history')} History</button></div>
+  <div id="tabBody"></div>`;
+  $$('#tabs [data-t]').forEach(b => b.addEventListener('click', () => { tab = b.dataset.t; history.replaceState(null, '', `?id=${u.id}&tab=${tab}`); drawTab(); }));
+
+  /* ---------- Admin actions (USR-04, USR-05, USR-21, USR-24, USR-25) ---------- */
+  const act = (id, fn) => { const b = $('#' + id); if (b) b.addEventListener('click', fn); };
+  const done = (msg) => { save(); toast(msg); setTimeout(() => location.reload(), 500); };
+  act('aReset', () => {
+    if (u.authSource !== 'Local') { confirm({ title: 'External identity account', body: 'This account uses an external provider. Use the provider reset process.', tone: 'primary', confirm: 'OK' }); return; }
+    confirm({ title: `Reset password for ${u.displayName}?`, tone: 'primary', icon: 'key-round', body: `A single-use reset link is sent to the verified recovery channel${u.email ? ' (' + esc(u.email.replace(/(.{2}).+(@.+)/, '$1•••$2')) + ')' : ''}. Administrators never see passwords.`, impact: ['Existing sessions are invalidated', 'The link expires in 15 minutes'], reason: true, confirm: 'Send reset link',
+      onConfirm: (reason) => { db.resetTrail.unshift({ at: nowStamp(), admin: me().displayName, target: u.login, reason, delivery: u.email ? 'Email sent' : 'SMS sent', status: 'Pending' }); audit('Password reset initiated', 'User', { id: u.id, label: u.login }, [['Delivery', '', u.email ? 'Email sent' : 'SMS sent'], ['Sessions', '', 'Revoked']], { reason }); done('Reset link sent. Recorded in the password reset trail.'); } });
+  });
+  act('aUnlock', () => confirm({ title: 'Unlock account?', tone: 'primary', icon: 'lock-open', body: 'Clears the temporary lock only. It does not enable a blocked or disabled account.', reason: true, confirm: 'Unlock', onConfirm: (reason) => { u.status = 'Active'; u.failed = 0; delete u.lockedUntil; audit('Account unlocked', 'User', { id: u.id, label: u.login }, [['Status', 'Locked', 'Active']], { reason }); done('Account unlocked'); } }));
+  act('aRevoke', () => confirm({ title: 'Revoke all sessions?', tone: 'warn', icon: 'log-out', body: 'The user is signed out everywhere and must sign in again.', reason: true, confirm: 'Revoke sessions', onConfirm: (reason) => { audit('Sessions revoked', 'User', { id: u.id, label: u.login }, [['Sessions', 'Active', 'Revoked']], { reason }); done('All sessions revoked'); } }));
+  act('aBlock', () => confirm({ title: `Block ${u.displayName}?`, body: 'Blocking takes effect immediately.', impact: ['Active sessions are invalidated now', 'Excluded from operational selectors and mobile app directories', 'Historical records and audit keep the identity', 'Unblocking will not override expiry, HR separation or inactive assignments'], reason: true, confirm: 'Block user',
+    onConfirm: (reason) => { u.blocked = true; u.blockReason = reason; u.status = 'Blocked'; audit('User blocked', 'User', { id: u.id, label: u.login }, [['Blocked', 'No', 'Yes'], ['Sessions', '', 'Revoked']], { reason }); done('User blocked'); } }));
+  act('aUnblock', () => { const c = cutoff(); const expired = c && c[0] < today();
+    confirm({ title: 'Unblock user?', tone: 'primary', icon: 'user-check', body: 'Removes only the administrative block.', impact: [expired ? `Access stays closed: ${c[1]} was ${fmtDate(c[0])}. Update validity to restore access.` : 'Access returns if validity and assignments are valid', 'Every unblock is audited'], reason: true, confirm: 'Unblock',
+      onConfirm: (reason) => { u.blocked = false; u.blockReason = ''; u.status = expired ? 'Inactive' : 'Active'; audit('User unblocked', 'User', { id: u.id, label: u.login }, [['Blocked', 'Yes', 'No'], ['Status', 'Blocked', u.status]], { reason }); done('User unblocked'); } }); });
+  act('aDisable', () => confirm({ title: `Disable ${u.displayName}?`, body: 'The account is kept for history and attribution but cannot sign in.', impact: ['Active sessions are invalidated', `${db.assignments.filter(a => a.userId === u.id && assignmentUsable(a).ok).length} usable assignments stop authorizing`, 'Reactivation needs a review of assignments and validity'], reason: true, confirm: 'Disable',
+    onConfirm: (reason) => { u.status = 'Inactive'; u.inactiveReason = 'Disabled by administrator: ' + reason; audit('User disabled', 'User', { id: u.id, label: u.login }, [['Status', 'Active', 'Inactive']], { reason }); done('User disabled'); } }));
+  act('aEnable', () => { const c = cutoff(); const bad = (c && c[0] < today()) || (emp && emp.hrStatus === 'Separated');
+    if (bad) { confirm({ title: 'Cannot reactivate yet', tone: 'warn', body: emp && emp.hrStatus === 'Separated' ? 'HR shows this employee as separated. A rehire must come from HR, then an authorized review.' : `The account validity ended (${c[1]} ${fmtDate(c[0])}). Update validity on the Account tab first.`, confirm: 'OK' }); return; }
+    confirm({ title: 'Reactivate account?', tone: 'primary', icon: 'circle-check', body: 'Review current assignments and validity before reactivating.', impact: db.assignments.filter(a => a.userId === u.id).map(a => `${tupleText(a, true)} · ${L.rName(a.roleId)}: ${assignmentUsable(Object.assign({}, a, {})).why}`), reason: true, confirm: 'Reactivate',
+      onConfirm: (reason) => { u.status = 'Active'; delete u.inactiveReason; audit('User reactivated', 'User', { id: u.id, label: u.login }, [['Status', 'Inactive', 'Active']], { reason }); done('User reactivated'); } }); });
+
+  /* ---------- Tabs ---------- */
+  function drawTab() {
+    $$('#tabs [data-t]').forEach(b => b.classList.toggle('on', b.dataset.t === tab));
+    ({ profile, account, access, assoc, history: hist })[tab]();
+  }
+  // db.services is the billing catalogue (objects) from data-core.js; profile services are plain names.
+  const PROFILE_SERVICES = ['Consultation', 'ECG', 'Echocardiography', 'Stress test', 'Vaccination', 'Well-baby check', 'Joint injection', 'Fracture care', 'Skin biopsy', 'Laser therapy', 'Home visit']
+    .concat(db.users.reduce((a, x) => a.concat(x.services || []), [])).filter((v, i, arr) => typeof v === 'string' && arr.indexOf(v) === i);
+  const chipsEditor = (id, all, sel) => `<div class="chips" id="${id}">${all.map(x => `<label class="chip ${sel.includes(x) ? 'sel' : ''}"><input type="checkbox" class="sr" value="${esc(x)}" ${sel.includes(x) ? 'checked' : ''} ${canEdit ? '' : 'disabled'}>${esc(x)}</label>`).join('')}</div>`;
+  function profile() {
+    const ro = !canEdit;
+    $('#tabBody').innerHTML = `<div class="err-summary hidden" style="margin-bottom:14px"></div><div class="grid g2">
+      <div class="card card-pad"><h3 style="font-size:15px;margin-bottom:12px">${u.type === 'Employee' ? 'HR record' : 'Non Employee profile'} <span class="req-ref">USR-09 · USR-10 · USR-19</span></h3>
+        ${emp ? `<dl class="kv"><dt>Employee</dt><dd>${esc(emp.name)} <span class="mono small">${esc(emp.empNo)}</span></dd><dt>Designation</dt><dd>${esc(emp.designation)}</dd><dt>Home branch</dt><dd>${esc(L.bName(emp.branchId))}</dd><dt>HR status</dt><dd>${badge(emp.hrStatus)}${emp.lastWorkingDate ? ' · last working day ' + fmtDate(emp.lastWorkingDate) : ''}</dd><dt>Education</dt><dd>${esc(emp.education)}</dd><dt>Source</dt><dd><span class="inherit inh-co">HR</span> last sync ${fmtDate(emp.lastSync)}</dd></dl><div class="small muted" style="margin-top:10px">Education is read-only here; it is maintained in HR.</div>`
+        : `<div class="stack">${field({ id: 'pEdu', label: 'Education', type: 'textarea', value: u.education, max: 2000, disabled: ro, hint: 'Up to 2000 characters.' })}${field({ id: 'pDet', label: 'Details', type: 'textarea', value: u.details, max: 4000, disabled: ro, hint: 'Up to 4000 characters. Describes the professional profile.' })}</div>`}
+      </div>
+      <div class="card card-pad"><h3 style="font-size:15px;margin-bottom:12px">Classification and profile flags <span class="req-ref">USR-16 · USR-22 · USR-23</span></h3><div class="stack">
+        ${field({ id: 'pClass', label: 'User classification', type: 'select', value: u.classification, options: db.classifications.map(c => [c, c]), disabled: ro, hint: 'Separate from profile flags. Grants no permission.' })}
+        <div class="row wrap"><label class="check"><input type="checkbox" id="pDoc" ${u.isDoctor ? 'checked' : ''} ${ro ? 'disabled' : ''}> Is Doctor</label><label class="check"><input type="checkbox" id="pNurse" ${u.isNurse ? 'checked' : ''} ${ro ? 'disabled' : ''}> Is Nurse</label><label class="check"><input type="checkbox" id="pTech" ${u.isTech ? 'checked' : ''} ${ro ? 'disabled' : ''}> Is Technician</label></div>
+        <div class="list-rows" id="docFlags">
+          <div><div class="grow"><b>Is Admitting Doctor</b><div class="small muted">Only for doctor profiles. Admission functions still check roles and privileges.</div></div><label class="switch"><input type="checkbox" id="pAdm" ${u.admitting ? 'checked' : ''} ${ro ? 'disabled' : ''}><span></span></label></div>
+          <div><div class="grow"><b>Display on Mobile App</b><div class="small muted">Publishes the doctor in the patient app directory. Does not create app access or publish private contacts or signature.</div></div><label class="switch"><input type="checkbox" id="pMob" ${u.mobileDisplay ? 'checked' : ''} ${ro ? 'disabled' : ''}><span></span></label></div></div>
+        <div class="field"><label>Flags <span class="req-ref">USR-26</span></label><div class="row wrap"><label class="check"><input type="checkbox" id="pFA" ${u.flags.a ? 'checked' : ''} ${ro ? 'disabled' : ''}> Flag A</label><label class="check"><input type="checkbox" id="pFB" ${u.flags.b ? 'checked' : ''} ${ro ? 'disabled' : ''}> Flag B</label><input class="input" id="pFC" style="max-width:220px" placeholder="Flag C" value="${esc(u.flags.c)}" ${ro ? 'disabled' : ''}></div></div>
+      </div></div>
+      <div class="card card-pad" id="langCard"><h3 style="font-size:15px;margin-bottom:12px">Doctor profile <span class="req-ref">USR-18</span></h3>
+        <div class="field"><label>Spoken languages</label>${chipsEditor('pLang', db.languages, u.languages)}</div>
+        <div class="field" style="margin-top:14px"><label>Services provided</label>${chipsEditor('pSvc', PROFILE_SERVICES, u.services)}</div>
+        <div class="small muted" style="margin-top:10px">These lists describe the profile. They do not give authority to perform or bill a service.</div></div>
+      <div class="card card-pad"><h3 style="font-size:15px;margin-bottom:12px">Photo and signature <span class="req-ref">USR-17</span></h3><div class="stack">
+        ${['photo', 'signature'].map(k => `<div class="upload"><div class="thumb" id="th_${k}">${(k === 'photo' ? u.hasPhoto : u.hasSignature) ? `<span class="avatar" style="width:72px;height:72px;border-radius:14px;font-size:20px">${k === 'photo' ? UI.initials(u.displayName) : icon('pen-line')}</span>` : icon(k === 'photo' ? 'image' : 'pen-line')}</div><div class="grow"><b>${k === 'photo' ? 'User photo' : 'Signature image'}</b><div class="small muted">PNG or JPEG, up to 5 MB. Content is checked.${k === 'signature' ? ' A profile asset, not a digital signature.' : ''}</div><div class="err hidden" data-err="up_${k}"></div></div>
+          ${canEdit ? `<label class="btn sm">${icon('image')} ${(k === 'photo' ? u.hasPhoto : u.hasSignature) ? 'Replace' : 'Upload'}<input type="file" accept="image/png,image/jpeg" class="sr" data-up="${k}"></label>${(k === 'photo' ? u.hasPhoto : u.hasSignature) ? `<button class="btn sm danger" data-rmup="${k}">${icon('trash-2')}</button>` : ''}` : ''}</div>`).join('')}</div></div>
+    </div>
+    ${canEdit ? `<div class="row" style="margin-top:16px;justify-content:flex-end"><button class="btn primary" id="pSave">${icon('check')} Save profile</button></div>` : ''}`;
+    const syncDoc = () => { const d = $('#pDoc').checked; $('#docFlags').style.opacity = d ? 1 : .45; $('#pAdm').disabled = !d || ro; $('#langCard').classList.toggle('hidden', !d); if (!d) $('#pAdm').checked = false; };
+    $('#pDoc').addEventListener('change', syncDoc); syncDoc();
+    $$('.chips input').forEach(c => c.addEventListener('change', () => c.closest('.chip').classList.toggle('sel', c.checked)));
+    $$('[data-up]').forEach(inp => inp.addEventListener('change', () => {
+      const f = inp.files[0]; const k = inp.dataset.up; if (!f) return;
+      const e = $(`[data-err=up_${k}]`);
+      if (!['image/png', 'image/jpeg'].includes(f.type)) { e.textContent = 'Only PNG or JPEG images are accepted.'; e.classList.remove('hidden'); return; }
+      if (f.size > 5 * 1024 * 1024) { e.textContent = 'The file is larger than 5 MB.'; e.classList.remove('hidden'); return; }
+      const img = new Image(); const url = URL.createObjectURL(f);
+      img.onload = () => { $('#th_' + k).innerHTML = `<img src="${url}" style="width:100%;height:100%;object-fit:cover">`; e.classList.add('hidden'); u[k === 'photo' ? 'hasPhoto' : 'hasSignature'] = true; save(); audit((k === 'photo' ? 'Photo' : 'Signature') + ' uploaded', 'User', { id: u.id, label: u.login }, [[k === 'photo' ? 'Photo' : 'Signature image', 'previous version', `new version (${f.name}, ${Math.round(f.size / 1024)} KB)`]]); toast('Image saved (file reference and version recorded in audit).'); };
+      img.onerror = () => { e.textContent = 'The file is not a valid image.'; e.classList.remove('hidden'); };
+      img.src = url;
+    }));
+    $$('[data-rmup]').forEach(b => b.addEventListener('click', () => confirm({ title: 'Remove image?', body: 'The file reference is removed from the profile. Audit keeps the version history.', confirm: 'Remove', onConfirm: () => { u[b.dataset.rmup === 'photo' ? 'hasPhoto' : 'hasSignature'] = false; save(); audit('Image removed', 'User', { id: u.id, label: u.login }, [[b.dataset.rmup, 'present', 'removed']]); toast('Removed'); profile(); } })));
+    const sv = $('#pSave'); if (sv) sv.addEventListener('click', () => {
+      const before = JSON.parse(JSON.stringify(u));
+      if ($('#pEdu')) { u.education = $('#pEdu').value.trim(); u.details = $('#pDet').value.trim(); }
+      u.classification = $('#pClass').value; u.isDoctor = $('#pDoc').checked; u.isNurse = $('#pNurse').checked; u.isTech = $('#pTech').checked;
+      u.admitting = u.isDoctor && $('#pAdm').checked; u.mobileDisplay = $('#pMob').checked;
+      u.languages = $$('#pLang input:checked').map(c => c.value); u.services = $$('#pSvc input:checked').map(c => c.value);
+      u.flags = { a: $('#pFA').checked, b: $('#pFB').checked, c: $('#pFC').value.trim() };
+      u.updatedBy = me().displayName; u.updatedAt = nowStamp(); u.version++;
+      const ch = [['Classification', before.classification, u.classification], ['Is Doctor', before.isDoctor, u.isDoctor], ['Is Nurse', before.isNurse, u.isNurse], ['Is Technician', before.isTech, u.isTech], ['Admitting doctor', before.admitting, u.admitting], ['Display on mobile app', before.mobileDisplay, u.mobileDisplay], ['Languages', before.languages.join(', '), u.languages.join(', ')], ['Services', before.services.join(', '), u.services.join(', ')], ['Education', before.education, u.education]].filter(c => String(c[1]) !== String(c[2])).map(c => [c[0], String(c[1]), String(c[2])]);
+      save(); audit('Profile changed', 'User', { id: u.id, label: u.login }, ch); toast(ch.length ? `Profile saved (${ch.length} changes)` : 'No changes');
+    });
+  }
+  function account() {
+    const ro = !canAdmin;
+    $('#tabBody').innerHTML = `<div class="err-summary hidden" style="margin-bottom:14px"></div><div class="grid g2">
+      <div class="card card-pad"><h3 style="font-size:15px;margin-bottom:12px">Identity</h3><div class="stack">
+        ${field({ id: 'aLogin', label: 'Login identifier', value: u.login, disabled: ro, hint: 'Changing it needs privileged permission and is audited.' })}
+        ${field({ id: 'aName', label: 'Display name', value: u.displayName, disabled: !canEdit })}
+        ${field({ id: 'aEmail', label: 'Email', value: u.email, disabled: !canEdit, hint: 'A new recovery email is verified before use.' })}
+        ${field({ id: 'aMobile', label: 'Mobile', value: u.mobile, disabled: !canEdit })}
+        ${field({ id: 'aAuth', label: 'Authentication source', value: u.authSource === 'Local' ? 'Local account' : 'External provider', readonly: true, hint: 'External identity changes only through controlled relinking.' })}</div></div>
+      <div class="card card-pad"><h3 style="font-size:15px;margin-bottom:12px">Validity, block and expiry <span class="req-ref">USR-11 · USR-24</span></h3><div class="stack">
+        <dl class="kv"><dt>Account status</dt><dd>${badge(status())}</dd><dt>Failed sign-ins</dt><dd>${u.failed || 0}</dd></dl>
+        <div class="form-grid">${field({ id: 'aFrom', label: 'Active from', type: 'date', req: true, value: u.activeFrom, disabled: ro })}${field({ id: 'aTo', label: 'Active to', type: 'date', value: u.activeTo, disabled: ro, hint: 'Blank is not an exemption from HR separation.' })}
+        ${field({ id: 'aExp', label: 'Account expiry date', type: 'date', value: u.expiry, disabled: ro, hint: 'At expiry the user becomes inactive automatically.' })}</div>
+        <div class="banner ${cutoff() ? 'warn' : 'info'}">${icon('clock')}<span>Effective access end: <b>${cutoff() ? fmtDate(cutoff()[0]) + ' (' + cutoff()[1] + ')' : 'none'}</b>. The earliest of Active To, account expiry and HR separation applies.</span></div></div></div></div>
+    ${canEdit ? `<div class="row" style="margin-top:16px;justify-content:flex-end"><button class="btn primary" id="aSave">${icon('check')} Save account</button></div>` : ''}`;
+    const sv = $('#aSave'); if (sv) sv.addEventListener('click', () => {
+      const errs = {}; const login = $('#aLogin').value.trim().toLowerCase();
+      if (!login) errs.aLogin = 'Login identifier is required.'; else if (db.users.some(x => x.id !== u.id && x.login === login)) errs.aLogin = 'Already used by another account.';
+      if (!$('#aName').value.trim()) errs.aName = 'Display name is required.';
+      if ($('#aEmail').value && !UI.EMAIL_RE.test($('#aEmail').value.trim())) errs.aEmail = 'Enter a valid email.';
+      if (!$('#aFrom').value) errs.aFrom = 'Active from is required.';
+      if ($('#aTo').value && $('#aTo').value < $('#aFrom').value) errs.aTo = 'Active to must be after active from.';
+      if (!showErrors($('#tabBody'), errs)) return;
+      const go = (reason) => { const before = Object.assign({}, u);
+        Object.assign(u, { login, displayName: $('#aName').value.trim(), email: $('#aEmail').value.trim(), mobile: $('#aMobile').value.trim(), activeFrom: $('#aFrom').value, activeTo: $('#aTo').value, expiry: $('#aExp').value, updatedBy: me().displayName, updatedAt: nowStamp(), version: u.version + 1 });
+        save(); audit('Account changed', 'User', { id: u.id, label: u.login }, ['login', 'displayName', 'email', 'mobile', 'activeFrom', 'activeTo', 'expiry'].filter(k => before[k] !== u[k]).map(k => [k, before[k] || '', u[k] || '']), { reason: reason || '' }); toast('Account saved'); setTimeout(() => location.reload(), 400); };
+      if (login !== u.login) confirm({ title: 'Change login identifier?', body: `From <b>${esc(u.login)}</b> to <b>${esc(login)}</b>. The user must sign in with the new identifier.`, tone: 'warn', reason: true, confirm: 'Change', onConfirm: go }); else go();
+    });
+  }
+  function access() {
+    const rows = db.assignments.filter(a => a.userId === u.id);
+    $('#tabBody').innerHTML = `<div class="card"><div class="card-head"><h3>Access assignments</h3><span class="req-ref">MAP-01 · MAP-13 · MAP-14</span><div class="actions">${canMap ? `<button class="btn sm primary" id="addA">${icon('plus')} Add assignment</button>` : ''}</div></div>
+      ${rows.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th></th><th>Company / branch</th><th>Department · clinic</th><th>Warehouse</th><th>Role</th><th>Validity</th><th>Status</th><th></th></tr></thead><tbody>${rows.map(a => { const s = assignmentUsable(a); return `<tr>
+        <td>${a.isDefault ? `<span title="Default context" style="color:#F59E0B">${icon('star')}</span>` : ''}</td><td><b>${esc(L.company(a.companyId).code)}</b> · ${esc(L.bName(a.branchId))}</td><td>${esc(L.dName(a.deptId))}${a.clinicId ? `<br><span class="small muted">${esc(L.clName(a.clinicId))}</span>` : ''}</td><td>${a.warehouseId ? esc(L.wName(a.warehouseId)) : '<span class="muted">None</span>'}</td>
+        <td><b>${esc(L.rName(a.roleId))}</b></td><td class="small">${fmtDate(a.from)} to ${a.to ? fmtDate(a.to) : 'open'}</td><td>${a.status !== 'Active' ? badge('Revoked') : s.ok ? badge('Active') : a.from > today() ? badge('Future', s.why) : badge('Inactive', s.why)}</td>
+        <td class="actions"><button class="btn sm ghost" data-eff="${a.id}" title="Effective permissions">${icon('eye')}</button>${canMap && a.status === 'Active' ? `<button class="btn sm ghost" data-ed="${a.id}" title="Edit">${icon('pencil')}</button><button class="btn sm ghost" data-rv="${a.id}" title="Revoke">${icon('ban')}</button>` : ''}</td></tr>`; }).join('')}</tbody></table></div>`
+      : `<div class="empty">${icon('key-round')}<b>No access yet</b><span>The account cannot enter any module until an access administrator creates an assignment.</span></div>`}</div>`;
+    const add = $('#addA'); if (add) add.addEventListener('click', () => Mapping.assignmentDrawer(null, u.id, access));
+    $$('[data-eff]').forEach(b => b.addEventListener('click', () => Mapping.effective(u.id, db.assignments.find(a => a.id === b.dataset.eff))));
+    $$('[data-ed]').forEach(b => b.addEventListener('click', () => Mapping.assignmentDrawer(db.assignments.find(a => a.id === b.dataset.ed), u.id, access)));
+    $$('[data-rv]').forEach(b => b.addEventListener('click', () => Mapping.revoke(db.assignments.find(a => a.id === b.dataset.rv), access)));
+  }
+  function assoc() {
+    const rec = db.associations.find(a => a.userId === u.id) || { userId: u.id, with: [], defaultId: null };
+    const st = { with: rec.with.slice(), def: rec.defaultId };
+    const cos = new Set(db.assignments.filter(a => a.userId === u.id && a.status === 'Active').map(a => a.companyId));
+    const pool = db.users.filter(x => x.id !== u.id && db.assignments.some(a => a.userId === x.id && cos.has(a.companyId)));
+    function draw() {
+      const blockedDef = st.def && (L.user(st.def).blocked || L.user(st.def).status !== 'Active');
+      $('#tabBody').innerHTML = `<div class="card"><div class="card-head"><h3>Associated users or doctors</h3><span class="req-ref">MAP-15</span></div><div class="card-pad">
+        <div class="banner info" style="margin-bottom:14px">${icon('info')}<span>Associations support default data flow only (for example a nurse working with a doctor). They never delegate credentials, signatures, approvals or another person's permissions.</span></div>
+        ${blockedDef ? `<div class="banner warn" style="margin-bottom:14px">${icon('triangle-alert')}<span>The default associated user is blocked or inactive. Choose a replacement.</span></div>` : ''}
+        <div class="list-rows">${st.with.map(id => { const x = L.user(id); const bad = x.blocked || x.status !== 'Active'; return `<div><span class="avatar">${UI.initials(x.displayName)}</span><div class="grow"><b>${esc(x.displayName)}</b><div class="small muted">${esc(x.classification || '')} ${bad ? '· ' + badge(x.blocked ? 'Blocked' : x.status) : ''}</div></div>
+          <label class="check"><input type="radio" name="def" value="${id}" ${st.def === id ? 'checked' : ''} ${bad || !canEdit ? 'disabled' : ''}> Default</label>${canEdit ? `<button class="icon-btn" data-rm="${id}" aria-label="Remove">${icon('x')}</button>` : ''}</div>`; }).join('') || `<div class="empty" style="padding:20px 0">${icon('users')}<b>No associated users yet</b><span>Pick a user or doctor from the same entity below, then save.</span></div>`}</div>
+        ${canEdit ? `<div class="row" style="margin-top:14px"><select class="input" id="asAdd" style="max-width:360px"><option value="">Add a user or doctor in the same entity</option>${pool.filter(x => !st.with.includes(x.id)).map(x => `<option value="${x.id}" ${x.blocked || x.status !== 'Active' ? 'disabled' : ''}>${esc(x.displayName)}${x.isDoctor ? ' (doctor)' : ''}${x.blocked ? ' (blocked)' : x.status !== 'Active' ? ' (' + x.status + ')' : ''}</option>`).join('')}</select><button class="btn sm" id="asBtn">${icon('plus')} Add</button><div class="grow"></div><button class="btn primary" id="asSave">Save associations</button></div>` : ''}
+      </div></div>`;
+      $$('[data-rm]').forEach(b => b.addEventListener('click', () => { st.with = st.with.filter(x => x !== b.dataset.rm); if (st.def === b.dataset.rm) st.def = null; draw(); }));
+      $$('input[name=def]').forEach(r => r.addEventListener('change', () => st.def = r.value));
+      const ab = $('#asBtn'); if (ab) ab.addEventListener('click', () => { const v = $('#asAdd').value; if (!v) return; if (v === u.id || st.with.includes(v)) { toast('Self or duplicate associations are not allowed.', 'err'); return; } st.with.push(v); if (!st.def) st.def = v; draw(); });
+      const sv = $('#asSave'); if (sv) sv.addEventListener('click', () => {
+        if (st.def && !st.with.includes(st.def)) { toast('The default must be one of the selected users.', 'err'); return; }
+        const before = rec.with.map(L.uName).join(', ');
+        rec.with = st.with.slice(); rec.defaultId = st.def; if (!db.associations.includes(rec)) db.associations.push(rec); save();
+        audit('Associations changed', 'User', { id: u.id, label: u.login }, [['Associated users', before, rec.with.map(L.uName).join(', ')], ['Default', '', L.uName(rec.defaultId)]]); toast('Associations saved');
+      });
+    }
+    draw();
+  }
+  function hist() {
+    const ev = db.audit.filter(e => e.recordId === u.id);
+    $('#tabBody').innerHTML = `<div class="card card-pad">${ev.length ? `<div class="timeline">${ev.map(e => `<div class="tl-item"><b>${esc(e.action)}</b> ${badge(e.outcome)}<div class="meta">${fmtDate(e.at)} · ${esc(e.actor)} · ${esc(e.source)}</div>${e.reason ? `<div class="small">Reason: ${esc(e.reason)}</div>` : ''}${e.changes.length ? `<div class="diff" style="margin-top:6px"><div class="h">Field</div><div class="h">Before</div><div class="h">After</div>${e.changes.map(c => `<div>${esc(c[0])}</div><div class="old">${esc(c[1] || '(empty)')}</div><div class="new">${esc(c[2])}</div>`).join('')}</div>` : ''}</div>`).join('')}</div>` : `<div class="empty">${icon('history')}<b>No history</b></div>`}</div>`;
+  }
+  drawTab();
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bed board · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-reception.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/reception.js"></script>
+<style>
+  .rooms { display: flex; flex-wrap: wrap; gap: 16px 24px; align-items: flex-start; }
+  .room { display: flex; flex-direction: column; gap: 8px; }
+  .room .board { grid-template-columns: repeat(var(--n, 2), 172px); }
+  .room-l { font-size: 11px; font-weight: 800; color: var(--mute); text-transform: uppercase; letter-spacing: .06em; }
+  .bed .b-st { margin-top: auto; }
+</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, fmtDate, confirm, field } = UI;
+  const Rc = window.Reception;
+  const OPT = 'reception.beds';
+  if (!UI.page({ opt: OPT, title: 'Bed board', subtitle: 'Live bed status by ward. Click a bed to assign, clean, reserve, block or release it.',
+    actions: `<a class="btn" href="${R('reception/admissions.html')}">${icon('inbox')} Admission requests</a>` })) return;
+  const ST = [['Occupied', 'occ', '#2F6BC5'], ['Vacant', 'vac', '#1C8A4C'], ['Cleaning', 'cln', '#E0A100'], ['Reserved', 'res', '#7C4DDB'], ['Blocked', 'blk', '#8794A7']];
+  const cls = (s) => (ST.find(x => x[0] === s) || [])[1] || '';
+  const f = { ward: '', room: '', status: '', type: '' };
+  $('#page').innerHTML = `<div class="grid g5" style="margin-bottom:16px" id="kpi"></div>
+    <div class="grid g-side" style="align-items:start">
+      <div class="stack"><div class="card card-pad"><div class="row wrap" style="gap:10px">
+        <select class="input" id="fW" aria-label="Ward" style="width:auto"><option value="">All wards</option>${db.wards.map(w => `<option value="${w.id}">${esc(w.name)}</option>`).join('')}</select>
+        <select class="input" id="fR" aria-label="Room" style="width:auto"><option value="">All rooms</option></select>
+        <select class="input" id="fT" aria-label="Bed type" style="width:auto"><option value="">All bed types</option>${[...new Set(db.beds.map(b => b.type))].map(t => `<option>${esc(t)}</option>`).join('')}</select>
+        <div id="fS"></div></div></div><div id="board" class="stack"></div></div>
+      <div class="stack"><div class="card"><div class="card-head"><h3>${icon('chart-pie')} Occupancy by ward</h3></div><div class="card-pad" id="occ"></div></div>
+        <div class="card"><div class="card-head"><h3>${icon('inbox')} Waiting for a bed</h3></div><div id="wait"></div></div></div>
+    </div>`;
+  Kit.seg($('#fS'), [['', 'All']].concat(ST.map(s => [s[0], s[0]])), '', (v) => { f.status = v; drawBoard(); });
+  const rooms = () => [...new Set(db.beds.filter(b => !f.ward || b.wardId === f.ward).map(b => b.room))];
+  $('#fW').addEventListener('change', (e) => { f.ward = e.target.value; f.room = ''; $('#fR').innerHTML = `<option value="">All rooms</option>` + rooms().map(r => `<option>${esc(r)}</option>`).join(''); drawBoard(); });
+  $('#fR').addEventListener('change', (e) => { f.room = e.target.value; drawBoard(); });
+  $('#fT').addEventListener('change', (e) => { f.type = e.target.value; drawBoard(); });
+  $('#fR').innerHTML = `<option value="">All rooms</option>` + rooms().map(r => `<option>${esc(r)}</option>`).join('');
+  const waitList = () => (db.receptionAdmRequests || []).filter(r => r.status === 'Cleared');
+  function draw() { drawKpi(); drawBoard(); drawSide(); }
+  function drawKpi() {
+    const B = db.beds; const n = (s) => B.filter(b => b.status === s).length;
+    $('#kpi').innerHTML = ST.map(([s, , c]) => Kit.kpi(s, n(s), { foot: s === 'Occupied' ? Math.round(100 * n(s) / B.length) + '% occupancy' : s === 'Vacant' ? 'Ready to assign' : s === 'Cleaning' ? 'Housekeeping' : s === 'Reserved' ? 'Held for admissions' : 'Out of service' })).join('');
+    $$('#kpi .kpi').forEach((k, i) => { k.style.borderTop = '3px solid ' + ST[i][2]; k.style.cursor = 'pointer'; k.addEventListener('click', () => { f.status = ST[i][0]; Kit.seg($('#fS'), [['', 'All']].concat(ST.map(s => [s[0], s[0]])), f.status, (v) => { f.status = v; drawBoard(); }); drawBoard(); }); });
+  }
+  function drawBoard() {
+    const wards = db.wards.filter(w => !f.ward || w.id === f.ward);
+    $('#board').innerHTML = wards.map(w => {
+      const beds = db.beds.filter(b => b.wardId === w.id && (!f.room || b.room === f.room) && (!f.status || b.status === f.status) && (!f.type || b.type === f.type));
+      if (!beds.length) return '';
+      const all = db.beds.filter(b => b.wardId === w.id); const occ = all.filter(b => b.status === 'Occupied').length;
+      const byRoom = Kit.groupBy(beds, b => b.room);
+      return `<div class="card"><div class="card-head"><h3>${icon('building')} ${esc(w.name)}</h3><span class="small muted">Floor ${esc(w.floor)} · charge nurse ${esc((db.nurses.find(n => n.id === w.chargeNurse) || {}).name || '')}</span><div class="actions"><div style="width:120px" class="progress ${occ / all.length > .85 ? 'err' : occ / all.length > .6 ? 'warn' : 'ok'}"><i style="width:${Math.round(100 * occ / all.length)}%"></i></div><b class="small">${occ}/${all.length}</b></div></div>
+        <div class="card-pad"><div class="rooms">${Object.entries(byRoom).map(([room, bs]) => `<div class="room"><div class="room-l">Room ${esc(room)}</div><div class="board" style="--n:${bs.length}">${bs.map(tile).join('')}</div></div>`).join('')}</div></div></div>`;
+    }).join('') || `<div class="card"><div class="empty">${icon('bed')}<b>No beds match the filters</b></div></div>`;
+    $$('[data-bed]', $('#board')).forEach(n => n.addEventListener('click', () => detail(Kit.bed(n.dataset.bed))));
+  }
+  function tile(b) {
+    const p = b.patientId ? Kit.pt(b.patientId) : null; const e = b.encounterId ? Kit.enc(b.encounterId) : null;
+    const req = (db.receptionAdmRequests || []).find(r => r.bedId === b.id && r.status === 'Cleared');
+    return `<div class="bed ${cls(b.status)}" data-bed="${b.id}" tabindex="0" role="button" aria-label="Bed ${esc(b.no)} ${esc(b.status)}">
+      <div class="row" style="gap:6px"><span class="b-no grow">${esc(b.no)}</span><span class="xs mute">${esc(b.gender === 'Any' ? 'Any' : b.gender[0])}</span></div>
+      ${p ? `<span class="b-pt">${esc(p.name)}</span><span class="b-sub">${esc(Kit.sexAge(p))} · day ${Math.max(1, Math.round((new Date(db.TODAY) - new Date(e.start.slice(0, 10))) / 864e5) + 1)}</span><span class="b-sub">${esc(Kit.docName(e.attendingId || e.doctorId))}</span>`
+        : req ? `<span class="b-pt">${esc(Kit.ptName(req.patientId))}</span><span class="b-sub">Reserved for ${esc(req.no)}</span>`
+        : b.status === 'Blocked' ? `<span class="b-sub">${esc(b.blockReason || 'Out of service')}</span>` : `<span class="b-sub">${esc(b.type)}</span>`}
+      <span class="b-st">${Kit.status(b.status)}${e && e.status === 'Discharge planned' ? ' <span class="badge b-warn nodot">Going home</span>' : ''}</span></div>`;
+  }
+  function drawSide() {
+    $('#occ').innerHTML = Kit.barList(db.wards.map(w => { const a = db.beds.filter(b => b.wardId === w.id); const o = a.filter(b => b.status === 'Occupied').length; const pct = Math.round(100 * o / a.length); return [w.name, pct, pct > 85 ? 'err' : pct > 60 ? 'warn' : 'ok']; }), { max: 100, fmt: (v) => v + '%' })
+      + `<div style="margin-top:14px">${Kit.donut(ST.map(([s, , c]) => [s, db.beds.filter(b => b.status === s).length, c]), { centerLabel: 'Beds', size: 112 })}</div>`;
+    const W = waitList();
+    $('#wait').innerHTML = W.length ? `<div class="list-rows pad">${W.map(r => { const p = Kit.pt(r.patientId) || {}; return `<div><div class="grow" style="min-width:0"><b class="small">${esc(p.name || 'Unknown patient')}</b><div class="xs muted"><span class="mono">${esc(p.mrn || '')}</span> · ${esc(r.bedType)}</div></div>${r.bedId ? `<span class="badge b-violet nodot">${esc((Kit.bed(r.bedId) || {}).no)}</span>` : ''}<a class="btn xs" href="${R('reception/admissions.html?req=' + r.id)}">Open</a></div>`; }).join('')}</div>` : `<div class="empty" style="padding:24px">${icon('circle-check')}<b>Nobody waiting</b></div>`;
+  }
+  function setStatus(b, to, extra, reason, action) {
+    const bf = b.status; Object.assign(b, { status: to }, extra || {}); b.statusAt = Rc.now(); b.statusBy = Rc.myName(); save();
+    audit(action, 'Bed', { id: b.id, label: b.no }, [['Status', bf, to]], reason ? { reason } : undefined); toast(b.no + ': ' + to); draw();
+  }
+  function detail(b) {
+    const p = b.patientId ? Kit.pt(b.patientId) : null; const e = b.encounterId ? Kit.enc(b.encounterId) : null; const w = Kit.ward(b.wardId) || {};
+    const bt = (db.receptionBedTypes || []).find(t => t.name === b.type) || {};
+    const req = (db.receptionAdmRequests || []).find(r => r.bedId === b.id && r.status === 'Cleared');
+    const ed = can(OPT, 'edit'); const g = ed ? '' : 'disabled title="Needs Edit permission"';
+    const acts = [];
+    if (b.status === 'Vacant') acts.push(`<button class="btn primary" data-x="assign" ${g}>${icon('user-plus')} Assign</button>`, `<button class="btn" data-x="reserve" ${g}>${icon('bookmark')} Reserve</button>`, `<button class="btn danger" data-x="block" ${g}>${icon('ban')} Block</button>`);
+    if (b.status === 'Cleaning') acts.push(`<button class="btn success" data-x="clean" ${g}>${icon('sparkles')} Mark clean</button>`, `<button class="btn danger" data-x="block" ${g}>${icon('ban')} Block</button>`);
+    if (b.status === 'Reserved') acts.push(req ? `<a class="btn primary" href="${R('reception/admissions.html?req=' + req.id)}">${icon('log-in')} Admit ${esc(Kit.ptName(req.patientId))}</a>` : '', `<button class="btn" data-x="release" ${g}>${icon('lock-open')} Release</button>`);
+    if (b.status === 'Blocked') acts.push(`<button class="btn" data-x="release" ${g}>${icon('lock-open')} Release</button>`);
+    if (b.status === 'Occupied' && e) acts.push(`<a class="btn primary" href="${R('reception/admissions.html?tab=ip&enc=' + e.id)}">${icon('arrow-right-left')} Transfer or discharge</a>`);
+    UI.drawer({ title: 'Bed ' + b.no, sub: esc(w.name) + ' · room ' + esc(b.room),
+      body: `${p ? Kit.patientBanner(p, e) : ''}<dl class="kv"><dt>Status</dt><dd>${Kit.status(b.status)}${b.statusBy ? ` <span class="small muted">by ${esc(b.statusBy)}, ${esc(fmtDate(b.statusAt))}</span>` : ''}</dd><dt>Bed type</dt><dd>${esc(b.type)}</dd><dt>Gender</dt><dd>${esc(b.gender)}</dd><dt>Daily rate</dt><dd>${Kit.money(bt.rate || 0)} <span class="small muted mono">${esc(b.serviceCode)}</span></dd><dt>Amenities</dt><dd>${esc(bt.amenities || '')}</dd>
+        ${b.blockReason && b.status === 'Blocked' ? `<dt>Blocked for</dt><dd>${esc(b.blockReason)}</dd>` : ''}${req ? `<dt>Reserved for</dt><dd>${esc(Kit.ptName(req.patientId))} · ${esc(req.no)}</dd>` : b.reservedNote && b.status === 'Reserved' ? `<dt>Reserved for</dt><dd>${esc(b.reservedNote)}</dd>` : ''}
+        ${e ? `<dt>Admission</dt><dd>${esc(e.no)} · since ${esc(fmtDate(e.start))}</dd><dt>Attending</dt><dd>${esc(Kit.docName(e.attendingId || e.doctorId))}</dd>` : ''}</dl>`,
+      foot: `<span class="grow"></span><button class="btn" data-close>Close</button>${acts.join('')}`,
+      onMount: (el, close) => $$('[data-x]', el).forEach(x => x.addEventListener('click', () => { close(); act(x.dataset.x, b); })) });
+  }
+  function act(a, b) {
+    if (a === 'clean') setStatus(b, 'Vacant', {}, '', 'Marked bed clean');
+    if (a === 'release') confirm({ title: 'Release bed ' + b.no + '?', tone: 'primary', confirm: 'Release', body: 'The bed becomes vacant and can be assigned.', onConfirm: () => {
+      (db.receptionAdmRequests || []).forEach(r => { if (r.bedId === b.id && r.status === 'Cleared') r.bedId = null; }); setStatus(b, 'Vacant', { blockReason: '', reservedNote: '' }, '', 'Released bed'); } });
+    if (a === 'block') confirm({ title: 'Block bed ' + b.no + '?', body: 'The bed is out of service until released.', confirm: 'Block bed', reason: true,
+      extra: `<div class="field" style="margin-top:12px"><label>Block type</label><select class="input" id="bk"><option>Maintenance</option><option>Infection control</option><option>Equipment fault</option><option>Staffing</option></select></div>`,
+      onMount: (m) => { b._bk = 'Maintenance'; $('#bk', m).addEventListener('change', (ev) => { b._bk = ev.target.value; }); },
+      onConfirm: (reason) => { const k = b._bk; delete b._bk; setStatus(b, 'Blocked', { blockReason: k + ': ' + reason }, reason, 'Blocked bed'); } });
+    if (a === 'reserve') {
+      const W = (db.receptionAdmRequests || []).filter(r => r.status === 'Cleared' && !r.bedId);
+      UI.drawer({ title: 'Reserve bed ' + b.no, sub: 'Hold the bed for a cleared admission request or a named patient.',
+        body: `<div class="form-grid">${field({ id: 'rq', label: 'Admission request', type: 'select', full: true, options: W.map(r => [r.id, r.no + ' · ' + Kit.ptName(r.patientId) + ' · ' + r.bedType]), placeholder: 'No request (enter a note)' })}${field({ id: 'rn', label: 'Reserved for (note)', full: true, max: 100, placeholder: 'For example: transfer from Mubarak Hospital at 16:00' })}</div>`,
+        foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="rGo" disabled>Reserve</button>`,
+        onMount: (el, close) => {
+          const chk = () => { $('#rGo', el).disabled = !($('#rq', el).value || $('#rn', el).value.trim().length >= 5); };
+          $$('input,select', el).forEach(i => { i.addEventListener('input', chk); i.addEventListener('change', chk); });
+          $('#rGo', el).addEventListener('click', () => { const r = W.find(x => x.id === $('#rq', el).value); if (r) r.bedId = b.id; close(); setStatus(b, 'Reserved', { reservedNote: r ? r.no + ' ' + Kit.ptName(r.patientId) : $('#rn', el).value.trim() }, '', 'Reserved bed'); });
+        } });
+    }
+    if (a === 'assign') {
+      const W = (db.receptionAdmRequests || []).filter(r => r.status === 'Cleared');
+      if (!W.length) { confirm({ title: 'No cleared admission request', tone: 'primary', body: 'Assigning a bed starts from an admission request with financial clearance.', confirm: 'Open admission requests', onConfirm: () => { location.href = R('reception/admissions.html'); } }); return; }
+      UI.drawer({ title: 'Assign bed ' + b.no, sub: 'Choose a cleared admission request. The admission is completed on the admissions screen.',
+        body: `<div class="list-rows card" style="padding:0 14px">${W.map(r => { const p = Kit.pt(r.patientId); const gm = b.gender !== 'Any' && p.gender && b.gender !== p.gender; return `<div>${Kit.patientCell(p, esc(r.bedType))}<span class="grow small muted">${esc(r.reason)}</span>${gm ? '<span class="badge b-warn">Gender mismatch</span>' : `<button class="btn xs primary" data-r="${r.id}">Assign</button>`}</div>`; }).join('')}</div>`,
+        onMount: (el, close) => $$('[data-r]', el).forEach(x => x.addEventListener('click', () => {
+          const r = W.find(y => y.id === x.dataset.r);
+          if (r.bedId && r.bedId !== b.id) { const o = Kit.bed(r.bedId); if (o && o.status === 'Reserved') o.status = 'Vacant'; }
+          r.bedId = b.id; b.status = 'Reserved'; b.reservedNote = r.no; save(); audit('Assigned bed to request', 'Bed', { id: b.id, label: b.no }, [['Status', 'Vacant', 'Reserved'], ['Request', '', r.no]]);
+          close(); location.href = R('reception/admissions.html?req=' + r.id);
+        })) });
+    }
+  }
+  draw();
+})();
+</script>
+</body>
+</html>

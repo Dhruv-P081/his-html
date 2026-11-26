@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HR Reports · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<style>/* 10 report cards: balance the grid (no lonely last card) */#page>.grid.g3{grid-template-columns:repeat(2,minmax(0,1fr))}@media (min-width:1700px){#page>.grid.g3{grid-template-columns:repeat(5,minmax(0,1fr))}}</style>
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-hr.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/hr.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, $ } = UI;
+  if (!UI.page({ opt: 'hr.reports', title: 'HR Reports', subtitle: 'Ten HR and payroll reports (SOW V4 Annexure B).' })) return;
+  const T = db.TODAY;
+  const DEPT = { id: 'dept', label: 'Department', type: 'select', options: HR.deptsInUse() };
+  const CAT = { id: 'cat', label: 'Category', type: 'select', options: ['Doctor', 'Nurse', 'Allied health', 'Administration', 'Support'].map(x => [x, x]) };
+  const runMonths = () => db.hrPayrollRuns.filter(r => r.lines).sort((a, b) => b.month.localeCompare(a.month)).map(r => [r.month, HR.monthLabel(r.month) + ' · ' + r.status]);
+  const MONTH = { id: 'month', label: 'Payroll month', type: 'select', options: runMonths(), value: (runMonths()[0] || [''])[0] };
+  const r3 = HR.r3, sum = (rows, i) => r3(rows.reduce((s, r) => s + (Number(r[i]) || 0), 0));
+  const okD = (v, f) => !f.dept || v.deptId === f.dept;
+  const nat = (v, x) => !x || (x === 'Kuwaiti' ? v.nationality === 'Kuwaiti' : v.nationality !== 'Kuwaiti');
+
+  Kit.reportCatalog($('#page'), { module: 'hr', opt: 'hr.reports', reports: [
+    { id: 'hr-r01', title: 'Headcount by department', purpose: 'Active staff by department and category, Kuwaiti and expatriate split.',
+      filters: [{ id: 'br', label: 'Branch', type: 'select', options: Array.from(new Set(HR.all().map(v => v.branchId))).map(b => [b, UI.L.bName(b)]) }, CAT, { id: 'nat', label: 'Nationality', type: 'select', options: [['Kuwaiti', 'Kuwaiti'], ['exp', 'Expatriate']] }],
+      columns: ['Department', 'Headcount', 'Kuwaiti', 'Expatriate', 'Doctors', 'Nurses', 'Other staff', 'Kuwaiti %'],
+      rows: (f) => Object.entries(Kit.groupBy(HR.active().filter(v => (!f.br || v.branchId === f.br) && (!f.cat || v.category === f.cat) && nat(v, f.nat)), v => HR.dept(v.deptId))).sort().map(([d, l]) => { const k = l.filter(v => v.nationality === 'Kuwaiti').length; return [d, l.length, k, l.length - k, l.filter(v => v.category === 'Doctor').length, l.filter(v => v.category === 'Nurse').length, l.filter(v => !['Doctor', 'Nurse'].includes(v.category)).length, Math.round(100 * k / l.length) + '%']; }),
+      totals: (rows) => ['Total', sum(rows, 1), sum(rows, 2), sum(rows, 3), sum(rows, 4), sum(rows, 5), sum(rows, 6), rows.length ? Math.round(100 * sum(rows, 2) / Math.max(1, sum(rows, 1))) + '%' : ''] },
+    { id: 'hr-r02', title: 'Licence and credential expiry', purpose: 'Credentials expired or due in the 90, 60 and 30 day alert windows.',
+      filters: [{ id: 'band', label: 'Alert window', type: 'select', options: ['Expired', '30 days', '60 days', '90 days', 'Valid'].map(x => [x, x]) }, { id: 'type', label: 'Credential', type: 'select', options: HR.CRED_TYPES.map(x => [x, x]) }, DEPT],
+      columns: ['Employee no.', 'Employee', 'Department', 'Credential', 'Number', 'Expiry', 'Days left', 'Window'],
+      rows: (f) => HR.credentials().filter(c => { const v = HR.get(c.empId), b = HR.credBand(c).band; return (!f.band || b === f.band) && (!f.type || c.type === f.type) && okD(v, f); }).sort((a, b) => a.expiry.localeCompare(b.expiry)).map(c => { const v = HR.get(c.empId), b = HR.credBand(c); return [v.empNo, v.name, HR.dept(v.deptId), c.type, c.number, Kit.day(c.expiry), b.days, b.band]; }) },
+    { id: 'hr-r03', title: 'Attendance exceptions', purpose: 'Late arrivals, absences and missing punches with regularization status.',
+      filters: [{ id: 'from', label: 'From', type: 'date', value: '2026-11-01' }, { id: 'to', label: 'To', type: 'date' }, DEPT, { id: 'exc', label: 'Exception', type: 'select', options: ['Late', 'Absent', 'Missing punch', 'Regularized'].map(x => [x, x]) }],
+      columns: ['Date', 'Employee', 'Department', 'Shift', 'In', 'Out', 'Exception', 'Regularized by'],
+      rows: (f) => db.hrAttendance.filter(a => a.date >= (f.from || '0') && a.date <= (f.to || T) && ['Late', 'Absent', 'Missing punch', 'Regularized'].includes(HR.attStatus(a)) && (!f.exc || HR.attStatus(a) === f.exc) && okD(HR.prof(a.empId), f)).sort((a, b) => a.date.localeCompare(b.date)).map(a => [Kit.day(a.date), HR.name(a.empId), HR.dept(HR.prof(a.empId).deptId), a.shift, a.in || '-', a.out || '-', a.reg ? a.reg.type : HR.attStatus(a), a.reg ? a.reg.by : '']) },
+    { id: 'hr-r04', title: 'Leave register', purpose: 'Leave requests by type and status for a period.',
+      filters: [{ id: 'from', label: 'From', type: 'date', value: '2026-01-01' }, { id: 'to', label: 'To', type: 'date', value: '2026-12-31' }, { id: 'type', label: 'Leave type', type: 'select', options: db.hrLeaveTypes.map(t => [t.code, t.name]) }, { id: 'st', label: 'Status', type: 'select', options: ['Pending approval', 'Approved', 'Rejected', 'Cancelled'].map(x => [x, x]) }],
+      columns: ['Request', 'Employee', 'Department', 'Leave type', 'From', 'To', 'Days', 'Status', 'Decided by'],
+      rows: (f) => db.hrLeaves.filter(l => l.from <= (f.to || '9') && l.to >= (f.from || '0') && (!f.type || l.type === f.type) && (!f.st || l.status === f.st)).sort((a, b) => a.from.localeCompare(b.from)).map(l => [l.no, HR.name(l.empId), HR.dept(HR.prof(l.empId).deptId), HR.leaveType(l.type).name, Kit.day(l.from), Kit.day(l.to), l.days, l.status, l.decidedBy]),
+      totals: (rows) => ['Total', '', '', '', '', '', sum(rows, 6), '', ''] },
+    { id: 'hr-r05', title: 'Leave balances', purpose: 'Entitlement, taken, pending and balance by employee and leave type.',
+      filters: [{ id: 'type', label: 'Leave type', type: 'select', options: db.hrLeaveTypes.map(t => [t.code, t.name]), value: 'AL' }, DEPT, CAT],
+      columns: ['Employee no.', 'Employee', 'Department', 'Leave type', 'Entitlement', 'Taken', 'Pending', 'Balance'],
+      rows: (f) => HR.active().filter(v => okD(v, f) && (!f.cat || v.category === f.cat)).flatMap(v => db.hrLeaveTypes.filter(t => (!f.type || t.code === f.type) && (t.gender === 'All' || t.gender === v.gender)).map(t => { const b = HR.leaveBal(v.id, t.code); return [v.empNo, v.name, HR.dept(v.deptId), t.name, b.ent, b.taken, b.pending, b.balance]; })),
+      totals: (rows) => ['Total', '', '', '', sum(rows, 4), sum(rows, 5), sum(rows, 6), sum(rows, 7)] },
+    { id: 'hr-r06', title: 'Overtime by employee', purpose: 'Overtime hours and cost by employee, day type and status.',
+      filters: [{ id: 'from', label: 'From', type: 'date', value: '2026-09-01' }, { id: 'to', label: 'To', type: 'date' }, DEPT, { id: 'st', label: 'Status', type: 'select', options: ['Pending approval', 'Approved', 'Paid', 'Rejected'].map(x => [x, x]) }],
+      columns: ['Employee', 'Department', 'Requests', 'Normal h', 'Rest day h', 'Holiday h', 'Total hours', 'Amount KWD'],
+      rows: (f) => Object.entries(Kit.groupBy(db.hrOvertime.filter(o => o.date >= (f.from || '0') && o.date <= (f.to || T) && (!f.st || o.status === f.st) && okD(HR.prof(o.empId), f)), o => o.empId)).map(([id, l]) => { const v = HR.get(id); const h = (t) => Kit.sumBy(l.filter(o => o.type === t), o => o.hours); return [v.name, HR.dept(v.deptId), l.length, h('Normal'), h('Rest day'), h('Public holiday'), Kit.sumBy(l, o => o.hours), r3(Kit.sumBy(l, o => o.hours * HR.hourly(v) * (HR.SET.otRates[o.type] || 1.25)))]; }),
+      totals: (rows) => ['Total', '', sum(rows, 2), sum(rows, 3), sum(rows, 4), sum(rows, 5), sum(rows, 6), sum(rows, 7)] },
+    { id: 'hr-r07', title: 'Payroll register', purpose: 'Earnings, deductions and net pay by employee for a payroll month.',
+      filters: [MONTH, DEPT, { id: 'nat', label: 'Nationality', type: 'select', options: [['Kuwaiti', 'Kuwaiti'], ['exp', 'Expatriate']] }],
+      columns: ['Employee no.', 'Employee', 'Department', 'Basic', 'Allowances', 'Overtime', 'PIFSS', 'Loans', 'Other deductions', 'Net pay'],
+      rows: (f) => ((HR.runOf(f.month) || {}).lines || []).filter(l => okD(l, f) && nat(l, f.nat)).map(l => [l.empNo, l.name, HR.dept(l.deptId), l.basic, l.allowSum, l.ot, l.pifss, l.loan, r3(l.absence + l.unpaid), l.net]),
+      totals: (rows) => ['Total', '', '', sum(rows, 3), sum(rows, 4), sum(rows, 5), sum(rows, 6), sum(rows, 7), sum(rows, 8), sum(rows, 9)] },
+    { id: 'hr-r08', title: 'Payroll variance', purpose: 'Net pay change against the previous month, with joiners and leavers.',
+      filters: [MONTH, DEPT, { id: 'min', label: 'Minimum change %', type: 'select', options: [['5', '5% or more'], ['10', '10% or more'], ['20', '20% or more']] }],
+      columns: ['Employee', 'Department', 'Last month', 'This month', 'Change', 'Change %', 'Note'],
+      rows: (f) => { const r = HR.runOf(f.month); if (!r || !r.lines) return []; const prev = HR.runOf(HR.monthAdd(f.month, -1)); const pl = prev && prev.lines ? prev.lines : [];
+        const out = r.lines.filter(l => okD(l, f)).map(l => { const p = pl.find(x => x.empId === l.empId); const d = r3(l.net - (p ? p.net : 0)); const pct = p && p.net ? 100 * d / p.net : null; return [l.name, HR.dept(l.deptId), p ? p.net : 0, l.net, d, pct == null ? 'New' : pct.toFixed(1) + '%', p ? '' : 'New joiner', pct]; });
+        pl.filter(p => !r.lines.some(l => l.empId === p.empId) && okD(p, f)).forEach(p => out.push([p.name, HR.dept(p.deptId), p.net, 0, -p.net, '-100.0%', 'Left', -100]));
+        return out.filter(x => !f.min || x[7] == null || Math.abs(x[7]) >= Number(f.min)).map(x => x.slice(0, 7)); },
+      totals: (rows) => ['Total', '', sum(rows, 2), sum(rows, 3), sum(rows, 4), '', ''] },
+    { id: 'hr-r09', title: 'Loans outstanding', purpose: 'Active and closed loans with instalments paid and balance.',
+      filters: [{ id: 'type', label: 'Loan type', type: 'select', options: db.hrLoanTypes.map(t => [t.code, t.name]) }, { id: 'st', label: 'Status', type: 'select', options: ['Active', 'Pending approval', 'Closed', 'Rejected'].map(x => [x, x]), value: 'Active' }, DEPT],
+      columns: ['Loan', 'Employee', 'Department', 'Type', 'Amount', 'Instalments paid', 'Monthly', 'Balance', 'Status'],
+      rows: (f) => db.hrLoans.filter(l => (!f.type || l.type === f.type) && (!f.st || l.status === f.st) && okD(HR.prof(l.empId), f)).map(l => [l.no, HR.name(l.empId), HR.dept(HR.prof(l.empId).deptId), HR.loanType(l.type).name, l.amount, `${(l.paid || []).length} of ${l.instalments}`, HR.loanInst(l), l.status === 'Rejected' ? 0 : HR.loanBalance(l), l.status]),
+      totals: (rows) => ['Total', '', '', '', sum(rows, 4), '', sum(rows, 6), sum(rows, 7), ''] },
+    { id: 'hr-r10', title: 'End of service liability', purpose: 'Accrued indemnity per employee at a valuation date (full indemnity basis).',
+      filters: [{ id: 'asof', label: 'Valuation date', type: 'date', value: T }, DEPT, { id: 'nat', label: 'Nationality', type: 'select', options: [['Kuwaiti', 'Kuwaiti'], ['exp', 'Expatriate']] }],
+      columns: ['Employee no.', 'Employee', 'Department', 'Join date', 'Service years', 'Monthly remuneration', 'Accrued indemnity', 'If resigning'],
+      rows: (f) => HR.active().filter(v => okD(v, f) && nat(v, f.nat) && v.joinDate <= (f.asof || T)).map(v => { const a = HR.eosbCalc({ empId: v.id, reason: 'Termination by employer', lastDay: f.asof || T, unpaidDays: 0 }), b = HR.eosbCalc({ empId: v.id, reason: 'Resignation', lastDay: f.asof || T, unpaidDays: 0 }); return [v.empNo, v.name, HR.dept(v.deptId), Kit.day(v.joinDate), Number(a.years.toFixed(2)), a.salary, a.capped, b.indemnity]; }),
+      totals: (rows) => ['Total', '', '', '', '', sum(rows, 5), sum(rows, 6), sum(rows, 7)] },
+  ] });
+})();
+</script>
+</body>
+</html>

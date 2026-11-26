@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Patient merge · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-reception.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/reception.js"></script>
+<style>
+  .cmp { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .cmp th, .cmp td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: start; vertical-align: top; }
+  .cmp th { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--mute); background: var(--raised); }
+  .cmp td.f { color: var(--sub); font-weight: 700; width: 150px; }
+  .cmp label.opt { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; padding: 4px 6px; border-radius: 8px; }
+  .cmp label.opt.on { background: var(--sel); color: var(--sel-ink); font-weight: 700; }
+  .cmp tr.diff-row td.f::after { content: " ≠"; color: var(--warning); }
+</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, fmtDate, confirm } = UI;
+  const Rc = window.Reception;
+  const OPT = 'reception.reg.merge';
+  if (!UI.page({ opt: OPT, title: 'Patient merge', subtitle: 'Review duplicate records, choose the surviving values and send the merge for a second user to approve.',
+    actions: `<button class="btn" id="manual" ${Rc.gate(OPT, 'add')}>${icon('git-compare')} Compare any two records</button>` })) return;
+  const FIELDS = [['name', 'Full name'], ['nameAr', 'Arabic name'], ['civilId', 'Civil ID'], ['passportNo', 'Passport'], ['dob', 'Date of birth'], ['gender', 'Gender'], ['nationality', 'Nationality'], ['mobile', 'Mobile'], ['email', 'Email'], ['address', 'Address'], ['bloodGroup', 'Blood group'], ['lang', 'Preferred language'], ['emergency', 'Emergency contact']];
+  const show = (k, v) => k === 'emergency' ? (v && v.name ? esc(v.name + ' (' + v.relation + ') ' + v.phone) : '') : k === 'dob' ? esc(v ? fmtDate(v) : '') : esc(v || '');
+  const same = (a, b) => JSON.stringify(a || '') === JSON.stringify(b || '');
+  const pending = () => (db.receptionMerges || []).filter(m => m.status === 'Pending approval');
+  function candidates() {
+    const seen = new Set(), out = [];
+    Rc.activePatients().forEach(p => Rc.matches(p, p.id).forEach(m => {
+      const k = [p.id, m.p.id].sort().join('|'); if (seen.has(k)) return; seen.add(k);
+      if ((db.receptionMerges || []).some(r => r.status === 'Rejected' && r.mergedId && [r.survivorId, r.mergedId].sort().join('|') === k)) return;
+      const [a, b] = [p, m.p].sort((x, y) => String(x.registeredAt).localeCompare(String(y.registeredAt)));
+      const nameSim = a.name.toLowerCase().split(/\s+/).filter(w => b.name.toLowerCase().includes(w.replace(/\.$/, ''))).length / a.name.split(/\s+/).length;
+      const score = Math.min(99, 40 + (m.on.includes('Civil ID') ? 35 : 0) + (m.on.includes('Mobile') ? 15 : 0) + (m.on.includes('Passport') ? 25 : 0) + (a.dob && a.dob === b.dob ? 10 : 0) + Math.round(nameSim * 10));
+      out.push({ a, b, on: m.on, score, req: pending().find(r => [r.survivorId, r.mergedId].sort().join('|') === k) });
+    }));
+    return out.sort((x, y) => y.score - x.score);
+  }
+  $('#page').innerHTML = `<div class="grid g4" style="margin-bottom:16px" id="kpis"></div><div class="card"><div id="tabs"></div><div id="tb"></div></div>`;
+  let tab = 'cand';
+  function draw() {
+    const c = candidates(), pend = pending(), hist = (db.receptionMerges || []).filter(m => m.status !== 'Pending approval');
+    $('#kpis').innerHTML = Kit.kpi('Duplicate candidates', c.filter(x => !x.req).length, { icon: 'users', foot: 'Matched on Civil ID, passport or mobile' })
+      + Kit.kpi('Waiting for approval', pend.length, { icon: 'hourglass', foot: 'Needs a second user' })
+      + Kit.kpi('Merged this month', hist.filter(m => m.status === 'Approved' && (m.decidedAt || '').slice(0, 7) === db.TODAY.slice(0, 7)).length, { icon: 'git-merge' })
+      + Kit.kpi('Rejected', hist.filter(m => m.status === 'Rejected').length, { icon: 'circle-x', foot: 'Different patients confirmed' });
+    Kit.tabs($('#tabs'), [{ id: 'cand', label: 'Duplicate candidates', count: c.length, icon: 'users' }, { id: 'pend', label: 'Pending approval', count: pend.length, icon: 'hourglass' }, { id: 'hist', label: 'History', count: hist.length, icon: 'history' }], tab, (v) => { tab = v; body(); });
+    function body() {
+      const host = $('#tb');
+      if (tab === 'cand') {
+        host.innerHTML = c.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>Record A (older)</th><th>Record B</th><th>Matched on</th><th>Match score</th><th>Status</th><th></th></tr></thead><tbody>
+          ${c.map((x, i) => `<tr><td>${Kit.patientCell(x.a, esc(x.a.mobile || ''))}<div class="xs muted">Registered ${esc(Kit.day(x.a.registeredAt))}</div></td><td>${Kit.patientCell(x.b, esc(x.b.mobile || ''))}<div class="xs muted">Registered ${esc(Kit.day(x.b.registeredAt))}</div></td>
+            <td>${x.on.map(o => `<span class="tag">${esc(o)}</span>`).join(' ')}</td><td style="min-width:140px"><div class="row"><div class="progress ${x.score > 80 ? 'err' : 'warn'} grow"><i style="width:${x.score}%"></i></div><b class="num">${x.score}%</b></div></td>
+            <td>${x.req ? Kit.status('Pending approval') + `<div class="xs muted">${esc(x.req.no)}</div>` : Kit.status('Open', 'warn')}</td>
+            <td class="actions">${x.req ? `<button class="btn xs" data-req="${x.req.id}">Open request</button>` : `<button class="btn xs primary" data-cmp="${i}" ${Rc.gate(OPT, 'add')}>${icon('git-compare')} Compare</button>`}</td></tr>`).join('')}</tbody></table></div>`
+          : `<div class="empty">${icon('circle-check')}<b>No duplicate candidates</b><span>New matches appear here when a registration matches an existing Civil ID, passport or mobile.</span></div>`;
+        $$('[data-cmp]', host).forEach(b => b.addEventListener('click', () => compare(c[+b.dataset.cmp].a, c[+b.dataset.cmp].b)));
+        $$('[data-req]', host).forEach(b => b.addEventListener('click', () => review(db.receptionMerges.find(m => m.id === b.dataset.req))));
+      } else {
+        const rows = tab === 'pend' ? pend : hist;
+        UI.table(host, { columns: [
+          { label: 'Request', sort: (m) => m.requestedAt, render: (m) => `<b class="mono">${esc(m.no)}</b><div class="small muted">${esc(fmtDate(m.requestedAt))} · ${esc(m.requestedBy)}</div>` },
+          { label: 'Surviving record', render: (m) => Kit.patientCell(Kit.pt(m.survivorId)) },
+          { label: 'Merged record', render: (m) => { const x = m.mergedId ? Kit.pt(m.mergedId) : null; return x ? Kit.patientCell(x) : `<div class="cell-main"><b>${esc(m.snapshot.name)}</b><span class="mono">${esc(m.snapshot.mrn)}</span></div>`; } },
+          { label: 'Reason', render: (m) => `<span class="small">${esc(m.reason)}</span>` },
+          { label: 'Decision', render: (m) => m.decidedBy ? `<span class="small">${esc(m.decidedBy)}<div class="muted">${esc(fmtDate(m.decidedAt))}</div></span>` : '<span class="mute small">Waiting</span>' },
+          { label: 'Status', render: (m) => Kit.status(m.status) }],
+          rows, search: (m) => [m.no, m.reason, m.requestedBy, (Kit.pt(m.survivorId) || {}).name].join(' '), onRow: (m) => review(m),
+          empty: tab === 'pend' ? 'No merges waiting for approval' : 'No merge history', emptyIcon: 'git-merge' });
+      }
+    }
+    body();
+  }
+  /* Side-by-side compare and choose surviving values. */
+  function compare(a, b) {
+    const weight = (x) => db.encounters.filter(e => e.patientId === x.id).length + db.invoices.filter(i => i.patientId === x.id).length;
+    let surv = weight(b) > weight(a) ? b.id : a.id; const pick = {};
+    FIELDS.forEach(([k]) => { const s0 = surv === a.id ? a : b, o0 = surv === a.id ? b : a; pick[k] = (s0[k] && !same(s0[k], '')) ? s0.id : o0.id; });
+    UI.drawer({ title: 'Compare records', wide: true, sub: 'Pick the surviving record, then the value to keep for each field. Visits, admissions, invoices and documents move to the surviving record.',
+      body: `<div id="cmpBody"></div><div class="field" style="margin-top:14px"><label for="mReason">Reason for merge<span class="req">*</span></label><textarea class="input" id="mReason" maxlength="400" placeholder="How did you confirm these records are the same person? For example, Civil ID card checked at the desk."></textarea></div>
+        <div class="banner info" style="margin-top:12px">${icon('user-check')}<span>A second user with Approve permission must approve the merge. You cannot approve your own request.</span></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="mGo" disabled>${icon('send')} Send for approval</button>`,
+      onMount: (el, close) => {
+        const counts = (id) => ({ v: db.encounters.filter(e => e.patientId === id && e.type !== 'IPD').length, a: db.encounters.filter(e => e.patientId === id && e.type === 'IPD').length, i: db.invoices.filter(i => i.patientId === id).length, d: (db.receptionDocs || []).filter(d => d.patientId === id).length });
+        const head = (x) => { const n = counts(x.id); return `<label class="opt ${surv === x.id ? 'on' : ''}"><input type="radio" name="surv" value="${x.id}" ${surv === x.id ? 'checked' : ''}><div>${Kit.patientCell(x)}<div class="xs muted" style="margin-top:4px">${n.v} visit${n.v === 1 ? '' : 's'} · ${n.a} admission${n.a === 1 ? '' : 's'} · ${n.i} invoice${n.i === 1 ? '' : 's'} · ${n.d} document${n.d === 1 ? '' : 's'}</div></div></label>`; };
+        const drawC = () => {
+          $('#cmpBody', el).innerHTML = `<table class="cmp"><thead><tr><th>Field</th><th>Record A</th><th>Record B</th></tr></thead><tbody>
+            <tr><td class="f">Surviving MRN</td><td>${head(a)}</td><td>${head(b)}</td></tr>
+            ${FIELDS.map(([k, l]) => `<tr class="${same(a[k], b[k]) ? '' : 'diff-row'}"><td class="f">${esc(l)}</td>${[a, b].map(x => `<td><label class="opt ${pick[k] === x.id ? 'on' : ''}"><input type="radio" name="f_${k}" value="${x.id}" ${pick[k] === x.id ? 'checked' : ''} ${same(a[k], b[k]) ? 'disabled' : ''}><span>${show(k, x[k]) || '<span class="mute">Empty</span>'}</span></label></td>`).join('')}</tr>`).join('')}
+            <tr><td class="f">Payer</td><td>${esc(Kit.payerLabel(a))}</td><td>${esc(Kit.payerLabel(b))}</td></tr>
+            <tr><td class="f">Allergies</td><td>${esc((a.allergies || []).join(', ') || 'None')}</td><td>${esc((b.allergies || []).join(', ') || 'None')}</td></tr></tbody></table>
+            <div class="small muted" style="margin-top:6px">Allergies, chronic conditions and payer rows from both records are combined. Fields marked ≠ differ.</div>`;
+          $$('input[name="surv"]', el).forEach(r => r.addEventListener('change', () => { surv = r.value; drawC(); }));
+          FIELDS.forEach(([k]) => $$(`input[name="f_${k}"]`, el).forEach(r => r.addEventListener('change', () => { pick[k] = r.value; drawC(); })));
+        };
+        drawC();
+        const rs = $('#mReason', el); rs.addEventListener('input', () => { $('#mGo', el).disabled = rs.value.trim().length < 10; });
+        $('#mGo', el).addEventListener('click', () => {
+          const merged = surv === a.id ? b : a;
+          const values = {}; FIELDS.forEach(([k]) => { values[k] = (pick[k] === a.id ? a : b)[k]; });
+          const m = { id: UI.uid('mg'), no: Kit.nextNo('MRG-26-', db.receptionMerges), survivorId: surv, mergedId: merged.id, snapshot: { name: merged.name, mrn: merged.mrn, civilId: merged.civilId, mobile: merged.mobile }, choices: pick, values, status: 'Pending approval', requestedBy: Rc.myName(), requestedById: Rc.myId(), requestedAt: Rc.now(), decidedBy: '', decidedAt: '', reason: rs.value.trim() };
+          db.receptionMerges.unshift(m); save();
+          audit('Requested patient merge', 'Patient merge', { id: m.id, label: m.no + ' ' + merged.mrn + ' into ' + Kit.pt(surv).mrn }, [['Surviving MRN', '', Kit.pt(surv).mrn], ['Merged MRN', '', merged.mrn]], { reason: m.reason });
+          close(); toast('Merge ' + m.no + ' sent for approval'); tab = 'pend'; draw();
+        });
+      } });
+  }
+  /* Review a request: approve (not by the requester) or reject. */
+  function review(m) {
+    const s = Kit.pt(m.survivorId), x = m.mergedId ? Kit.pt(m.mergedId) : null;
+    const mine = m.requestedBy === Rc.myName();
+    const canAp = can(OPT, 'approve') && !mine && m.status === 'Pending approval';
+    const why = !can(OPT, 'approve') ? 'Needs Approve permission' : mine ? 'You raised this request. A different user must approve it (no self-approval).' : '';
+    UI.drawer({ title: 'Merge ' + m.no, wide: true, sub: esc(m.status) + ' · requested by ' + esc(m.requestedBy) + ', ' + esc(fmtDate(m.requestedAt)),
+      body: `${m.status === 'Pending approval' && mine ? `<div class="banner warn" style="margin-bottom:12px">${icon('user-x')}<span>${esc(why)}</span></div>` : ''}
+        ${x ? `<table class="cmp"><thead><tr><th>Field</th><th>Surviving ${esc(s.mrn)}</th><th>Merged ${esc(x.mrn)}</th><th>Value kept</th></tr></thead><tbody>
+          ${FIELDS.map(([k, l]) => `<tr class="${same(s[k], x[k]) ? '' : 'diff-row'}"><td class="f">${esc(l)}</td><td>${show(k, s[k])}</td><td>${show(k, x[k])}</td><td><b>${show(k, (m.values || {})[k])}</b></td></tr>`).join('')}</tbody></table>`
+        : `<dl class="kv"><dt>Surviving record</dt><dd>${esc(s ? s.name + ' · ' + s.mrn : '')}</dd><dt>Merged record</dt><dd>${esc(m.snapshot.name + ' · ' + m.snapshot.mrn)}</dd></dl>`}
+        <dl class="kv" style="margin-top:14px"><dt>Reason</dt><dd>${esc(m.reason)}</dd>${m.decidedBy ? `<dt>Decision</dt><dd>${Kit.status(m.status)} by ${esc(m.decidedBy)}, ${esc(fmtDate(m.decidedAt))}${m.decisionNote ? '<div class="small muted">' + esc(m.decisionNote) + '</div>' : ''}</dd>` : ''}</dl>`,
+      foot: m.status === 'Pending approval' ? `<button class="btn danger" id="rRej" ${can(OPT, 'approve') ? '' : 'disabled title="Needs Approve permission"'}>${icon('x')} Reject</button><span class="grow"></span><button class="btn" data-close>Close</button><button class="btn success" id="rOk" ${canAp ? '' : `disabled title="${esc(why)}"`}>${icon('git-merge')} Approve and merge</button>` : `<button class="btn" data-close>Close</button>`,
+      onMount: (el, close) => {
+        const ok = $('#rOk', el), rej = $('#rRej', el);
+        if (ok) ok.addEventListener('click', () => confirm({ title: 'Approve merge ' + m.no + '?', tone: 'primary', confirm: 'Approve and merge', icon: 'git-merge',
+          body: `${esc(x.mrn)} is merged into ${esc(s.mrn)} and becomes read only.`,
+          impact: [`${db.encounters.filter(e => e.patientId === x.id).length} visits and admissions move to ${esc(s.mrn)}`, `${db.invoices.filter(i => i.patientId === x.id).length} invoices move`, `${(db.receptionDocs || []).filter(d => d.patientId === x.id).length} documents move`, 'Global search shows only the surviving record'],
+          onConfirm: () => {
+            const before = {}; FIELDS.forEach(([k]) => { before[k] = s[k]; });
+            Object.assign(s, m.values || {});
+            s.allergies = [...new Set((s.allergies || []).concat(x.allergies || []))]; s.chronic = [...new Set((s.chronic || []).concat(x.chronic || []))];
+            db.encounters.forEach(e => { if (e.patientId === x.id) e.patientId = s.id; });
+            db.invoices.forEach(i => { if (i.patientId === x.id) i.patientId = s.id; });
+            (db.receptionDocs || []).forEach(d => { if (d.patientId === x.id) d.patientId = s.id; });
+            (db.receptionLinks || []).forEach(l => { if (l.patientId === x.id) l.patientId = s.id; if (l.relatedId === x.id) l.relatedId = s.id; });
+            const hasPrim = Rc.primary(s.id);
+            (db.receptionCoverage || []).forEach(cv => { if (cv.patientId === x.id) { cv.patientId = s.id; if (hasPrim && cv.rank === 'Primary') cv.rank = 'Secondary'; } });
+            Rc.syncPrimary(s.id);
+            Object.assign(x, { status: 'Merged', mergedInto: s.id, mergedAt: Rc.now(), mergedBy: Rc.myName() });
+            delete s.dupFlag; delete x.dupFlag;
+            Object.assign(m, { status: 'Approved', decidedBy: Rc.myName(), decidedAt: Rc.now() });
+            save();
+            audit('Approved patient merge', 'Patient', { id: s.id, label: s.mrn + ' ' + s.name }, FIELDS.filter(([k]) => !same(before[k], s[k])).map(([k, l]) => [l, k === 'emergency' ? (before[k] || {}).name : before[k], k === 'emergency' ? (s[k] || {}).name : s[k]]).concat([['Merged MRN', '', x.mrn]]), { reason: m.reason });
+            close(); toast(x.mrn + ' merged into ' + s.mrn); tab = 'hist'; draw();
+          } }));
+        if (rej) rej.addEventListener('click', () => confirm({ title: 'Reject merge ' + m.no + '?', body: 'Both records stay active. Use this when the records belong to different people.', confirm: 'Reject', reason: true,
+          onConfirm: (reason) => { Object.assign(m, { status: 'Rejected', decidedBy: Rc.myName(), decidedAt: Rc.now(), decisionNote: reason }); save(); audit('Rejected patient merge', 'Patient merge', { id: m.id, label: m.no }, [['Status', 'Pending approval', 'Rejected']], { reason }); close(); toast('Merge rejected'); tab = 'hist'; draw(); } }));
+      } });
+  }
+  $('#manual').addEventListener('click', () => Kit.pickPatient({ title: 'First record', filter: (p) => !Rc.isMerged(p), onPick: (a) => setTimeout(() => Kit.pickPatient({ title: 'Second record to compare with ' + a.mrn, filter: (p) => !Rc.isMerged(p) && p.id !== a.id, onPick: (b) => {
+    if (pending().some(r => [r.survivorId, r.mergedId].includes(a.id) || [r.survivorId, r.mergedId].includes(b.id))) { toast('One of these records already has a merge waiting for approval.', 'err'); return; }
+    const [x, y] = [a, b].sort((p, q) => String(p.registeredAt).localeCompare(String(q.registeredAt))); compare(x, y); } }), 50) }));
+  draw();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clinical summary · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-emr.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/emr.js"></script>
+<style>.vt-grid{display:grid;grid-template-columns:minmax(260px,300px) minmax(0,1fr);gap:20px;align-items:center}@media (max-width:1600px){.vt-grid{grid-template-columns:minmax(0,1fr)}}</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, esc, icon, $, $$, R, can } = UI;
+  const OPT = 'emr.summary';
+  const p = Kit.pt(UI.param('pt'));
+  const find = () => Kit.pickPatient({ title: 'Open clinical summary', onPick: (x) => { location.href = R('emr/summary.html?pt=' + x.id); } });
+  if (!p) {
+    if (!UI.page({ opt: OPT, title: 'Clinical summary', subtitle: 'Problems, allergies, medicines, results and visit history for one patient.', actions: `<button class="btn primary" id="find">${icon('search')} Find patient</button>` })) return;
+    const dr = EMR.actingDoctor();
+    const recent = Array.from(new Set(db.encounters.filter(e => e.doctorId === dr.id).sort((a, b) => b.start.localeCompare(a.start)).map(e => e.patientId))).slice(0, 10);
+    $('#page').innerHTML = `<div class="card"><div class="card-head"><h3>${icon('users')} Recent patients of ${esc(dr.name)}</h3></div><div class="list-rows pad">${recent.map(id => `<div class="click" data-p="${id}" style="cursor:pointer">${Kit.patientCell(Kit.pt(id))}<span class="grow"></span>${(Kit.pt(id).allergies || []).length ? '<span class="badge b-err">Allergy</span>' : ''}${icon('chevron-right', 'mute')}</div>`).join('')}</div></div>`;
+    $$('[data-p]').forEach(n => n.addEventListener('click', () => { location.href = R('emr/summary.html?pt=' + n.dataset.p); }));
+    $('#find').addEventListener('click', find);
+    return;
+  }
+  const visits = db.encounters.filter(e => e.patientId === p.id).sort((a, b) => b.start.localeCompare(a.start));
+  const active = visits.find(e => e.type === 'IPD' && e.status !== 'Discharged') || visits.find(e => e.start.startsWith(db.TODAY) && !/Booked|Discharged/.test(e.status));
+  if (!UI.page({ opt: OPT, title: 'Clinical summary', crumbs: [['Home', 'home.html'], ['Clinical EMR', 'emr/index.html'], ['Clinical summary', 'emr/summary.html'], [p.name, null]], subtitle: `${visits.length} visits on record`,
+    actions: `<button class="btn" id="find">${icon('search')} Other patient</button><button class="btn" id="prt" ${can(OPT, 'print') ? '' : 'disabled title="Needs Print permission"'}>${icon('printer')} Print summary</button>${active && can('emr.consult.note', 'view') ? `<a class="btn primary" href="${R('emr/console.html?enc=' + active.id)}">${icon('stethoscope')} Open console</a>` : ''}` })) return;
+  $('#find').addEventListener('click', find);
+
+  const ords = EMR.ordersOf(p.id);
+  const labs = ords.filter(o => o.type === 'lab' && o.status !== 'Cancelled');
+  const rads = ords.filter(o => o.type === 'rad' && o.status !== 'Cancelled');
+  const meds = ords.filter(o => o.type === 'med' && /Active|Pending verification|Verified|Dispensed/.test(o.status) && Kit.addDays(String(o.orderedAt).slice(0, 10), +o.days || 0) >= db.TODAY);
+  const notes = db.emrNotes.filter(n => n.patientId === p.id && n.status === 'Signed');
+  const probs = {};
+  (p.chronic || []).forEach(c => { probs[c] = { name: c, code: '', since: 'Chronic', src: 'Registration history' }; });
+  notes.forEach(n => (n.diagnoses || []).forEach(d => { const e = Kit.enc(n.encounterId) || {}; if (!probs[d.code]) probs[d.code] = { name: d.name, code: d.code, since: Kit.day(e.start), src: Kit.docName(n.doctorId) }; }));
+  visits.filter(e => e.type === 'IPD').forEach(e => { if (e.diagnosis && !probs[e.diagnosis]) probs[e.diagnosis] = { name: (db.icd10.find(x => x.code === e.diagnosis) || {}).name || e.reason, code: e.diagnosis, since: Kit.day(e.start), src: 'Admission' }; });
+  const docs = db.emrDocuments.filter(d => d.patientId === p.id).sort((a, b) => b.at.localeCompare(a.at));
+
+  $('#page').innerHTML = `${Kit.patientBanner(p, active)}
+    <div class="grid g3" style="margin-bottom:16px">
+      <div class="card"><div class="card-head"><h3>${icon('list-checks')} Problem list</h3><div class="actions"><span class="tag">${Object.keys(probs).length}</span></div></div>${Object.keys(probs).length ? `<div class="list-rows pad">${Object.values(probs).slice(0, 8).map(x => `<div><div class="grow cell-main"><b style="font-size:13px">${esc(x.name)}</b><span>${x.code ? `<span class="mono">${esc(x.code)}</span> · ` : ''}${esc(x.since)} · ${esc(x.src)}</span></div></div>`).join('')}</div>` : `<div class="empty">${icon('list-checks')}<b>No problems recorded</b></div>`}</div>
+      <div class="card"><div class="card-head"><h3>${icon('shield-alert')} Allergies</h3></div><div class="card-pad">${(p.allergies || []).length ? `<div class="stack tight">${p.allergies.map(a => { const m = db.emrAllergies.find(x => x.name === a) || {}; return `<div class="alert-cdss">${icon('triangle-alert')}<div class="grow">${esc(a)} <span class="badge b-err nodot">${esc(m.severity || 'Unknown')}</span><div class="xs" style="font-weight:600">${esc(m.type || '')}${m.matches ? ' · avoid ' + esc(m.matches) : ''}</div></div></div>`; }).join('')}</div>` : `<div class="banner ok">${icon('circle-check')}<span>No known allergies</span></div>`}</div></div>
+      <div class="card"><div class="card-head"><h3>${icon('pill')} Active medicines</h3><div class="actions"><span class="tag">${meds.length}</span></div></div>${meds.length ? `<div class="list-rows pad">${meds.slice(0, 8).map(m => `<div><div class="grow cell-main"><b style="font-size:13px">${esc(m.name)}</b><span>${esc(m.dose)} · ${esc(m.route || '')} · ${esc(m.frequency)}${m.setting ? ' · ' + esc(m.setting) : ''}</span></div>${Kit.status(m.status)}</div>`).join('')}</div>` : `<div class="empty">${icon('pill')}<b>No active medicines</b></div>`}</div>
+    </div>
+    <div class="grid g-side" style="margin-bottom:16px">
+      <div class="card"><div class="card-head"><h3>${icon('activity')} Vitals trend</h3><div class="actions" id="vSeg"></div></div><div class="card-pad vt-grid"><div id="vLast"></div><div id="vChart"></div></div></div>
+      <div class="card"><div class="card-head"><h3>${icon('history')} Visit timeline</h3><div class="actions"><span class="tag">${visits.length}</span></div></div><div class="card-pad" style="max-height:520px;overflow:auto"><div class="timeline">${visits.map(e => {
+        const n = EMR.noteFor(e.id); const dx = n && n.diagnoses[0];
+        return `<div class="tl-item ${e.type === 'IPD' ? 'warn' : e.type === 'ER' ? 'err' : 'ok'}"><b>${Kit.day(e.start)}</b> <span class="tag">${esc(e.type)} ${esc(e.no)}</span><div class="meta">${esc(Kit.docName(e.doctorId))} · ${esc((Kit.doc(e.doctorId) || {}).specialty || '')} · ${Kit.status(EMR.visitStatus(e))}</div><div class="small">${esc(e.complaint || e.reason || '')}</div>${dx ? `<div class="xs"><span class="mono">${esc(dx.code)}</span> ${esc(dx.name)}</div>` : ''}${n ? `<button class="link-btn xs" data-note="${n.id}">View note</button>` : ''}</div>`; }).join('')}</div></div></div>
+    </div>
+    <div class="card" id="labs" style="margin-bottom:16px"><div class="card-head"><h3>${icon('flask-conical')} Laboratory results</h3><div class="actions"><span class="small muted"><span class="flag-h">H</span> high · <span class="flag-l">L</span> low · <span class="flag-c">C</span> critical</span></div></div><div id="labTbl"></div></div>
+    <div class="grid g2">
+      <div class="card"><div class="card-head"><h3>${icon('scan')} Radiology</h3></div>${rads.length ? `<div class="table-wrap"><table class="tbl compact"><thead><tr><th>Exam</th><th>Ordered</th><th>Status</th></tr></thead><tbody>${rads.map(o => `<tr><td><b>${esc(o.name)}</b><div class="xs mute mono">${esc(o.no)}</div></td><td class="small">${Kit.when(o.orderedAt)}</td><td>${Kit.status(o.status)}</td></tr>`).join('')}</tbody></table></div>` : `<div class="empty">${icon('scan')}<b>No radiology exams</b></div>`}</div>
+      <div class="card"><div class="card-head"><h3>${icon('paperclip')} Documents</h3></div>${docs.length ? `<div class="list-rows pad">${docs.map(d => `<div>${icon('file-text', 'mute')}<div class="grow cell-main"><b style="font-size:13px">${esc(d.title)}</b><span>${esc(d.type)} · ${Kit.when(d.at)} · ${esc(d.by)}</span></div>${Kit.status(d.status, d.status === 'Pending review' ? 'warn' : 'ok')}</div>`).join('')}</div>` : `<div class="empty">${icon('paperclip')}<b>No documents</b></div>`}</div>
+    </div>`;
+
+  let vk = 'bp';
+  $('#vLast').innerHTML = EMR.vitalTiles(EMR.vitalsOf(p.id).slice(-1)[0]);
+  Kit.seg($('#vSeg'), [['bp', 'BP'], ['hr', 'HR'], ['temp', 'Temp'], ['spo2', 'SpO2']], vk, (v) => { vk = v; $('#vChart').innerHTML = EMR.vitalsChart(p.id, vk); });
+  $('#vChart').innerHTML = EMR.vitalsChart(p.id, vk);
+  $$('[data-note]').forEach(b => b.addEventListener('click', () => { const n = db.emrNotes.find(x => x.id === b.dataset.note); UI.drawer({ title: 'Consultation note', sub: esc((Kit.enc(n.encounterId) || {}).no || ''), wide: true, body: `<div class="print-sheet">${EMR.noteHtml(n)}</div>` }); }));
+
+  UI.table($('#labTbl'), {
+    columns: [{ label: 'Test', sort: o => o.name, render: o => `<b>${esc(o.name)}</b><div class="xs mute mono">${esc(o.no)}</div>` }, { label: 'Ordered', sort: o => o.orderedAt, render: o => `<span class="small">${Kit.when(o.orderedAt)}</span>` },
+      { label: 'Result', render: o => o.results ? `<table class="tbl compact" style="background:none"><tbody>${o.results.map(r => `<tr><td style="border:0;padding:2px 8px 2px 0" class="small">${esc(r.name)}</td><td style="border:0;padding:2px 8px" class="num"><b class="${r.critical || r.flag === 'H' ? 'flag-h' : r.flag === 'L' ? 'flag-l' : ''}">${esc(r.value)}</b> ${EMR.flagHtml(r)}</td><td style="border:0;padding:2px 8px" class="xs mute">${esc(r.unit)} · ref ${esc(r.low)}-${esc(r.high)}</td></tr>`).join('')}</tbody></table>` : '<span class="mute small">Pending</span>' },
+      { label: 'Flag', sort: o => EMR.isCritical(o) ? 2 : EMR.isAbnormal(o) ? 1 : 0, render: o => EMR.isCritical(o) ? `<span class="badge b-err">Critical</span>${EMR.ackOf(o.id) ? '<div class="xs mute">Acknowledged</div>' : ''}` : EMR.isAbnormal(o) ? '<span class="badge b-warn">Abnormal</span>' : o.results ? '<span class="badge b-ok">Normal</span>' : '' },
+      { label: 'Status', sort: o => o.status, render: o => Kit.status(o.status) }],
+    rows: labs, search: o => o.name + ' ' + o.no, searchPlaceholder: 'Search tests', pageSize: 8,
+    filters: [{ label: 'Flag', options: [['c', 'Critical'], ['a', 'Abnormal'], ['p', 'Pending']], test: (o, v) => v === 'c' ? EMR.isCritical(o) : v === 'a' ? EMR.isAbnormal(o) : !o.results }],
+    empty: 'No laboratory tests' });
+
+  $('#prt').addEventListener('click', () => {
+    Kit.printDoc({ title: 'Patient clinical summary', sub: p.name + ' · ' + p.mrn, html: `<h3>${esc(p.name)} · ${esc(p.mrn)} · ${esc(Kit.sexAge(p))}</h3><p>Allergies: <b>${esc((p.allergies || []).join(', ') || 'No known allergies')}</b></p>
+      <p><b>Problems:</b> ${Object.values(probs).map(x => esc(x.name) + (x.code ? ' (' + esc(x.code) + ')' : '')).join('; ') || 'None'}</p>
+      <p><b>Active medicines:</b> ${meds.map(m => esc(m.name + ' ' + m.dose + ' ' + m.frequency)).join('; ') || 'None'}</p>
+      <table><thead><tr><th>Test</th><th>Date</th><th>Result</th></tr></thead><tbody>${labs.filter(o => o.results).map(o => `<tr><td>${esc(o.name)}</td><td>${esc(Kit.day(o.resultedAt))}</td><td>${o.results.map(r => `${esc(r.name)} ${esc(r.value)} ${esc(r.unit)} ${r.critical ? 'CRITICAL' : r.flag}`).join('; ')}</td></tr>`).join('')}</tbody></table>
+      <p style="margin-top:12px"><b>Visits:</b></p><table><tbody>${visits.slice(0, 12).map(e => `<tr><td>${esc(Kit.day(e.start))}</td><td>${esc(e.type)} ${esc(e.no)}</td><td>${esc(Kit.docName(e.doctorId))}</td><td>${esc(e.complaint || e.reason || '')}</td></tr>`).join('')}</tbody></table>` });
+    UI.audit('Clinical summary printed', 'Patient', { id: p.id, label: p.name }, []);
+  });
+})();
+</script>
+</body>
+</html>

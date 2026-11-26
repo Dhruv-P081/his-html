@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Call Centre · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-appointments.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/appointments.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, drawer, field, showErrors, fmtDate } = UI;
+  const canAdd = can('appointments.book.cc', 'add'), canPrint = can('appointments.book.cc', 'print');
+  if (!UI.page({ opt: 'appointments.book.cc', title: 'Call Centre', subtitle: 'Log patient calls, find the caller by mobile number, keep call history and follow-ups, and book from the call.',
+    actions: `<button class="btn primary" id="logCall" ${canAdd ? '' : 'disabled title="Needs Add permission"'}>${icon('phone-incoming')} Log incoming call</button>` })) return;
+  const T = Appt.T;
+  const PURPOSES = ['Book appointment', 'Reschedule appointment', 'Cancel appointment', 'Appointment reminder', 'General enquiry', 'Results enquiry', 'Prescription refill', 'Billing or insurance query', 'Complaint'];
+  const OUTCOMES = ['Booked', 'Rescheduled', 'Cancelled', 'Information given', 'Transferred', 'Callback needed', 'No answer'];
+  const OUT_TONE = { Booked: 'ok', Rescheduled: 'info', Cancelled: 'neutral', 'Information given': 'ok', Transferred: 'violet', 'Callback needed': 'warn', 'No answer': 'err' };
+  const AGENTS = Array.from(new Set(['Layla Hussain', 'Fatima Al-Kandari', 'Dana Al-Shammari', Appt.meName()].concat(db.appointmentsCalls.map(c => c.agent)))).sort();
+  const digits = (s) => String(s || '').replace(/\D/g, '');
+  const mmss = (s) => Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+  const outB = (o) => Kit.status(o, OUT_TONE[o] || 'neutral');
+  const callsOf = (pid) => db.appointmentsCalls.filter(c => c.patientId === pid).sort((a, b) => b.at.localeCompare(a.at));
+  const st = { tab: 'log', lookup: '' };
+
+  $('#page').innerHTML = `
+    <div class="grid g4" style="margin-bottom:16px" id="kpis"></div>
+    <div class="card" style="margin-bottom:16px"><div class="card-head"><h3>${icon('phone-call')} Caller lookup</h3>
+        <div class="search" style="flex:1;max-width:420px;margin-inline-start:12px">${icon('search')}<input class="input" id="lk" placeholder="Mobile number, name or MRN" aria-label="Caller lookup" inputmode="tel"></div>
+        <div class="actions"><span class="xs muted">Matches the patient master mobile number.</span></div></div>
+      <div id="lkOut"></div></div>
+    <div id="tabs" style="margin-bottom:12px"></div><div id="tbl"></div>
+    </div>`;
+
+  function drawKpis() {
+    const today = db.appointmentsCalls.filter(c => c.at.slice(0, 10) === T);
+    const wk = db.appointmentsCalls.filter(c => c.at.slice(0, 10) >= Kit.addDays(T, -6));
+    const booked = wk.filter(c => c.outcome === 'Booked').length;
+    const open = db.appointmentsCalls.filter(c => c.followUp && c.followUp.status === 'Open');
+    const avg = wk.length ? Math.round(Kit.sumBy(wk, c => c.duration) / wk.length) : 0;
+    $('#kpis').innerHTML = Kit.kpi('Calls today', today.length, { icon: 'headset', foot: today.filter(c => c.direction === 'Incoming').length + ' incoming' })
+      + Kit.kpi('Booked from calls', booked, { icon: 'calendar-check', foot: 'Last 7 days, ' + (wk.length ? Math.round(100 * booked / wk.length) : 0) + '% of calls' })
+      + Kit.kpi('Open follow-ups', open.length, { icon: 'list-todo', foot: open.filter(c => c.followUp.due < T).length + ' overdue' })
+      + Kit.kpi('Average handling time', mmss(avg), { icon: 'timer', foot: 'Minutes, last 7 days' });
+  }
+  function drawTabs() {
+    const open = db.appointmentsCalls.filter(c => c.followUp && c.followUp.status === 'Open').length;
+    Kit.tabs($('#tabs'), [{ id: 'log', label: 'Call log', count: db.appointmentsCalls.length, icon: 'headset' }, { id: 'fu', label: 'Follow-up tasks', count: open, icon: 'list-todo' }], st.tab, (id) => { st.tab = id; drawTable(); });
+  }
+  const callerCell = (c) => c.patientId ? `${Kit.patientCell(Kit.pt(c.patientId))}${c.callerMobile ? `<div class="xs muted" style="margin:2px 0 0 38px;white-space:nowrap">${icon('phone')} ${esc(c.callerMobile)}</div>` : ''}` : `<div class="cell-main"><b>${esc(c.callerName || 'Unknown caller')}</b><span>${esc(c.callerMobile || '')} · <span class="badge b-neutral nodot">Not registered</span></span></div>`;
+  function drawTable() {
+    if (st.tab === 'log') {
+      UI.table($('#tbl'), {
+        columns: [
+          { label: 'When', sort: (c) => c.at, render: (c) => `<b style="white-space:nowrap">${esc(Kit.when(c.at))}</b><div class="xs muted" style="white-space:nowrap">${icon(c.direction === 'Incoming' ? 'phone-incoming' : 'phone-outgoing')} ${esc(c.direction)} · ${mmss(c.duration)}</div>` },
+          { label: 'Caller', sort: (c) => c.callerName, render: callerCell },
+          { label: 'Purpose', sort: (c) => c.purpose, render: (c) => `${esc(c.purpose)}${c.notes ? `<div class="xs muted" style="max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(c.notes)}</div>` : ''}` },
+          { label: 'Outcome', sort: (c) => c.outcome, render: (c) => outB(c.outcome) + (c.apptId ? `<div class="xs mono muted">${esc((Appt.appt(c.apptId) || {}).no || '')}</div>` : '') },
+          { label: 'Agent', sort: (c) => c.agent, render: (c) => `<span class="small">${esc(c.agent)}</span>` },
+          { label: 'Follow-up', render: (c) => c.followUp ? Kit.status(c.followUp.status === 'Done' ? 'Done' : c.followUp.due < T ? 'Overdue' : 'Open') : '<span class="mute">-</span>' },
+        ],
+        rows: () => db.appointmentsCalls, search: (c) => [c.no, c.callerName, c.callerMobile, digits(c.callerMobile), c.notes, c.agent, (Kit.pt(c.patientId) || {}).mrn].join(' '),
+        searchPlaceholder: 'Search caller, mobile, notes or call number',
+        filters: [{ label: 'Purpose', options: PURPOSES.map(x => [x, x]), test: (c, v) => c.purpose === v }, { label: 'Outcome', options: OUTCOMES.map(x => [x, x]), test: (c, v) => c.outcome === v }, { label: 'Agent', options: AGENTS.map(x => [x, x]), test: (c, v) => c.agent === v }],
+        onRow: callDrawer, pageSize: 10, empty: 'No calls logged', emptyIcon: 'headset',
+      });
+    } else {
+      UI.table($('#tbl'), {
+        columns: [
+          { label: 'Due', sort: (c) => c.followUp.due, render: (c) => `<b style="${c.followUp.status === 'Open' && c.followUp.due < T ? 'color:var(--error)' : ''}">${esc(c.followUp.due === T ? 'Today' : fmtDate(c.followUp.due))}</b>` },
+          { label: 'Task', sort: (c) => c.followUp.task, render: (c) => `${esc(c.followUp.task)}<div class="xs muted">From ${esc(c.no)} · ${esc(c.purpose)}</div>` },
+          { label: 'Caller', render: callerCell },
+          { label: 'Assignee', sort: (c) => c.followUp.assignee, render: (c) => esc(c.followUp.assignee) },
+          { label: 'Status', sort: (c) => c.followUp.status, render: (c) => Kit.status(c.followUp.status === 'Done' ? 'Done' : c.followUp.due < T ? 'Overdue' : 'Open') },
+          { label: '', cls: 'actions', render: (c) => c.followUp.status === 'Open' ? `<button class="btn xs" data-done="${c.id}" ${canAdd ? '' : 'disabled title="Needs Add permission"'}>${icon('check')} Mark done</button>` : `<span class="xs muted">${esc(c.followUp.doneAt ? fmtDate(c.followUp.doneAt) : '')}</span>` },
+        ],
+        rows: () => db.appointmentsCalls.filter(c => c.followUp), sort: 0,
+        search: (c) => [c.followUp.task, c.callerName, c.callerMobile, c.no].join(' '), searchPlaceholder: 'Search tasks or callers',
+        filters: [{ label: 'Status', options: [['Open', 'Open'], ['Done', 'Done']], test: (c, v) => c.followUp.status === v }, { label: 'Assignee', options: AGENTS.map(x => [x, x]), test: (c, v) => c.followUp.assignee === v }],
+        onRow: callDrawer, pageSize: 10, empty: 'No follow-up tasks', emptyIcon: 'list-todo',
+        afterDraw: (tb) => $$('[data-done]', tb).forEach(b => b.addEventListener('click', () => markDone(db.appointmentsCalls.find(c => c.id === b.dataset.done)))),
+      });
+    }
+  }
+  function markDone(c, after) {
+    const before = c.followUp.status;
+    c.followUp.status = 'Done'; c.followUp.doneAt = Appt.stamp(); c.followUp.doneBy = Appt.meName();
+    save(); audit('Call follow-up completed', 'Call', { id: c.id, label: c.no }, [['Follow-up', before, 'Done']]);
+    toast('Follow-up marked done'); refresh(); after && after();
+  }
+
+  /* ---------- Lookup panel ---------- */
+  function matchPatients(q) {
+    const s = q.trim().toLowerCase(), d = digits(q);
+    if (s.length < 2) return [];
+    return db.patients.filter(p => (d.length >= 3 && digits(p.mobile).includes(d)) || (!/^\+?\d[\d\s]*$/.test(s) && [p.name, p.mrn, p.civilId].join(' ').toLowerCase().includes(s)) || (p.mrn || '').toLowerCase() === s).slice(0, 6);
+  }
+  function upcoming(pid) { return db.appointmentsBookings.filter(a => a.patientId === pid && a.date >= T && /Booked|Confirmed|Arrived/.test(a.status)).sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time)); }
+  function historyHtml(pid, limit) {
+    const cs = callsOf(pid).slice(0, limit || 6);
+    return cs.length ? `<div class="timeline">${cs.map(c => `<div class="tl-item ${c.outcome === 'Booked' ? 'ok' : c.outcome === 'Callback needed' ? 'warn' : c.outcome === 'No answer' ? 'err' : ''}"><b>${esc(c.purpose)}</b> ${outB(c.outcome)}<div class="meta">${esc(fmtDate(c.at))} · ${esc(c.agent)} · ${esc(c.direction)}</div>${c.notes ? `<div class="small">${esc(c.notes)}</div>` : ''}</div>`).join('')}</div>` : '<div class="small muted">No previous calls.</div>';
+  }
+  function drawLookup() {
+    const host = $('#lkOut'), q = st.lookup;
+    if (q.trim().length < 2) { host.innerHTML = `<div class="card-pad small muted">${icon('info')} Type the caller's mobile number to see the matched patient, upcoming appointments and call history.</div>`; return; }
+    const ms = matchPatients(q);
+    if (!ms.length) {
+      const calls = db.appointmentsCalls.filter(c => !c.patientId && digits(c.callerMobile).includes(digits(q)) && digits(q).length >= 3);
+      host.innerHTML = `<div class="empty" style="padding:24px 16px">${icon('user-x')}<b>No registered patient</b><span>${calls.length ? calls.length + ' earlier call' + (calls.length === 1 ? '' : 's') + ' from this number.' : 'Log the call as an unregistered caller.'}</span><div style="margin-top:10px"><button class="btn sm" id="lkLog" ${canAdd ? '' : 'disabled'}>${icon('phone-incoming')} Log call</button></div></div>`;
+      const b = $('#lkLog'); b && b.addEventListener('click', () => logCall({ mobile: /\d/.test(q) ? q : '' }));
+      return;
+    }
+    if (ms.length > 1) {
+      host.innerHTML = `<div class="small muted" style="padding:10px 16px 0">${ms.length} patients match. Confirm identity with name and Civil ID.</div><div class="list-rows pad">${ms.map(p => `<div data-pk="${p.id}" style="cursor:pointer">${Kit.patientCell(p, esc(p.mobile || ''))}<span class="grow"></span>${icon('chevron-right', 'mute')}</div>`).join('')}</div>`;
+      $$('[data-pk]', host).forEach(r => r.addEventListener('click', () => showPatient(Kit.pt(r.dataset.pk))));
+      return;
+    }
+    showPatient(ms[0]);
+  }
+  function showPatient(p) {
+    const host = $('#lkOut'), up = upcoming(p.id);
+    host.innerHTML = `<div class="grid g3" style="gap:0"><div class="card-pad" style="border-inline-end:1px solid var(--line)">${Kit.patientCell(p, esc(p.mobile || ''))}
+        <div class="small muted" style="margin-top:6px">${esc(Kit.payerLabel(p))} · Prefers ${esc(p.lang || 'English')}</div>
+        <div class="row wrap" style="gap:6px;margin-top:10px"><button class="btn sm primary" id="lkLog" ${canAdd ? '' : 'disabled title="Needs Add permission"'}>${icon('phone-incoming')} Log call</button>
+        <button class="btn sm" id="lkBook" ${can('appointments.book.slot', 'add') ? '' : 'disabled title="Needs Add permission on Appointment Book"'}>${icon('calendar-plus')} Book</button>
+        <button class="btn sm" id="lkPrint" ${canPrint ? '' : 'disabled title="Needs Print permission"'}>${icon('printer')} History</button></div></div>
+      <div class="card-pad" style="border-inline-end:1px solid var(--line)"><div class="small b" style="margin-bottom:8px">Upcoming appointments</div>
+        ${up.length ? up.slice(0, 4).map(a => `<div class="row small" style="gap:8px;margin-bottom:6px;cursor:pointer" data-ap="${a.id}">${Appt.statusBadge(a.status)}<span class="grow">${esc(a.date === T ? 'Today' : Appt.dayLabel(a.date))} ${esc(a.time)} · ${esc(Kit.docName(a.doctorId))}</span>${icon('chevron-right', 'mute')}</div>`).join('') : '<div class="small muted">None.</div>'}</div>
+      <div class="card-pad"><div class="small b" style="margin-bottom:10px">Call history (${callsOf(p.id).length})</div>${historyHtml(p.id, 4)}</div></div>`;
+    $('#lkLog').addEventListener('click', () => logCall({ patientId: p.id, mobile: p.mobile }));
+    $('#lkBook').addEventListener('click', () => Appt.bookDrawer({ patientId: p.id, source: 'Call centre', onDone: () => showPatient(p) }));
+    $('#lkPrint').addEventListener('click', () => printHistory(p));
+    $$('[data-ap]', host).forEach(r => r.addEventListener('click', () => Appt.detailDrawer(Appt.appt(r.dataset.ap), () => showPatient(p))));
+  }
+  function printHistory(p) {
+    const cs = callsOf(p.id);
+    Kit.printDoc({ title: 'Call history · ' + p.name, sub: 'Call centre history',
+      html: `<p><b>${esc(p.name)}</b> · ${esc(p.mrn)} · ${esc(p.mobile || '')}</p><table><thead><tr><th>Date</th><th>Call</th><th>Direction</th><th>Purpose</th><th>Outcome</th><th>Agent</th><th>Notes</th></tr></thead><tbody>${cs.map(c => `<tr><td>${esc(fmtDate(c.at))}</td><td>${esc(c.no)}</td><td>${esc(c.direction)}</td><td>${esc(c.purpose)}</td><td>${esc(c.outcome)}</td><td>${esc(c.agent)}</td><td>${esc(c.notes)}</td></tr>`).join('') || '<tr><td colspan="7">No calls</td></tr>'}</tbody></table>` });
+    audit('Call history printed', 'Patient', { id: p.id, label: p.mrn }, []);
+  }
+
+  /* ---------- Log a call ---------- */
+  function logCall(o) {
+    o = o || {};
+    const s = { direction: 'Incoming', patientId: o.patientId || '' };
+    drawer({ title: 'Log call', sub: 'Search the caller by mobile number and match to a patient.', wide: true,
+      body: `<div class="err-summary hidden"></div><div class="form-grid">
+          <div class="field"><label>Direction</label><div class="seg" id="cDir"><button type="button" class="on" data-dir="Incoming">${icon('phone-incoming')}Incoming</button><button type="button" data-dir="Outgoing">${icon('phone-outgoing')}Outgoing</button></div></div>
+          ${field({ id: 'cMob', label: 'Caller mobile', req: true, value: o.mobile || '', placeholder: '+965 9xxx xxxx', attrs: 'inputmode="tel"' })}
+          <div class="full" id="cMatch"></div>
+          <div class="field full hidden" id="cNameWrap"><label for="cName">Caller name<span class="req">*</span></label><input class="input" id="cName" maxlength="80"><div class="hint">The caller is not a registered patient.</div><div class="err hidden" data-err="cName"></div></div>
+          <div class="full hidden" id="cHist"></div>
+          <div class="section-t full">Call</div>
+          ${field({ id: 'cPurpose', label: 'Purpose', type: 'select', req: true, options: PURPOSES.map(x => [x, x]) })}
+          ${field({ id: 'cOutcome', label: 'Outcome', type: 'select', req: true, options: OUTCOMES.map(x => [x, x]), hint: 'Use "Save and book" to book in the same call.' })}
+          ${field({ id: 'cNotes', label: 'Notes', type: 'textarea', full: true, max: 500 })}
+          <div class="section-t full">Follow-up</div>
+          <label class="check full"><input type="checkbox" id="cFu"> Create a follow-up task</label>
+          <div class="full form-grid c3 hidden" id="cFuBox">
+            ${field({ id: 'cTask', label: 'Task', req: true, placeholder: 'For example: call back with the MRI result' })}
+            ${field({ id: 'cDue', label: 'Due date', type: 'date', req: true, value: T, attrs: `min="${T}"` })}
+            ${field({ id: 'cAsg', label: 'Assign to', type: 'select', req: true, value: Appt.meName(), placeholder: false, options: AGENTS.map(x => [x, x]) })}
+          </div></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><span class="grow"></span><button class="btn" id="cBook" disabled>${icon('calendar-plus')} Save and book</button><button class="btn primary" id="cSave" disabled>${icon('check')} Save call</button>`,
+      onMount: (el, close) => {
+        const mob = $('#cMob', el), saveB = $('#cSave', el), bookB = $('#cBook', el);
+        $$('[data-dir]', el).forEach(b => b.addEventListener('click', () => { s.direction = b.dataset.dir; $$('[data-dir]', el).forEach(x => x.classList.toggle('on', x === b)); }));
+        const drawMatch = () => {
+          const host = $('#cMatch', el), d = digits(mob.value);
+          const ms = d.length >= 4 ? db.patients.filter(p => digits(p.mobile).includes(d)).slice(0, 5) : [];
+          if (s.patientId) {
+            const p = Kit.pt(s.patientId);
+            host.innerHTML = `<div class="row" style="gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--soft)">${icon('user-round-check')}${Kit.patientCell(p, esc(p.mobile || ''))}<span class="grow"></span><button class="btn xs" type="button" id="cUn">Not this patient</button></div>`;
+            $('#cUn', el).addEventListener('click', () => { s.patientId = ''; s.unlinked = true; drawMatch(); sync(); });
+          } else if (ms.length && !s.unlinked) {
+            host.innerHTML = `<div class="small muted" style="margin-bottom:6px">${ms.length} patient${ms.length > 1 ? 's' : ''} with this mobile. Confirm with name and Civil ID.</div><div class="card"><div class="list-rows pad">${ms.map(p => `<div data-m="${p.id}" style="cursor:pointer">${Kit.patientCell(p, esc(p.mobile || ''))}<span class="grow"></span><button class="btn xs" type="button">Select</button></div>`).join('')}</div></div>
+              <button class="link-btn small" type="button" id="cNone" style="margin-top:6px">The caller is not one of these patients</button>`;
+            $$('[data-m]', host).forEach(r => r.addEventListener('click', () => { s.patientId = r.dataset.m; drawMatch(); sync(); }));
+            $('#cNone', el).addEventListener('click', () => { s.unlinked = true; drawMatch(); sync(); });
+          } else host.innerHTML = d.length >= 4 ? `<div class="banner info">${icon('user-x')}<span>No registered patient with this mobile. Enter the caller name.</span></div>` : '';
+          const unreg = !s.patientId && d.length >= 4 && (!ms.length || s.unlinked);
+          $('#cNameWrap', el).classList.toggle('hidden', !unreg);
+          const h = $('#cHist', el);
+          h.classList.toggle('hidden', !s.patientId);
+          if (s.patientId) { const up = upcoming(s.patientId); h.innerHTML = `<div class="grid g2"><div class="card card-pad"><div class="small b" style="margin-bottom:8px">Recent calls</div>${historyHtml(s.patientId, 3)}</div><div class="card card-pad"><div class="small b" style="margin-bottom:8px">Upcoming appointments</div>${up.length ? up.slice(0, 4).map(a => `<div class="small" style="margin-bottom:6px">${Appt.statusBadge(a.status)} ${esc(a.date === T ? 'Today' : Appt.dayLabel(a.date))} ${esc(a.time)} · ${esc(Kit.docName(a.doctorId))} <span class="mono muted">${esc(a.no)}</span></div>`).join('') : '<div class="small muted">None.</div>'}</div></div>`; }
+        };
+        const valid = () => {
+          const d = digits(mob.value);
+          const who = s.patientId || ($('#cName', el).value.trim().length >= 2 && !$('#cNameWrap', el).classList.contains('hidden'));
+          const fu = !$('#cFu', el).checked || ($('#cTask', el).value.trim().length >= 3 && $('#cDue', el).value);
+          return d.length >= 8 && who && $('#cPurpose', el).value && fu;
+        };
+        const sync = () => { const v = valid(); saveB.disabled = !(v && $('#cOutcome', el).value); bookB.disabled = !(v && s.patientId && can('appointments.book.slot', 'add')); bookB.title = can('appointments.book.slot', 'add') ? (s.patientId ? '' : 'Match the caller to a patient first') : 'Needs Add permission on Appointment Book'; };
+        mob.addEventListener('input', () => { if (s.patientId && !digits(Kit.pt(s.patientId).mobile).includes(digits(mob.value))) s.patientId = ''; s.unlinked = false; drawMatch(); sync(); });
+        $('#cFu', el).addEventListener('change', (e) => { $('#cFuBox', el).classList.toggle('hidden', !e.target.checked); sync(); });
+        $$('input,select,textarea', el).forEach(i => i.addEventListener('input', sync));
+        $$('select', el).forEach(i => i.addEventListener('change', sync));
+        drawMatch(); sync();
+        const build = (outcome) => {
+          const errs = {};
+          if (!showErrors(el, errs)) return null;
+          const p = s.patientId ? Kit.pt(s.patientId) : null;
+          const c = { id: UI.uid('cl'), no: Kit.nextNo('CALL-26-', db.appointmentsCalls), at: Appt.stamp(), direction: s.direction, callerMobile: mob.value.trim(), callerName: p ? p.name : $('#cName', el).value.trim(), patientId: p ? p.id : '',
+            purpose: $('#cPurpose', el).value, outcome: outcome || $('#cOutcome', el).value, agent: Appt.meName(), duration: 120 + (Date.now() % 180), notes: $('#cNotes', el).value.trim(), apptId: '', followUp: null };
+          if ($('#cFu', el).checked) c.followUp = { task: $('#cTask', el).value.trim(), due: $('#cDue', el).value, assignee: $('#cAsg', el).value, status: 'Open', doneAt: '' };
+          db.appointmentsCalls.unshift(c); save();
+          audit('Call logged', 'Call', { id: c.id, label: c.no }, [['Caller', '', c.callerName], ['Purpose', '', c.purpose], ['Outcome', '', c.outcome]]);
+          return c;
+        };
+        saveB.addEventListener('click', () => { const c = build(); if (!c) return; close(); toast('Call ' + c.no + ' logged'); refresh(); });
+        bookB.addEventListener('click', () => {
+          const c = build($('#cOutcome', el).value || 'Callback needed'); if (!c) return; close();
+          Appt.bookDrawer({ patientId: c.patientId, source: 'Call centre', onDone: (a) => {
+            const before = c.outcome; c.apptId = a.id; c.outcome = 'Booked'; c.notes = (c.notes ? c.notes + ' ' : '') + `Booked ${a.no} for ${a.date} ${a.time}.`;
+            save(); audit('Call outcome updated', 'Call', { id: c.id, label: c.no }, [['Outcome', before, 'Booked'], ['Appointment', '', a.no]]); refresh();
+          } });
+          refresh();
+        });
+      } });
+  }
+
+  /* ---------- Call detail ---------- */
+  function callDrawer(c) {
+    const a = c.apptId ? Appt.appt(c.apptId) : null, p = c.patientId ? Kit.pt(c.patientId) : null;
+    drawer({ title: 'Call ' + c.no, sub: `${outB(c.outcome)} ${esc(c.direction)} · ${esc(fmtDate(c.at))}`, wide: true,
+      body: `${p ? Kit.patientBanner(p) : `<div class="banner warn">${icon('user-x')}<span>Unregistered caller: <b>${esc(c.callerName)}</b>, ${esc(c.callerMobile)}</span></div>`}
+        <div class="grid g2" style="margin-top:14px">
+          <div class="card card-pad"><dl class="kv tight"><dt>Mobile</dt><dd>${esc(c.callerMobile)}</dd><dt>Purpose</dt><dd>${esc(c.purpose)}</dd><dt>Outcome</dt><dd>${outB(c.outcome)}</dd><dt>Agent</dt><dd>${esc(c.agent)}</dd><dt>Duration</dt><dd>${mmss(c.duration)}</dd><dt>Notes</dt><dd>${esc(c.notes || '-')}</dd>
+            ${a ? `<dt>Appointment</dt><dd><button class="link-btn" id="cdAp">${esc(a.no)}</button> ${Appt.statusBadge(a.status)}<div class="small muted">${esc(Appt.dayLabel(a.date))} ${esc(a.time)} · ${esc(Kit.docName(a.doctorId))}</div></dd>` : ''}</dl></div>
+          <div class="card card-pad"><div class="small b" style="margin-bottom:8px">Follow-up task</div>${c.followUp ? `<dl class="kv tight"><dt>Task</dt><dd>${esc(c.followUp.task)}</dd><dt>Due</dt><dd>${esc(fmtDate(c.followUp.due))}</dd><dt>Assignee</dt><dd>${esc(c.followUp.assignee)}</dd><dt>Status</dt><dd>${Kit.status(c.followUp.status === 'Done' ? 'Done' : c.followUp.due < T ? 'Overdue' : 'Open')}</dd></dl>
+            ${c.followUp.status === 'Open' ? `<button class="btn sm" id="cdDone" style="margin-top:10px" ${canAdd ? '' : 'disabled title="Needs Add permission"'}>${icon('check')} Mark done</button>` : ''}` : '<div class="small muted">No follow-up.</div>'}</div>
+        </div>
+        ${p ? `<div class="card card-pad" style="margin-top:14px"><div class="small b" style="margin-bottom:10px">Call history for this patient</div>${historyHtml(p.id, 10)}</div>` : ''}`,
+      foot: `${p ? `<button class="btn" id="cdBook" ${can('appointments.book.slot', 'add') ? '' : 'disabled title="Needs Add permission on Appointment Book"'}>${icon('calendar-plus')} Book appointment</button>` : ''}<span class="grow"></span><button class="btn" data-close>Close</button>`,
+      onMount: (el, close) => {
+        const ap = $('#cdAp', el); ap && ap.addEventListener('click', () => { close(); Appt.detailDrawer(a, refresh); });
+        const dn = $('#cdDone', el); dn && dn.addEventListener('click', () => { close(); markDone(c); });
+        const bk = $('#cdBook', el); bk && bk.addEventListener('click', () => { close(); Appt.bookDrawer({ patientId: p.id, source: 'Call centre', onDone: refresh }); });
+      } });
+  }
+
+  function refresh() { drawKpis(); drawTabs(); drawTable(); drawLookup(); }
+  let tmr;
+  $('#lk').addEventListener('input', (e) => { clearTimeout(tmr); tmr = setTimeout(() => { st.lookup = e.target.value; drawLookup(); }, 150); });
+  $('#logCall').addEventListener('click', () => logCall({ mobile: /\d{4}/.test(st.lookup) ? st.lookup : '' }));
+  refresh();
+})();
+</script>
+</body>
+</html>

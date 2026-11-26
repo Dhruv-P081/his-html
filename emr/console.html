@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Consultation console · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-emr.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/emr.js"></script>
+<style>
+  .exam-row { display: grid; grid-template-columns: 220px auto minmax(0, 1fr); gap: 10px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .exam-row:last-child { border-bottom: 0; }
+  .vh-item { cursor: pointer; border-radius: 8px; padding: 6px 8px 10px; margin-inline-start: -8px; }
+  .vh-item:hover { background: var(--hover); }
+  .vh-item.cur { background: var(--sel); }
+  .chk li { display: flex; gap: 8px; align-items: center; padding: 4px 0; font-weight: 600; font-size: 13px; }
+  .chk li.ok { color: var(--success); } .chk li.no { color: var(--sub); }
+  .chk { list-style: none; padding: 0; margin: 0; }
+  @media (max-width: 900px) { .exam-row { grid-template-columns: 1fr; } }
+</style>
+<style>.con-tabs .tabs{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:thin}.con-tabs .tabs button{white-space:nowrap;flex:none}
+@media (max-width:1600px){.con-grid{grid-template-columns:minmax(0,1fr)!important}.con-grid>.stack{order:2;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));align-items:start;gap:16px}.con-tabs .tabs button{padding:10px 11px}.con-tabs .tabs button .ico{display:none}}</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, me, nowStamp, field } = UI;
+  const OPT = 'emr.consult.note';
+  const enc = Kit.enc(UI.param('enc'));
+  if (!enc) {
+    if (!UI.page({ opt: OPT, title: 'Consultation console', subtitle: 'Open a visit from the worklist or pick one below.' })) return;
+    const dr = EMR.actingDoctor();
+    const list = db.encounters.filter(e => (e.doctorId === dr.id && e.start.startsWith(db.TODAY) && e.type === 'OPD') || (e.type === 'IPD' && e.doctorId === dr.id && e.status !== 'Discharged'));
+    $('#page').innerHTML = `<div class="card"><div class="card-head"><h3>${icon('stethoscope')} Visits for ${esc(dr.name)}</h3><div class="actions"><a class="btn sm" href="${R('emr/index.html')}">Worklist</a></div></div>
+      ${list.length ? `<div class="list-rows pad">${list.map(e => `<div>${Kit.patientCell(Kit.pt(e.patientId))}<span class="grow"></span><span class="small muted">${esc(e.type)} ${esc(e.no)} · ${Kit.when(e.start)}</span>${Kit.status(EMR.visitStatus(e))}<a class="btn sm" href="${R('emr/console.html?enc=' + e.id)}">Open</a></div>`).join('')}</div>` : `<div class="empty">${icon('calendar-x')}<b>No visits today</b></div>`}</div>`;
+    return;
+  }
+  const p = Kit.pt(enc.patientId);
+  const dr = EMR.actingDoctor();
+  const canEdit = can(OPT, 'edit') || can(OPT, 'add'), canSign = can(OPT, 'verify'), canPrint = can(OPT, 'print');
+  if (!UI.page({ opt: OPT, title: 'Consultation console', wide: true, crumbs: [['Home', 'home.html'], ['Clinical EMR', 'emr/index.html'], ['Worklist', 'emr/index.html'], [p.name, null]],
+    subtitle: `${esc(enc.type)} ${esc(enc.no)} · ${Kit.when(enc.start)} · ${esc(Kit.docName(enc.doctorId))}${enc.type === 'IPD' ? ' · ' + esc(enc.reason || '') : ''}`,
+    actions: `<a class="btn" href="${R('emr/summary.html?pt=' + p.id)}">${icon('file-heart')} Clinical summary</a>${enc.type === 'IPD' ? `<a class="btn" href="${R('emr/inpatient.html?enc=' + enc.id)}">${icon('bed')} Rounds</a>` : ''}` })) return;
+
+  /* ---------- Note state ---------- */
+  const exOf = (t) => t.examText ? t.examText.split(',').map(x => x.trim()).filter(Boolean) : (t.exam || []);
+  const rosOf = (t) => t.rosText ? t.rosText.split(',').map(x => x.trim()).filter(Boolean) : (t.ros || []);
+  const specTpl = { Cardiology: 'TPL-CAR', Paediatrics: 'TPL-PED' };
+  let note = EMR.noteFor(enc.id) || { id: UI.uid('nn'), encounterId: enc.id, patientId: p.id, doctorId: dr.id, complaintCode: '', complaint: enc.complaint || enc.reason || '', onset: '', severity: '', hpi: '',
+    templateId: (db.emrTemplates.find(t => t.code === (specTpl[dr.specialty] || 'TPL-GEN')) || db.emrTemplates[0]).id, exam: {}, examNote: '', ros: {}, rosNote: '', diagnoses: [], subjective: '', objective: '', assessment: '', plan: '',
+    followUpDays: '', instructions: '', status: 'Draft', createdAt: nowStamp(), addenda: [] };
+  const ro = () => note.status === 'Signed' || !canEdit;
+  let savedAt = db.emrNotes.includes(note) ? note.updatedAt : '';
+  let tm;
+  function persist(now) {
+    if (ro()) return;
+    clearTimeout(tm);
+    const go = () => { if (!db.emrNotes.includes(note)) db.emrNotes.push(note); note.updatedAt = nowStamp(); savedAt = note.updatedAt; save(); drawFoot(); };
+    if (now) go(); else tm = setTimeout(go, 500);
+  }
+
+  /* ---------- Layout ---------- */
+  const visits = db.encounters.filter(e => e.patientId === p.id).sort((a, b) => b.start.localeCompare(a.start));
+  $('#page').innerHTML = `
+    ${Kit.patientBanner(p, enc, `<span class="badge b-info nodot">${icon('stethoscope')} ${esc(dr.name)}</span>`)}
+    <div id="alerts" class="stack tight" style="margin:12px 0"></div>
+    <div class="grid g-side-l con-grid" style="align-items:start">
+      <div class="stack">
+        <div class="card"><div class="card-head"><h3>${icon('history')} Visit history</h3><div class="actions"><span class="tag">${visits.length}</span></div></div><div class="card-pad" style="max-height:380px;overflow:auto"><div class="timeline">${visits.map(e => {
+          const n = EMR.noteFor(e.id); const dx = n && n.diagnoses && n.diagnoses[0] ? n.diagnoses[0] : e.diagnosis ? { code: e.diagnosis, name: (db.icd10.find(x => x.code === e.diagnosis) || {}).name || '' } : null;
+          return `<div class="tl-item vh-item ${e.id === enc.id ? 'cur' : ''} ${e.type === 'IPD' ? 'warn' : e.type === 'ER' ? 'err' : 'ok'}" data-v="${e.id}"><b>${Kit.day(e.start)}</b> <span class="tag">${esc(e.type)}</span>${e.id === enc.id ? ' <span class="badge b-info nodot">Current</span>' : ''}<div class="meta">${esc(Kit.docName(e.doctorId))} · ${esc((Kit.doc(e.doctorId) || {}).specialty || '')}</div><div class="small">${esc(e.complaint || e.reason || '')}</div>${dx ? `<div class="xs"><span class="mono">${esc(dx.code)}</span> ${esc(dx.name)}</div>` : ''}</div>`; }).join('')}</div></div></div>
+        <div class="card"><div class="card-head"><h3>${icon('list-checks')} Problems and medicines</h3></div><div class="card-pad stack tight" id="probs"></div></div>
+        <div class="card"><div class="card-head"><h3>${icon('flask-conical')} Recent results</h3><div class="actions"><a class="btn xs" href="${R('emr/summary.html?pt=' + p.id)}#labs">All</a></div></div><div id="recent"></div></div>
+      </div>
+      <div class="card" style="min-width:0"><div id="tabs" class="con-tabs" style="padding:0 10px"></div><div id="tb" class="card-pad" style="min-height:420px"></div>
+        <div class="sticky-foot" id="foot"></div></div>
+    </div>`;
+  $$('[data-v]').forEach(n => n.addEventListener('click', () => openVisit(n.dataset.v)));
+
+  function drawAlerts() {
+    const crit = db.orders.filter(o => o.patientId === p.id && EMR.isCritical(o) && !EMR.ackOf(o.id));
+    const al = (p.allergies || []).map(a => db.emrAllergies.find(x => x.name === a)).filter(Boolean);
+    $('#alerts').innerHTML = crit.map(o => `<div class="alert-cdss">${icon('siren')}<div class="grow">Critical value: ${esc(o.name)} · ${EMR.resultLine(o)} <span class="small">(${Kit.when(o.resultedAt)}, ${esc(o.no)})</span></div><button class="btn xs danger" data-ack="${o.id}" ${canEdit ? '' : 'disabled title="Needs Edit permission"'}>Acknowledge</button></div>`).join('')
+      + (al.length ? `<div class="alert-cdss warn">${icon('shield-alert')}<div class="grow">Allergy check is on for this patient: ${al.map(a => `${esc(a.name)} (${esc(a.severity)}${a.matches ? ', blocks ' + esc(a.matches.split(',').slice(0, 3).join(',')) + (a.matches.split(',').length > 3 ? '...' : '') : ''})`).join('; ')}</div></div>` : '');
+    $$('[data-ack]', $('#alerts')).forEach(b => b.addEventListener('click', () => EMR.ackResult(db.orders.find(o => o.id === b.dataset.ack), () => { drawAlerts(); drawSide(); })));
+  }
+  function drawSide() {
+    const meds = db.orders.filter(o => o.patientId === p.id && o.type === 'med' && /Active|Pending verification|Verified|Dispensed/.test(o.status) && Kit.addDays(String(o.orderedAt).slice(0, 10), +o.days || 0) >= db.TODAY);
+    const dxs = Array.from(new Set(db.emrNotes.filter(n => n.patientId === p.id && n.status === 'Signed').reduce((a, n) => a.concat((n.diagnoses || []).map(d => d.code + ' ' + d.name)), [])));
+    $('#probs').innerHTML = `<div class="section-t" style="margin:0">Problems</div><div class="chips">${(p.chronic || []).map(c => `<span class="chip">${esc(c)}</span>`).join('')}${dxs.slice(0, 4).map(d => `<span class="chip">${esc(d)}</span>`).join('')}${!(p.chronic || []).length && !dxs.length ? '<span class="small muted">None recorded</span>' : ''}</div>
+      <div class="section-t">Active medicines</div>${meds.length ? `<div class="list-rows">${meds.slice(0, 6).map(m => `<div>${icon('pill', 'mute')}<div class="grow cell-main"><b style="font-size:12.5px">${esc(m.name)}</b><span>${esc(m.dose || '')} · ${esc(m.frequency || '')}</span></div>${Kit.status(m.status)}</div>`).join('')}</div>` : '<span class="small muted">No active medicines</span>'}`;
+    const res = db.orders.filter(o => o.patientId === p.id && o.results).sort((a, b) => String(b.resultedAt).localeCompare(String(a.resultedAt))).slice(0, 5);
+    $('#recent').innerHTML = res.length ? `<div class="list-rows pad">${res.map(o => `<div style="display:block"><div class="row between" style="gap:8px"><b style="font-size:12.5px">${esc(o.name)}</b>${EMR.isCritical(o) ? '<span class="badge b-err">Critical</span>' : EMR.isAbnormal(o) ? '<span class="badge b-warn">Abnormal</span>' : ''}</div><div class="small" style="margin-top:2px">${(o.results || []).map(r => `${esc(r.name)} <b class="${r.critical || r.flag === 'H' ? 'flag-h' : r.flag === 'L' ? 'flag-l' : ''}">${esc(r.value)}</b>&nbsp;${esc(r.unit)}`).join(' · ')}</div><div class="xs mute">${Kit.when(o.resultedAt)}</div></div>`).join('')}</div>` : `<div class="empty" style="padding:20px">${icon('flask-conical')}<b>No results yet</b></div>`;
+  }
+
+  /* ---------- Tabs ---------- */
+  let cur = UI.param('tab') || 'cc';
+  const encOrders = () => db.orders.filter(o => o.encounterId === enc.id);
+  const rxNos = () => Array.from(new Set(encOrders().filter(o => o.type === 'med' && o.rxNo).map(o => o.rxNo)));
+  function drawTabs() {
+    Kit.tabs($('#tabs'), [{ id: 'cc', label: 'Complaint', icon: 'message-square-text' }, { id: 'vitals', label: 'Vitals', icon: 'activity' }, { id: 'exam', label: 'Exam', icon: 'scan-heart' },
+      { id: 'dx', label: 'Diagnosis', icon: 'tag', count: note.diagnoses.length }, { id: 'orders', label: 'Orders', icon: 'list-plus', count: encOrders().filter(o => o.type !== 'med' || !o.rxNo).length },
+      { id: 'rx', label: 'Prescription', icon: 'pill', count: rxNos().length }, { id: 'plan', label: 'Plan', icon: 'calendar-check' }, { id: 'docs', label: 'Documents', icon: 'paperclip', count: db.emrDocuments.filter(d => d.patientId === p.id).length },
+      { id: 'soap', label: 'SOAP and sign', icon: 'file-signature' }], cur, (t) => { cur = t; drawTab(); });
+  }
+  function bind(root) {
+    $$('[data-n]', root || $('#tb')).forEach(i => i.addEventListener(i.tagName === 'SELECT' ? 'change' : 'input', () => { note[i.dataset.n] = i.value; persist(); }));
+    if (ro()) $$('#tb [data-n], #tb [data-w]').forEach(x => { x.disabled = true; });
+  }
+  function drawTab() {
+    const tb = $('#tb');
+    const roBanner = note.status === 'Signed' ? `<div class="banner ok" style="margin-bottom:14px">${icon('badge-check')}<span>Signed by ${esc(note.signedBy)} on ${UI.fmtDate(note.signedAt)}. The note is locked; add an addendum on the SOAP tab. Orders and prescriptions can still be added.</span></div>` : !canEdit ? `<div class="banner warn" style="margin-bottom:14px">${icon('lock')}<span>Read-only: you need Edit permission on the Consultation Console.</span></div>` : '';
+    ({ cc: tabCc, vitals: tabVitals, exam: tabExam, dx: tabDx, orders: tabOrders, rx: tabRx, plan: tabPlan, docs: tabDocs, soap: tabSoap })[cur](tb, roBanner);
+  }
+
+  /* Complaint and HPI */
+  function tabCc(tb, rb) {
+    const mine = db.emrComplaints.filter(c => c.status !== 'Inactive').sort((a, b) => (b.specialty === dr.specialty) - (a.specialty === dr.specialty));
+    const tpls = db.emrNoteTemplates.filter(t => t.type === 'Consultation' && t.status !== 'Inactive' && (t.specialty === 'All' || t.specialty === dr.specialty || t.specialty === 'General'));
+    const cc = db.emrComplaints.find(c => c.code === note.complaintCode);
+    tb.innerHTML = `${rb}<div class="form-grid c3">
+      ${field({ id: 'ccCode', label: 'Chief complaint (master)', type: 'select', options: mine.map(c => [c.code, c.name + (c.specialty !== 'General' ? ' · ' + c.specialty : '')]), value: note.complaintCode, placeholder: 'Select from Chief Complaint Master' })}
+      ${field({ id: 'ccOnset', label: 'Onset and duration', value: note.onset, placeholder: 'For example: 3 days, sudden onset' })}
+      ${field({ id: 'ccSev', label: 'Severity', type: 'select', options: [['Mild', 'Mild'], ['Moderate', 'Moderate'], ['Severe', 'Severe']], value: note.severity })}
+      ${field({ id: 'ccText', label: 'Complaint in the patient\'s words', value: note.complaint, full: true, req: true, max: 200 })}
+      <div class="field full"><div class="row"><label for="ccHpi" class="grow" style="font-size:12px;font-weight:700;color:var(--sub)">History of present illness</label><select class="input sm" id="ccTpl" style="width:auto" data-w aria-label="Insert note template"><option value="">Insert note template</option>${tpls.map(t => `<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select></div>
+        <textarea class="input" id="ccHpi" data-n="hpi" maxlength="3000" style="min-height:180px" placeholder="Onset, character, radiation, associated symptoms, aggravating and relieving factors, previous treatment">${esc(note.hpi)}</textarea></div>
+      <div class="full" id="ccSug"></div></div>`;
+    const sug = () => { const c = db.emrComplaints.find(x => x.code === note.complaintCode); const ic = c && c.icd10 ? db.icd10.find(x => x.code === c.icd10) : null;
+      $('#ccSug').innerHTML = ic && !note.diagnoses.some(d => d.code === ic.code) ? `<div class="banner info">${icon('lightbulb')}<span class="grow">Suggested diagnosis for this complaint: <b>${esc(ic.code)}</b> ${esc(ic.name)}</span><button class="btn xs" id="sugAdd" data-w>Add as ${note.diagnoses.some(d => d.primary) ? 'secondary' : 'primary'}</button></div>` : '';
+      const b = $('#sugAdd'); if (b) { b.disabled = ro(); b.addEventListener('click', () => { note.diagnoses.push({ code: ic.code, name: ic.name, primary: !note.diagnoses.some(d => d.primary) }); persist(true); drawTabs(); sug(); toast('Diagnosis added'); }); } };
+    $('#ccCode').addEventListener('change', (e) => { note.complaintCode = e.target.value; const c = db.emrComplaints.find(x => x.code === note.complaintCode); if (c && !note.complaint) { note.complaint = c.name; $('#ccText').value = c.name; } persist(); sug(); });
+    $('#ccOnset').addEventListener('input', (e) => { note.onset = e.target.value; persist(); });
+    $('#ccSev').addEventListener('change', (e) => { note.severity = e.target.value; persist(); });
+    $('#ccText').addEventListener('input', (e) => { note.complaint = e.target.value; persist(); drawFoot(); });
+    $('#ccTpl').addEventListener('change', (e) => { const t = db.emrNoteTemplates.find(x => x.id === e.target.value); if (!t) return; note.hpi = (note.hpi ? note.hpi.trim() + '\n' : '') + t.body; $('#ccHpi').value = note.hpi; e.target.value = ''; persist(); });
+    bind(); if (ro()) $$('#tb input, #tb select, #tb textarea').forEach(x => x.disabled = true);
+    sug();
+  }
+
+  /* Vitals */
+  let vk = 'bp';
+  function tabVitals(tb, rb) {
+    const list = EMR.vitalsOf(p.id), last = list[list.length - 1];
+    const plaus = { temp: [30, 45], hr: [20, 250], sbp: [50, 260], dbp: [20, 160], rr: [4, 60], spo2: [50, 100], pain: [0, 10], weight: [0.5, 300], height: [30, 250] };
+    const canV = canEdit;
+    tb.innerHTML = `<div class="grid g2" style="align-items:start">
+      <div class="span-all"><div class="section-t" style="margin:0 0 8px">Latest ${last ? '· ' + Kit.when(last.at) + ' · ' + esc(last.by || '') : ''}</div>${EMR.vitalTiles(last)}</div>
+      <div><div class="row between" style="margin-bottom:6px"><div class="section-t" style="margin:0;flex:1">Trend</div><div id="vSeg"></div></div><div id="vChart"></div></div>
+      <div class="card"><div class="card-head"><h3>${icon('plus')} Capture vitals</h3><div class="actions"><span class="small muted">Vital Sign Parameter Master ranges</span></div></div><div class="card-pad">
+        <div class="err-summary hidden" style="margin-bottom:10px"></div>
+        <div class="form-grid">${EMR.VITALS.map(k => { const m = EMR.vp(k); return field({ id: 'v_' + k, label: `${esc(m.name)} (${esc(m.unit)})`, type: 'number', req: m.mandatory, hint: `Normal ${m.low}-${m.high}`, attrs: `step="${m.decimals ? '0.1' : '1'}" data-vk="${k}"` }); }).join('')}
+        <div class="field"><label>BMI</label><input class="input" id="vBmi" readonly></div></div>
+        <div class="row" style="margin-top:12px"><span class="small muted grow" id="vHint"></span><button class="btn primary" id="vSave" disabled ${canV ? '' : 'title="Needs Edit permission"'}>${icon('save')} Save vitals</button></div></div></div>
+      <div class="span-all"><div class="section-t" style="margin:4px 0 8px">Readings</div><div class="table-wrap"><table class="tbl compact"><thead><tr><th>Time</th><th>BP</th><th>HR</th><th>Temp</th><th>RR</th><th>SpO2</th><th>Pain</th><th>Weight</th><th>By</th></tr></thead><tbody>${list.slice(-10).reverse().map(v => {
+        const c = (k, val) => { const f = EMR.vitalFlag(k, v[k]); return `<td class="${f ? 'flag-h' : ''}">${val == null || val === '' ? '-' : esc(val)}</td>`; };
+        return `<tr><td class="small">${Kit.when(v.at)}</td><td class="${EMR.vitalFlag('sbp', v.sbp) || EMR.vitalFlag('dbp', v.dbp) ? 'flag-h' : ''}">${v.sbp}/${v.dbp}</td>${c('hr', v.hr)}${c('temp', v.temp)}${c('rr', v.rr)}${c('spo2', v.spo2)}${c('pain', v.pain)}<td>${v.weight || '-'}</td><td class="small muted">${esc(v.by || '')}</td></tr>`; }).join('') || `<tr><td colspan="9"><div class="empty">${icon('activity')}<b>No readings yet</b></div></td></tr>`}</tbody></table></div></div></div>`;
+    Kit.seg($('#vSeg'), [['bp', 'BP'], ['hr', 'HR'], ['temp', 'Temp'], ['spo2', 'SpO2'], ['rr', 'RR']], vk, (v) => { vk = v; $('#vChart').innerHTML = EMR.vitalsChart(p.id, vk); });
+    $('#vChart').innerHTML = EMR.vitalsChart(p.id, vk);
+    const check = () => {
+      const errs = {}; let filled = true;
+      EMR.VITALS.forEach(k => { const i = $('#v_' + k), v = i.value; const m = EMR.vp(k); i.classList.remove('bad');
+        if (v === '') { if (m.mandatory) filled = false; return; }
+        if (+v < plaus[k][0] || +v > plaus[k][1]) errs['v_' + k] = `${m.name} must be between ${plaus[k][0]} and ${plaus[k][1]}.`;
+        const f = EMR.vitalFlag(k, +v); i.style.color = f ? 'var(--error)' : ''; });
+      const w = +$('#v_weight').value, h = +$('#v_height').value; $('#vBmi').value = w && h ? (w / Math.pow(h / 100, 2)).toFixed(1) : '';
+      if (+$('#v_sbp').value && +$('#v_dbp').value && +$('#v_dbp').value >= +$('#v_sbp').value) errs.v_dbp = 'Diastolic must be lower than systolic.';
+      UI.showErrors(tb, errs);
+      const abn = EMR.VITALS.filter(k => $('#v_' + k).value !== '' && EMR.vitalFlag(k, +$('#v_' + k).value));
+      $('#vHint').textContent = !filled ? 'Fill the mandatory vitals.' : abn.length ? 'Out of range: ' + abn.map(k => EMR.vp(k).name).join(', ') + '.' : '';
+      $('#vSave').disabled = !canV || !filled || Object.keys(errs).length > 0;
+    };
+    $$('[data-vk]').forEach(i => i.addEventListener('input', check));
+    $('#vSave').addEventListener('click', () => {
+      const v = { id: 'vt_' + Math.random().toString(36).slice(2, 8), patientId: p.id, encounterId: enc.id, at: nowStamp(), by: me().displayName };
+      EMR.VITALS.forEach(k => { const x = $('#v_' + k).value; if (x !== '') v[k] = +x; });
+      db.vitals.push(v); save();
+      const abn = EMR.VITALS.filter(k => v[k] != null && EMR.vitalFlag(k, v[k]) === 'crit');
+      audit('Vitals recorded', 'Vitals', { id: v.id, label: p.name }, [['BP', '', v.sbp + '/' + v.dbp], ['HR', '', String(v.hr)]]);
+      toast(abn.length ? 'Vitals saved. Critical: ' + abn.map(k => EMR.vp(k).name).join(', ') : 'Vitals saved', abn.length ? 'err' : '');
+      drawTab();
+    });
+  }
+
+  /* Physical exam and system review */
+  function tabExam(tb, rb) {
+    const tpl = db.emrTemplates.find(t => t.id === note.templateId) || db.emrTemplates[0];
+    tb.innerHTML = `${rb}<div class="row wrap" style="margin-bottom:12px"><div class="field" style="min-width:280px"><label for="exTpl">Departmental template</label><select class="input" id="exTpl" data-w>${db.emrTemplates.map(t => `<option value="${t.id}" ${t.id === tpl.id ? 'selected' : ''} ${t.phase !== 'Phase 1' || t.status === 'Inactive' ? 'disabled' : ''}>${esc(t.name)}${t.phase !== 'Phase 1' ? ' (2nd phase)' : ''}</option>`).join('')}</select></div>
+        <span class="grow"></span><button class="btn sm" id="exAll" data-w>${icon('check-check')} Mark all normal</button></div>
+      <div class="stack">
+        <div><div class="section-t" style="margin:0 0 4px">Physical examination</div>${exOf(tpl).map((k, i) => { const v = note.exam[k] || {}; return `<div class="exam-row"><b class="small">${esc(k)}</b>
+          <div class="btn-group"><button class="btn xs ${v.st === 'N' ? 'on' : ''}" data-ex="${i}" data-st="N" data-w>Normal</button><button class="btn xs ${v.st === 'A' ? 'on' : ''}" data-ex="${i}" data-st="A" data-w>Abnormal</button></div>
+          <input class="input sm ${v.st === 'A' ? '' : 'hidden'}" data-ext="${i}" data-w value="${esc(v.text || '')}" placeholder="Describe the finding" aria-label="${esc(k)} finding"></div>`; }).join('')}
+          <div class="field" style="margin-top:10px"><label for="exNote">Examination notes</label><textarea class="input" id="exNote" data-n="examNote">${esc(note.examNote)}</textarea></div></div>
+        <div><div class="section-t" style="margin:0 0 8px">Review of systems</div><div class="hint" style="margin-bottom:8px">Tap a symptom the patient reports. Untapped items are recorded as denied.</div>
+          <div class="chips">${rosOf(tpl).map((k, i) => `<button class="chip ${note.ros[k] === 'Pos' ? 'sel' : ''}" data-ros="${i}" data-w>${note.ros[k] === 'Pos' ? icon('plus') : icon('minus')} ${esc(k)}</button>`).join('')}</div>
+          <div class="field" style="margin-top:12px"><label for="rosNote">System review notes</label><textarea class="input" id="rosNote" data-n="rosNote">${esc(note.rosNote)}</textarea></div>
+          <div style="margin-top:12px">${Kit.phase2('Specialty templates beyond the agreed three (OB/GYN, Dental, Ophthalmology) and the Form Builder are SOW V4 2nd phase.')}</div></div></div>`;
+    $('#exTpl').addEventListener('change', (e) => { note.templateId = e.target.value; note.exam = {}; note.ros = {}; persist(); drawTab(); });
+    $('#exAll').addEventListener('click', () => { exOf(tpl).forEach(k => { if (!note.exam[k] || note.exam[k].st !== 'A') note.exam[k] = { st: 'N', text: '' }; }); persist(); drawTab(); });
+    $$('[data-ex]').forEach(b => b.addEventListener('click', () => { const k = exOf(tpl)[+b.dataset.ex]; note.exam[k] = { st: b.dataset.st, text: (note.exam[k] || {}).text || '' }; persist(); drawTab(); }));
+    $$('[data-ext]').forEach(i => i.addEventListener('input', () => { const k = exOf(tpl)[+i.dataset.ext]; note.exam[k].text = i.value; persist(); }));
+    $$('[data-ros]').forEach(b => b.addEventListener('click', () => { const k = rosOf(tpl)[+b.dataset.ros]; note.ros[k] = note.ros[k] === 'Pos' ? 'Neg' : 'Pos'; persist(); drawTab(); }));
+    bind();
+  }
+
+  /* Diagnosis coding */
+  function tabDx(tb, rb) {
+    tb.innerHTML = `${rb}<div class="grid g2" style="align-items:start">
+      <div><div class="search">${icon('search')}<input class="input" id="dxQ" placeholder="Search ICD-10 by code or description" aria-label="Search ICD-10" data-w></div>
+        ${(p.chronic || []).length ? `<div class="row wrap" style="margin-top:10px"><span class="small muted">Known problems:</span>${p.chronic.map(c => `<button class="chip" data-q="${esc(c)}" data-w>${esc(c)}</button>`).join('')}</div>` : ''}
+        <div id="dxRes" class="card" style="margin-top:10px"></div></div>
+      <div><div class="section-t" style="margin:0 0 8px">Diagnoses for this visit</div><div id="dxList"></div>
+        <div style="margin-top:12px">${Kit.phase2('ICD-11 coding is SOW V4 2nd phase. ICD-10 is used now.')}</div></div></div>`;
+    const draw = () => {
+      const q = $('#dxQ').value.trim().toLowerCase();
+      const words = q.split(/\s+/).filter(Boolean);
+      const res = db.icd10.filter(x => x.status !== 'Inactive' && (!q || words.every(w => (x.code + ' ' + x.name).toLowerCase().includes(w)))).slice(0, 10);
+      $('#dxRes').innerHTML = res.length ? `<div class="list-rows pad">${res.map(x => { const has = note.diagnoses.some(d => d.code === x.code); return `<div><span class="mono b" style="min-width:70px">${esc(x.code)}</span><span class="grow small">${esc(x.name)}</span>${has ? '<span class="badge b-ok">Added</span>' : `<button class="btn xs" data-add="${esc(x.code)}" data-pr="1" data-w>Primary</button><button class="btn xs" data-add="${esc(x.code)}" data-w>Secondary</button>`}</div>`; }).join('')}</div>`
+        : `<div class="empty">${icon('search')}<b>No ICD-10 code found</b><span>Search by code (I10) or words (hypertension).</span></div>`;
+      $$('[data-add]', $('#dxRes')).forEach(b => b.addEventListener('click', () => {
+        const x = db.icd10.find(i => i.code === b.dataset.add), pr = !!b.dataset.pr || !note.diagnoses.some(d => d.primary);
+        if (pr) note.diagnoses.forEach(d => d.primary = false);
+        note.diagnoses.push({ code: x.code, name: x.name, primary: pr }); persist(true); drawTabs(); draw(); list();
+      }));
+      if (ro()) $$('#dxRes [data-w]').forEach(x => x.disabled = true);
+    };
+    const list = () => {
+      const ds = note.diagnoses.slice().sort((a, b) => b.primary - a.primary);
+      $('#dxList').innerHTML = ds.length ? `<div class="card"><div class="list-rows pad">${ds.map(d => `<div><span class="mono b" style="min-width:70px">${esc(d.code)}</span><span class="grow">${esc(d.name)}</span>${d.primary ? '<span class="badge b-info">Primary</span>' : `<button class="btn xs" data-pm="${esc(d.code)}" data-w>Make primary</button>`}<button class="icon-btn" data-rm="${esc(d.code)}" aria-label="Remove ${esc(d.code)}" data-w>${icon('trash-2')}</button></div>`).join('')}</div></div>`
+        : `<div class="card"><div class="empty">${icon('tag')}<b>No diagnosis yet</b><span>A primary diagnosis is needed to sign the note.</span></div></div>`;
+      $$('[data-pm]').forEach(b => b.addEventListener('click', () => { note.diagnoses.forEach(d => d.primary = d.code === b.dataset.pm); persist(true); list(); }));
+      $$('[data-rm]').forEach(b => b.addEventListener('click', () => { const was = note.diagnoses.find(d => d.code === b.dataset.rm); note.diagnoses = note.diagnoses.filter(d => d.code !== b.dataset.rm); if (was.primary && note.diagnoses[0]) note.diagnoses[0].primary = true; persist(true); drawTabs(); list(); draw(); }));
+      if (ro()) $$('#dxList [data-w]').forEach(x => x.disabled = true);
+      drawFoot();
+    };
+    $('#dxQ').addEventListener('input', draw);
+    $$('[data-q]').forEach(b => b.addEventListener('click', () => { $('#dxQ').value = b.dataset.q.split(' ')[0]; draw(); }));
+    if (ro()) $$('#tb [data-w]').forEach(x => x.disabled = true);
+    draw(); list();
+  }
+
+  /* CPOE */
+  function tabOrders(tb) {
+    const list = encOrders().filter(o => o.type !== 'med' || !o.rxNo);
+    tb.innerHTML = `<div class="row" style="margin-bottom:10px"><div class="section-t grow" style="margin:0">Orders for this visit</div><a class="btn sm" href="${R('emr/orders.html?pt=' + p.id)}">${icon('list')} Order tracking</a></div>
+      <div class="card" style="margin-bottom:16px">${EMR.ordersTable(list, { empty: 'No orders for this visit yet' })}</div>
+      <div class="section-t" style="margin:0 0 10px">New orders (CPOE)</div><div id="cp"></div>`;
+    EMR.cpoe($('#cp'), enc, { kinds: ['lab', 'rad', 'med', 'diet', 'care'], onDone: () => { drawTabs(); drawTab(); drawSide(); } });
+  }
+  /* e-Prescription */
+  let lastRx = '';
+  function tabRx(tb) {
+    const nos = rxNos();
+    const canRx = can('emr.consult.rx', 'print');
+    tb.innerHTML = `${lastRx ? `<div class="banner ok" style="margin-bottom:12px">${icon('circle-check')}<span class="grow">Prescription <b>${esc(lastRx)}</b> is signed and in the pharmacy queue.</span><button class="btn xs" id="rxPrintNew" ${canRx ? '' : 'disabled title="Needs Print permission"'}>${icon('printer')} Print</button></div>` : ''}
+      <div class="row" style="margin-bottom:10px"><div class="section-t grow" style="margin:0">Prescriptions for this visit</div><a class="btn sm" href="${R('emr/prescriptions.html')}">${icon('pill')} All prescriptions</a></div>
+      ${nos.length ? `<div class="grid g2" style="margin-bottom:16px">${nos.map(n => { const ls = EMR.rxLines(n); return `<div class="card"><div class="card-head"><h3>${icon('pill')} <span class="mono">${esc(n)}</span></h3><div class="actions">${Kit.status(ls.every(l => l.status === 'Cancelled') ? 'Cancelled' : ls[0].status)}<button class="btn xs" data-prx="${esc(n)}" ${canRx ? '' : 'disabled title="Needs Print permission"'}>${icon('printer')} Print</button></div></div><div class="list-rows pad">${ls.map(l => `<div><div class="grow cell-main"><b style="font-size:12.5px">${esc(l.name)}</b><span>${esc(l.dose)} · ${esc(l.frequency)} · ${l.days} days · qty ${l.qty}</span></div>${l.status === 'Cancelled' ? Kit.status('Cancelled') : ''}</div>`).join('')}</div></div>`; }).join('')}</div>` : `<div class="card" style="margin-bottom:16px"><div class="empty">${icon('pill')}<b>No prescription for this visit</b><span>Add medicines below. Allergy and duplicate checks run as you add.</span></div></div>`}
+      <div class="section-t" style="margin:0 0 10px">New e-prescription</div><div id="rxc"></div>`;
+    $$('[data-prx]').forEach(b => b.addEventListener('click', () => EMR.printRx(b.dataset.prx)));
+    const pn = $('#rxPrintNew'); if (pn) pn.addEventListener('click', () => EMR.printRx(lastRx));
+    EMR.cpoe($('#rxc'), enc, { kinds: ['med'], rx: true, title: 'Prescription lines', onDone: (c, rxNo) => { lastRx = rxNo; drawTabs(); drawTab(); drawSide(); } });
+  }
+
+  /* Plan, follow-up and referral */
+  function tabPlan(tb, rb) {
+    const fu = note.followUpDays ? Kit.addDays(db.TODAY, +note.followUpDays) : '';
+    const refs = db.emrReferrals.filter(r => r.encounterId === enc.id);
+    tb.innerHTML = `${rb}<div class="grid g2" style="align-items:start"><div class="form-grid">
+      <div class="field full"><label for="plPlan">Treatment plan</label><textarea class="input" id="plPlan" data-n="plan" maxlength="2000" style="min-height:140px" placeholder="Medicines, investigations, procedures, lifestyle advice">${esc(note.plan)}</textarea></div>
+      ${field({ id: 'plFu', label: 'Follow-up', type: 'select', options: [['0', 'No follow-up needed'], ['3', 'In 3 days'], ['7', 'In 1 week'], ['14', 'In 2 weeks'], ['28', 'In 4 weeks'], ['90', 'In 3 months']], value: note.followUpDays, placeholder: 'Select' })}
+      <div class="field"><label>Follow-up date</label><input class="input" readonly value="${fu && note.followUpDays !== '0' ? Kit.day(fu) : '-'}"></div>
+      <div class="field full"><label for="plIns">Patient instructions</label><textarea class="input" id="plIns" data-n="instructions" placeholder="Warning signs, diet, activity, when to come back">${esc(note.instructions)}</textarea></div></div>
+      <div class="stack">
+        <div class="card card-pad"><b>${icon('calendar-plus')} Follow-up appointment</b><div class="small muted" style="margin:4px 0 10px">Opens Appointment Scheduling with this patient and doctor.</div>
+          <a class="btn ${note.followUpDays && note.followUpDays !== '0' ? 'primary' : ''}" href="${R('appointments/book.html?pt=' + p.id + '&dr=' + dr.id + (fu ? '&date=' + fu : ''))}">${icon('calendar-plus')} Book follow-up${fu && note.followUpDays !== '0' ? ' for ' + Kit.day(fu) : ''}</a></div>
+        <div class="card"><div class="card-head"><h3>${icon('arrow-right-left')} Referrals from this visit</h3><div class="actions"><a class="btn sm" href="${R('emr/referrals.html?new=1&enc=' + enc.id)}" ${can('emr.referral', 'add') ? '' : 'aria-disabled="true"'}>${icon('plus')} Refer or consult</a></div></div>
+          ${refs.length ? `<div class="list-rows pad">${refs.map(r => `<div><div class="grow cell-main"><b>${esc(r.type)} to ${esc(r.toSpecialty)}</b><span>${esc(Kit.docName(r.toDoctorId))} · ${Kit.when(r.createdAt)}</span></div>${Kit.status(r.status === 'Pending' ? 'Pending' : r.status)}</div>`).join('')}</div>` : `<div class="empty" style="padding:22px">${icon('arrow-right-left')}<b>No referral yet</b></div>`}</div></div></div>`;
+    $('#plFu').addEventListener('change', (e) => { note.followUpDays = e.target.value; persist(true); drawTab(); });
+    bind(); if (ro()) $('#plFu').disabled = true;
+  }
+
+  /* Clinical documents */
+  function tabDocs(tb) {
+    const docs = db.emrDocuments.filter(d => d.patientId === p.id).sort((a, b) => b.at.localeCompare(a.at));
+    tb.innerHTML = `<div class="row" style="margin-bottom:10px"><div class="section-t grow" style="margin:0">Clinical documents</div><button class="btn primary sm" id="dAdd" ${canEdit ? '' : 'disabled title="Needs Edit permission"'}>${icon('paperclip')} Attach document</button></div>
+      <div class="card">${docs.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>Document</th><th>Type</th><th>Added</th><th>Status</th><th></th></tr></thead><tbody>${docs.map(d => `<tr><td><b>${icon('file-text', 'mute')} ${esc(d.title)}</b><div class="xs mute mono">${esc(d.file)} · ${esc(d.size)}</div></td><td>${esc(d.type)}</td><td class="small">${Kit.when(d.at)}<div class="xs mute">${esc(d.by)}</div></td><td>${Kit.status(d.status, d.status === 'Pending review' ? 'warn' : 'ok')}</td><td class="actions">${d.status === 'Pending review' ? `<button class="btn xs" data-rv="${d.id}" ${canEdit ? '' : 'disabled'}>${icon('check')} Mark reviewed</button>` : ''}</td></tr>`).join('')}</tbody></table></div>` : `<div class="empty">${icon('paperclip')}<b>No documents</b><span>Attach scanned reports, consents and external letters.</span></div>`}</div>`;
+    $$('[data-rv]').forEach(b => b.addEventListener('click', () => { const d = db.emrDocuments.find(x => x.id === b.dataset.rv); d.status = 'Final'; d.reviewedBy = me().displayName; save(); audit('Document reviewed', 'Clinical document', { id: d.id, label: d.title }, [['Status', 'Pending review', 'Final']]); toast('Marked as reviewed'); drawTab(); }));
+    $('#dAdd').addEventListener('click', () => UI.drawer({ title: 'Attach clinical document', sub: esc(p.name) + ' · ' + esc(enc.no),
+      body: `<div class="err-summary hidden"></div><div class="form-grid">${field({ id: 'dT', label: 'Title', req: true, full: true, max: 120 })}${field({ id: 'dType', label: 'Document type', type: 'select', req: true, options: ['Scanned document', 'External report', 'Consent', 'Referral letter', 'ECG', 'Imaging report', 'Medical certificate'].map(x => [x, x]) })}${field({ id: 'dSt', label: 'Status', type: 'select', options: [['Final', 'Final'], ['Pending review', 'Pending review']], value: 'Final', placeholder: false })}
+        <div class="field full"><label for="dF">File<span class="req">*</span></label><input class="input" type="file" id="dF" accept=".pdf,.jpg,.jpeg,.png"><div class="hint">PDF, JPG or PNG, up to 10 MB. Stored through the document service.</div><div class="err hidden" data-err="dF"></div></div></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="dGo" disabled>Attach</button>`,
+      onMount: (el, close) => {
+        const ok = () => { $('#dGo', el).disabled = !($('#dT', el).value.trim() && $('#dType', el).value && $('#dF', el).files.length); };
+        ['input', 'change'].forEach(ev => el.addEventListener(ev, ok));
+        $('#dGo', el).addEventListener('click', () => {
+          const f = $('#dF', el).files[0];
+          if (f.size > 10 * 1024 * 1024) { UI.showErrors(el, { dF: 'The file is larger than 10 MB.' }); return; }
+          const d = { id: UI.uid('dm'), patientId: p.id, encounterId: enc.id, title: $('#dT', el).value.trim(), type: $('#dType', el).value, file: f.name, size: Math.max(1, Math.round(f.size / 1024)) + ' KB', at: nowStamp(), by: me().displayName, status: $('#dSt', el).value };
+          db.emrDocuments.push(d); save(); audit('Document attached', 'Clinical document', { id: d.id, label: d.title + ' · ' + p.name }, [['File', '', d.file]]);
+          close(); toast('Document attached'); drawTabs(); drawTab();
+        });
+      } }));
+  }
+
+  /* SOAP note, record validation and signing */
+  function checks() {
+    const vNow = db.vitals.some(v => v.patientId === p.id && (v.encounterId === enc.id || String(v.at).startsWith(db.TODAY)));
+    return [
+      { ok: !!String(note.complaint || '').trim(), t: 'Chief complaint recorded', req: true },
+      { ok: vNow, t: 'Vitals recorded for this visit', req: false },
+      { ok: Object.keys(note.exam || {}).length > 0, t: 'Physical examination documented', req: false },
+      { ok: note.diagnoses.some(d => d.primary), t: 'Primary diagnosis (ICD-10) coded', req: true },
+      { ok: !!String(note.assessment || '').trim() && !!String(note.plan || '').trim(), t: 'Assessment and plan written', req: true },
+    ];
+  }
+  function build() {
+    const v = EMR.vitalsOf(p.id).slice(-1)[0];
+    const tpl = db.emrTemplates.find(t => t.id === note.templateId) || {};
+    const abn = Object.entries(note.exam || {}).filter(([, x]) => x.st === 'A').map(([k, x]) => `${k}: ${x.text || 'abnormal'}`);
+    const pos = Object.entries(note.ros || {}).filter(([, x]) => x === 'Pos').map(([k]) => k);
+    const ords = encOrders().filter(o => o.status !== 'Cancelled');
+    note.subjective = [note.complaint, note.onset ? 'Onset: ' + note.onset : '', note.severity ? 'Severity: ' + note.severity.toLowerCase() : '', note.hpi, pos.length ? 'ROS positive: ' + pos.join(', ') + '. Other systems negative.' : ''].filter(Boolean).join('. ').replace(/\.\./g, '.');
+    note.objective = [v ? `BP ${v.sbp}/${v.dbp}, HR ${v.hr}, T ${v.temp}, RR ${v.rr}, SpO2 ${v.spo2}%${v.weight ? ', weight ' + v.weight + ' kg' : ''}` : '', Object.keys(note.exam || {}).length ? (abn.length ? 'Exam (' + (tpl.name || '') + '): ' + abn.join('; ') : 'Exam (' + (tpl.name || '') + '): no abnormal findings') : '', note.examNote,
+      ords.filter(o => o.results).map(o => o.name + ': ' + (o.results || []).map(r => r.name + ' ' + r.value + (r.flag ? ' ' + r.flag : '')).join(', ')).join('; ')].filter(Boolean).join('. ');
+    note.assessment = note.diagnoses.slice().sort((a, b) => b.primary - a.primary).map(d => `${d.name} (${d.code})${d.primary ? '' : ', secondary'}`).join('; ') || note.assessment;
+    note.plan = [note.plan && !/^Orders:/.test(note.plan) ? note.plan.split('\nOrders:')[0] : '', ords.length ? 'Orders: ' + ords.map(o => o.name).join(', ') : '', note.followUpDays && note.followUpDays !== '0' ? 'Follow-up in ' + note.followUpDays + ' days.' : ''].filter(Boolean).join('\n');
+  }
+  function tabSoap(tb, rb) {
+    const cs = checks();
+    tb.innerHTML = `${rb}<div class="grid g-side" style="align-items:start"><div class="soap">
+      <div class="row"><span class="grow small muted">Build the note from the sections you filled, then edit as needed.</span><button class="btn sm" id="sBuild" data-w>${icon('wand-sparkles')} Build from sections</button></div>
+      ${[['subjective', 'S · Subjective'], ['objective', 'O · Objective'], ['assessment', 'A · Assessment'], ['plan', 'P · Plan']].map(([k, l]) => `<div><div class="s-l">${l}</div><textarea class="input" data-n="${k}" aria-label="${l}" maxlength="4000" style="min-height:${k === 'assessment' ? 70 : 110}px">${esc(note[k])}</textarea></div>`).join('')}
+      ${(note.addenda || []).length ? `<div><div class="s-l">Addenda</div>${note.addenda.map(a => `<div class="note-box" style="margin-bottom:6px">${esc(a.text)}<div class="xs mute">${esc(a.by)} · ${UI.fmtDate(a.at)}</div></div>`).join('')}</div>` : ''}
+      ${note.status === 'Signed' && canEdit ? `<div><div class="s-l">Add addendum</div><textarea class="input" id="adTxt" placeholder="Late entry or correction. The signed note is not changed."></textarea><div class="row" style="margin-top:6px"><span class="grow"></span><button class="btn sm" id="adGo" disabled>${icon('plus')} Add addendum</button></div></div>` : ''}
+      </div>
+      <div class="stack"><div class="card card-pad"><b>${icon('shield-check')} Record validation</b><ul class="chk" style="margin-top:8px">${cs.map(c => `<li class="${c.ok ? 'ok' : 'no'}">${icon(c.ok ? 'circle-check' : c.req ? 'circle-x' : 'circle-dashed')} ${esc(c.t)}${c.req ? '' : ' <span class="xs mute">(recommended)</span>'}</li>`).join('')}</ul></div>
+        <div class="card card-pad"><b>${icon('info')} Clinical decision support</b><ul class="chk" style="margin-top:8px"><li class="ok">${icon('circle-check')} Allergy check</li><li class="ok">${icon('circle-check')} Duplicate order alert</li><li class="ok">${icon('circle-check')} Critical value flag</li><li class="no">${icon('calendar-clock')} Drug-drug interaction (2nd phase)</li></ul></div></div></div>`;
+    $('#sBuild').addEventListener('click', () => { build(); persist(true); drawTab(); toast('Note built from the sections'); });
+    const ad = $('#adTxt'); if (ad) { ad.addEventListener('input', () => { $('#adGo').disabled = ad.value.trim().length < 3; }); $('#adGo').addEventListener('click', () => { note.addenda = note.addenda || []; note.addenda.push({ text: ad.value.trim(), by: me().displayName, at: nowStamp() }); save(); audit('Note addendum added', 'Clinical note', { id: note.id, label: p.name + ' · ' + enc.no }, [['Addendum', '', ad.value.trim().slice(0, 80)]]); toast('Addendum added'); drawTab(); }); }
+    $$('[data-n]').forEach(i => i.addEventListener('input', () => { note[i.dataset.n] = i.value; persist(); drawFoot(); }));
+    if (ro()) $$('#tb [data-n], #tb [data-w]').forEach(x => x.disabled = true);
+  }
+
+  function drawFoot() {
+    const cs = checks(), ready = cs.filter(c => c.req).every(c => c.ok);
+    const signed = note.status === 'Signed';
+    $('#foot').innerHTML = `${Kit.status(signed ? 'Signed' : 'Draft', signed ? 'ok' : 'neutral')}<span class="small muted grow">${signed ? 'Signed ' + UI.fmtDate(note.signedAt) + ' by ' + esc(note.signedBy) : savedAt ? 'Draft saved ' + Kit.time(savedAt) : 'Not saved yet'}${!signed && !ready ? ' · To sign: ' + cs.filter(c => c.req && !c.ok).map(c => c.t.charAt(0).toLowerCase() + c.t.slice(1)).join(', ') : ''}</span>
+      <button class="btn" id="fPrint" ${canPrint ? '' : 'disabled title="Needs Print permission"'}>${icon('printer')} Print note</button>
+      ${signed ? '' : `<button class="btn" id="fSave" ${canEdit ? '' : 'disabled title="Needs Edit permission"'}>${icon('save')} Save draft</button><button class="btn primary" id="fSign" ${canSign && ready ? '' : `disabled title="${canSign ? 'Complete the required items first' : 'Needs Verify permission'}"`}>${icon('file-signature')} Sign note</button>`}`;
+    $('#fPrint').addEventListener('click', () => { Kit.printDoc({ title: 'Consultation note', sub: p.name + ' · ' + enc.no, html: EMR.noteHtml(Object.assign({}, note)) }); audit('Clinical note printed', 'Clinical note', { id: note.id, label: p.name + ' · ' + enc.no }, []); });
+    const fs = $('#fSave'); if (fs) fs.addEventListener('click', () => { persist(true); toast('Draft saved'); });
+    const sg = $('#fSign'); if (sg) sg.addEventListener('click', () => {
+      if (!note.subjective && !note.objective) build();
+      UI.confirm({ title: 'Sign consultation note?', tone: 'primary', icon: 'file-signature', confirm: 'Sign note', body: `You sign the note for <b>${esc(p.name)}</b> (${esc(enc.no)}) as ${esc(dr.name)}. After signing, the note is locked and changes need an addendum.`,
+        impact: [`${note.diagnoses.length} diagnosis code(s): ${esc(note.diagnoses.map(d => d.code).join(', '))}`, `${encOrders().filter(o => o.status !== 'Cancelled').length} order(s) on this visit`, enc.type === 'OPD' ? 'The visit is marked as completed in the patient tracker' : 'The note is added to the inpatient record'],
+        onConfirm: () => { if (!db.emrNotes.includes(note)) db.emrNotes.push(note); note.status = 'Signed'; note.signedAt = nowStamp(); note.signedBy = me().displayName; note.doctorId = dr.id; note.updatedAt = note.signedAt; save();
+          audit('Clinical note signed', 'Clinical note', { id: note.id, label: p.name + ' · ' + enc.no }, [['Status', 'Draft', 'Signed'], ['Primary diagnosis', '', (note.diagnoses.find(d => d.primary) || {}).code || '']]);
+          toast('Note signed'); drawFoot(); drawTab(); } });
+    });
+  }
+
+  function openVisit(id) {
+    const e = Kit.enc(id), n = EMR.noteFor(id);
+    if (id === enc.id) return;
+    UI.drawer({ title: `${e.type} visit ${e.no}`, sub: `${Kit.day(e.start)} · ${esc(Kit.docName(e.doctorId))}`, wide: true,
+      body: `${n ? `<div class="print-sheet" style="margin-bottom:14px">${EMR.noteHtml(n)}</div>` : `<div class="banner info" style="margin-bottom:14px">${icon('info')}<span>No consultation note for this visit. Reason: ${esc(e.complaint || e.reason || '-')}</span></div>`}
+        <div class="section-t" style="margin:0 0 8px">Orders</div><div class="card">${EMR.ordersTable(db.orders.filter(o => o.encounterId === id))}</div>`,
+      foot: `<button class="btn" data-close>Close</button><a class="btn" href="${R('emr/console.html?enc=' + id)}">Open in console</a>` });
+  }
+
+  drawAlerts(); drawSide(); drawTabs(); drawTab(); drawFoot();
+})();
+</script>
+</body>
+</html>

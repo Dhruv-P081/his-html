@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Finance overview · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-finance.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/finance.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, esc, icon, $, R, can } = UI;
+  if (!UI.page({ module: 'finance', title: 'Finance overview', subtitle: 'Revenue, collections, receivables, payables and cash for Tibbi Health Holding (SOW V4 Module 11). Amounts in KWD.',
+    actions: `${can('finance.journal', 'view') ? `<a class="btn" href="${R('finance/journals.html')}">${icon('book-open')} Journals</a>` : ''}${can('finance.bill.invoice', 'view') ? `<a class="btn primary" href="${R('finance/billing.html')}">${icon('receipt-text')} Patient billing</a>` : ''}` })) return;
+  const T = Fin.T, K = (n) => Fin.money(n);
+  const inv = (db.invoices || []);
+  const todayInv = inv.filter(v => v.date === T && v.status !== 'Cancelled' && v.status !== 'Draft');
+  const revToday = Kit.sumBy(todayInv, v => v.total);
+  const nov = Fin.plTotals({ from: '2026-11-01', to: T });
+  const oct = Fin.plTotals({ from: '2026-10-01', to: '2026-10-31' });
+  const dayNo = +T.slice(8);
+  const pace = oct.rev ? Math.round(100 * (nov.rev / dayNo * 30 - oct.rev) / oct.rev) : 0;
+  const rcp = db.financeReceipts.filter(r => r.date === T && r.status === 'Posted');
+  const coll = Kit.sumBy(rcp, r => r.amount);
+  const byMode = Kit.groupBy(rcp, r => r.mode);
+  const arP = Fin.arItems('Patient'), arI = Fin.arItems('Insurer'), ar = arP.concat(arI);
+  const arTot = Kit.sumBy(ar, x => x.out), ar90 = Kit.sumBy(ar.filter(x => x.days > 90), x => x.out);
+  const openBills = db.financeBills.filter(b => Fin.billOut(b) > 0);
+  const due7 = openBills.filter(b => b.dueDate <= Kit.addDays(T, 7));
+  const overdue = openBills.filter(b => b.dueDate < T);
+  const bal = Fin.balances({ to: T });
+  const cash = Kit.sumBy(Fin.CASH_CODES, c => Fin.netOf(bal[(Fin.AC(c) || {}).id]));
+  const bank = Kit.sumBy(['1110', '1120'], c => Fin.netOf(bal[(Fin.AC(c) || {}).id]));
+
+  const months = db.financePeriods.filter(p => p.code < Fin.periodOf(T));
+  const trend = months.map(p => Fin.plTotals({ from: p.from, to: p.to < T ? p.to : T }));
+  const bk = [0, 0, 0, 0, 0]; ar.forEach(x => { bk[x.bucket] += x.out; });
+  const appr = Fin.approvals();
+  const batches = db.financeBatches.filter(b => b.status !== 'Posted').sort((a, b) => b.date.localeCompare(a.date));
+  const me = Fin.meName();
+
+  $('#page').innerHTML = `
+    <div class="grid g3" style="margin-bottom:16px">
+      ${Kit.kpi('Revenue today', K(revToday), { icon: 'receipt-text', foot: `${todayInv.length} invoices billed today · not yet posted`, href: R('finance/billing.html') })}
+      ${Kit.kpi('Revenue this month', K(nov.rev), { icon: 'trending-up', delta: (pace >= 0 ? '+' : '') + pace + '%', foot: ' run rate vs October (posted to GL)', href: R('finance/statements.html?v=pl') })}
+      ${Kit.kpi('Collections today', K(coll), { icon: 'banknote', foot: Object.keys(byMode).length ? Object.entries(byMode).map(([m, l]) => `${m} ${Fin.amt(Kit.sumBy(l, r => r.amount))}`).join(' · ') : 'No receipts yet today', href: R('finance/cash.html') })}
+      ${Kit.kpi('Receivables outstanding', K(arTot), { icon: 'hand-coins', foot: `${Math.round(100 * ar90 / (arTot || 1))}% older than 90 days · ${arI.length + arP.length} open items`, href: R('finance/receivables.html') })}
+      ${Kit.kpi('Payables due in 7 days', K(Kit.sumBy(due7, Fin.billOut)), { icon: 'file-text', foot: `${overdue.length} bills overdue (${Fin.amt(Kit.sumBy(overdue, Fin.billOut))})`, href: R('finance/payables.html') })}
+      ${Kit.kpi('Cash position', K(cash), { icon: 'landmark', foot: `Banks ${Fin.amt(bank)} · cash and card clearing ${Fin.amt(cash - bank)}`, href: R('finance/cash.html?tab=book') })}
+    </div>
+    <div class="grid g-side" style="margin-bottom:16px">
+      <div class="card"><div class="card-head"><h3>${icon('chart-line')} Profit and loss trend, FY2026</h3><div class="actions"><span class="small muted">KWD millions · January to October</span></div></div><div class="card-pad">
+        ${Kit.lineChart({ labels: months.map(p => p.name.slice(0, 3)), series: [{ name: 'Revenue', color: '#2F6BC5', values: trend.map(t => Math.round(t.rev / 10000) / 100) }, { name: 'Expenses', color: '#E0670E', values: trend.map(t => Math.round(t.exp / 10000) / 100) }, { name: 'Net profit', color: '#0E9F6E', values: trend.map(t => Math.round(t.profit / 10000) / 100) }], min: 0, height: 220, title: 'Revenue, expenses and net profit by month' })}</div></div>
+      <div class="card"><div class="card-head"><h3>${icon('hourglass')} Receivables ageing</h3><div class="actions"><a class="btn xs" href="${R('finance/receivables.html')}">Open ${icon('arrow-right')}</a></div></div><div class="card-pad">
+        ${Kit.barList(Fin.BUCKETS.map((b, i) => [b + ' days', Math.round(bk[i]), i >= 3 ? 'err' : i === 2 ? 'warn' : 'ok']), { fmt: (v) => Fin.amt(v).replace(/\.\d+$/, '') })}
+        <div class="row small" style="margin-top:12px"><span class="muted grow">Insurers</span><b>${Fin.amt(Kit.sumBy(arI, x => x.out))}</b></div>
+        <div class="row small"><span class="muted grow">Patients</span><b>${Fin.amt(Kit.sumBy(arP, x => x.out))}</b></div>
+        <div class="section-t" style="margin:18px 0 10px">Largest insurer and corporate balances</div>
+        ${Kit.barList(Fin.ageing('Insurer').slice(0, 6).map(r => [r.name, Math.round(r.total)]), { fmt: (v) => Fin.amt(v).replace(/\.\d+$/, '') })}</div></div>
+    </div>
+    <div class="grid g2">
+      <div class="card"><div class="card-head"><h3>${icon('stamp')} Waiting for approval</h3><div class="actions"><span class="tag">${appr.length}</span></div></div>
+        ${appr.length ? `<div class="table-wrap"><table class="tbl compact"><thead><tr><th>Item</th><th>Raised by</th><th class="num">Amount</th><th></th></tr></thead><tbody>
+        ${appr.slice(0, 9).map(a => `<tr class="click" onclick="location.href='${R(a.href)}'"><td><div class="cell-main"><b>${esc(a.type)} <span class="mono">${esc(a.ref)}</span></b><span>${esc(a.desc || '')}</span></div></td><td>${esc(a.by)}${a.by === me ? ' <span class="badge b-warn nodot">You</span>' : ''}<div class="xs muted">${esc(Kit.when(a.at) || Kit.day(a.at))}</div></td><td class="num">${a.amount != null ? Fin.amt(a.amount) : '<span class="muted">-</span>'}</td><td>${icon('chevron-right', 'mute')}</td></tr>`).join('')}
+        </tbody></table></div>` : `<div class="empty">${icon('circle-check')}<b>Nothing waiting</b><span>All approvals are done.</span></div>`}</div>
+      <div class="card"><div class="card-head"><h3>${icon('workflow')} Auto-posting exceptions</h3><div class="actions"><a class="btn xs" href="${R('finance/auto-posting.html')}">Monitor ${icon('arrow-right')}</a></div></div>
+        ${batches.length ? `<div class="list-rows pad">${batches.map(b => `<div class="click" style="cursor:pointer" onclick="location.href='${R('finance/auto-posting.html?id=' + b.id)}'">${icon(b.status === 'Failed' ? 'circle-x' : 'clock', b.status === 'Failed' ? '' : 'mute')}<div class="grow"><b>${esc(b.source)} · ${esc(Fin.brShort(b.branchId))} · ${esc(Kit.day(b.date))}</b><div class="small muted">${b.status === 'Failed' ? esc((Fin.batchErrors(b)[0] || {}).msg || 'Run failed') : 'Scheduled ' + esc(Kit.time(b.scheduled || '') || 'tonight')}</div></div>${Kit.status(b.status)}</div>`).join('')}</div>`
+        : `<div class="empty">${icon('circle-check')}<b>All batches posted</b></div>`}
+        <div class="card-foot">${Kit.phase2('Fixed asset management, budgeting and forecasting, and automatic bank feed reconciliation are SOW V4 2nd phase scope. Depreciation is posted from a recurring voucher until then.')}</div></div>
+    </div>`;
+})();
+</script>
+</body>
+</html>

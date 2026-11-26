@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Goods receipt (GRN) · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-material.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/material.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, drawer, confirm, field, showErrors, nowStamp, fmtDate, param } = UI;
+  const M = Material, OPT = 'material.grn';
+  if (!UI.page({ opt: OPT, title: 'Goods receipt (GRN)', subtitle: 'Receive deliveries against purchase orders, record batch and expiry, print barcode labels and post to stock.',
+    actions: M.btn({ id: 'newGrn', cls: 'primary', icon: 'package-plus', label: 'New GRN', allow: can(OPT, 'add'), why: 'Needs Add permission' }) })) return;
+  const list = () => db.materialGRNs;
+  const po = (id) => db.materialPOs.find(p => p.id === id) || {};
+  const val = (g) => M.total(g.lines, 'qty', 'cost');
+  const awaiting = () => db.materialPOs.filter(p => /Approved|Partially received/.test(p.status));
+  const canPost = can(OPT, 'verify');
+
+  $('#page').innerHTML = `<div class="grid g4" style="margin-bottom:16px" id="kpis"></div>
+    <div class="grid g-side-l">
+      <div class="card"><div class="card-head"><div><h3>${icon('truck')} Expected deliveries</h3><div class="xs muted" style="margin-top:2px">Approved POs with open quantity</div></div></div><div id="await"></div></div>
+      <div><div id="tabs" style="margin-bottom:12px"></div><div id="tbl"></div></div>
+    </div>`;
+  let tab = 'today';
+  const TABS = [['today', 'Today', g => g.date === db.TODAY], ['Draft', 'Draft', g => g.status === 'Draft'], ['Posted', 'Posted', g => g.status === 'Posted'], ['all', 'All', () => true]];
+  const drawTabs = () => Kit.tabs($('#tabs'), TABS.map(([id, label, f]) => ({ id, label, count: list().filter(f).length })), tab, (t) => { tab = t; t1.redraw(); });
+  const drawKpis = () => {
+    const td = list().filter(g => g.date === db.TODAY);
+    $('#kpis').innerHTML = Kit.kpi('GRNs today', td.length, { icon: 'package-check', foot: Kit.money(Kit.sumBy(td.filter(g => g.status === 'Posted'), val)) + ' posted today' })
+      + Kit.kpi('Drafts to post', list().filter(g => g.status === 'Draft').length, { icon: 'file-clock', foot: canPost ? 'You can post' : 'Needs Verify permission to post' })
+      + Kit.kpi('POs awaiting delivery', awaiting().length, { icon: 'truck', foot: awaiting().filter(p => p.deliveryDate < db.TODAY).length + ' late' })
+      + Kit.kpi('Received this month', Kit.money(Kit.sumBy(list().filter(g => g.status === 'Posted' && g.date.slice(0, 7) === db.TODAY.slice(0, 7)), val)), { icon: 'calendar', foot: list().filter(g => g.status === 'Posted' && g.date.slice(0, 7) === db.TODAY.slice(0, 7)).length + ' GRNs' });
+    const aw = awaiting().sort((a, b) => a.deliveryDate.localeCompare(b.deliveryDate));
+    $('#await').innerHTML = aw.length ? `<div class="list-rows pad">${aw.map(p => { const open = Kit.sumBy(p.lines, l => l.qty - (l.received || 0)); return `<div><div class="grow"><div class="row wrap" style="gap:6px"><span class="mono b nw">${esc(p.no)}</span>${M.st(p.status)}</div><div class="small muted">${esc(M.vendorName(p.vendorId))}</div><div class="xs ${p.deliveryDate < db.TODAY ? '' : 'muted'}" style="${p.deliveryDate < db.TODAY ? 'color:var(--error);font-weight:700' : ''}">Due ${fmtDate(p.deliveryDate)} · ${Kit.num(open)} units open</div></div>${M.btn({ cls: 'sm', icon: 'package-check', label: 'Receive', data: `data-po="${p.id}"`, allow: can(OPT, 'add'), why: 'Needs Add permission' })}</div>`; }).join('')}</div>`
+      : `<div class="empty">${icon('truck')}<b>No deliveries expected</b><span>Approved purchase orders appear here.</span></div>`;
+    $$('[data-po]', $('#await')).forEach(b => b.addEventListener('click', () => create(b.dataset.po)));
+  };
+  const t1 = UI.table($('#tbl'), {
+    columns: [
+      { label: 'GRN no.', sort: g => g.no, render: g => `<span class="mono b nw">${esc(g.no)}</span><div class="xs muted">${fmtDate(g.date)}</div>` },
+      { label: 'PO / vendor', sort: g => M.vendorName(g.vendorId), render: g => `<span class="mono">${esc(po(g.poId).no)}</span><div class="small">${esc(M.vendorName(g.vendorId))}</div>` },
+      { label: 'Delivery note', render: g => `<span class="mono small">${esc(g.deliveryNote)}</span>` },
+      { label: 'Lines', render: g => `${g.lines.length}<div class="xs muted">${Kit.num(Kit.sumBy(g.lines, l => l.qty))} units</div>` },
+      { label: 'Value', cls: 'num', sort: g => val(g), render: g => `<span class="num nw">${Kit.money(val(g))}</span>` },
+      { label: 'Status', sort: g => g.status, render: g => M.st(g.status) + (g.postedBy ? `<div class="xs muted">${esc(g.postedBy)}</div>` : '') },
+    ],
+    rows: () => list().filter(TABS.find(t => t[0] === tab)[2]).slice().sort((a, b) => b.no.localeCompare(a.no)),
+    search: g => [g.no, po(g.poId).no, M.vendorName(g.vendorId), g.deliveryNote, g.lines.map(l => M.itemLabel(l.itemId) + ' ' + l.batch).join(' ')].join(' '),
+    searchPlaceholder: 'Search GRN, PO, vendor, item or batch',
+    filters: [{ label: 'Store', options: M.storeOpts(OPT, true), test: (g, v) => g.warehouseId === v }],
+    onRow: open, empty: 'No goods receipts in this view', emptyIcon: 'package-check',
+  });
+  const refresh = () => { drawTabs(); drawKpis(); t1.redraw(); };
+  drawTabs(); drawKpis();
+
+  function post(g) {
+    const p = po(g.poId);
+    g.lines.forEach(l => {
+      M.addStock(l.itemId, g.warehouseId, l.batch, l.expiry, l.qty, l.cost);
+      M.addReceipt({ date: g.date, itemId: l.itemId, warehouseId: g.warehouseId, batch: l.batch, qty: l.qty, price: l.cost, source: g.no });
+      const pl = p.lines.find(x => x.id === l.lineId || x.itemId === l.itemId); if (pl) pl.received = (pl.received || 0) + l.qty;
+    });
+    const before = p.status;
+    p.status = p.lines.every(l => (l.received || 0) >= l.qty) ? 'Received' : 'Partially received';
+    g.status = 'Posted'; g.postedBy = M.meName(); g.postedAt = nowStamp();
+    save();
+    audit('GRN posted', 'Goods receipt', { id: g.id, label: g.no }, [['Status', 'Draft', 'Posted'], ['PO ' + p.no, before, p.status], ['Stock value', '', Kit.money(val(g))]]);
+  }
+  function printGrn(g) {
+    M.docPrint({ title: 'Goods received note ' + g.no, heading: 'GOODS RECEIVED NOTE', left: [['Vendor', M.vendorName(g.vendorId)], ['PO no.', po(g.poId).no], ['Delivery note', g.deliveryNote]], right: [['GRN no.', g.no], ['Date', fmtDate(g.date)], ['Store', M.whName(g.warehouseId)], ['Status', g.status]],
+      columns: ['#', 'Item', 'Batch', 'Expiry', 'Qty', 'Unit cost', 'Amount'], rows: g.lines.map((l, i) => [i + 1, M.itemLabel(l.itemId), l.batch, fmtDate(l.expiry), Kit.num(l.qty), Kit.money(l.cost, false), Kit.money(l.qty * l.cost, false)]),
+      foot: ['', '', '', '', '', 'Total KWD', Kit.money(val(g), false)], sign: ['Received by: ' + (g.receivedBy || ''), 'Posted by: ' + (g.postedBy || '-'), 'Quality check'] });
+  }
+
+  function open(g) {
+    const p = po(g.poId);
+    drawer({ title: g.no, sub: `${esc(M.vendorName(g.vendorId))} · ${M.st(g.status)}`, wide: true,
+      body: `${g.status === 'Draft' ? `<div class="banner warn" style="margin-bottom:12px">${icon('file-clock')}<span>Draft receipt. Stock is not updated until the GRN is posted.</span></div>` : `<div class="banner ok" style="margin-bottom:12px">${icon('circle-check')}<span>Posted by ${esc(g.postedBy)} on ${fmtDate(g.postedAt)}. Stock in ${esc(M.whName(g.warehouseId))} was increased.</span></div>`}
+        <div class="card card-pad" style="margin-bottom:14px">${M.kv([['Purchase order', `<a class="mono" href="${R('material/po.html?id=' + p.id)}">${esc(p.no)}</a> ${M.st(p.status)}`], ['Vendor', esc(M.vendorName(g.vendorId))], ['Store', esc(M.whName(g.warehouseId))], ['Delivery note', esc(g.deliveryNote)], ['Received by', esc(g.receivedBy) + ' · ' + fmtDate(g.date)]])}</div>
+        <div class="card"><div class="card-head"><h3>${icon('list')} Lines received</h3></div><div class="table-wrap"><table class="tbl compact"><thead><tr><th>Item</th><th>Batch</th><th>Expiry</th><th class="num">Qty</th><th class="num">Unit cost</th><th class="num">Amount</th></tr></thead><tbody>
+          ${g.lines.map(l => `<tr><td>${M.itemCell(l.itemId)}</td><td class="mono nw">${esc(l.batch)}</td><td>${fmtDate(l.expiry)} ${M.expTone(l.expiry) ? M.st(M.expTone(l.expiry)) : ''}</td><td class="num">${Kit.num(l.qty)}</td><td class="num">${Kit.money(l.cost, false)}</td><td class="num">${Kit.money(l.qty * l.cost, false)}</td></tr>`).join('')}
+        </tbody><tfoot><tr><td colspan="5" style="text-align:end"><b>Total</b></td><td class="num"><b>${Kit.money(val(g))}</b></td></tr></tfoot></table></div></div>`,
+      foot: `${M.btn({ id: 'dLbl', icon: 'barcode', label: 'Print barcode labels', allow: can(OPT, 'print'), why: 'Needs Print permission' })}${M.btn({ id: 'dPrint', icon: 'printer', label: 'Print GRN', allow: can(OPT, 'print'), why: 'Needs Print permission' })}
+        <span class="grow"></span><button class="btn" data-close>Close</button>
+        ${g.status === 'Draft' ? M.btn({ id: 'dPost', cls: 'primary', icon: 'package-check', label: 'Post to stock', allow: canPost, why: 'Needs Verify permission' }) : ''}`,
+      onMount: (el, close) => {
+        $('#dLbl', el).addEventListener('click', () => M.printLabels(g.lines.map(l => ({ itemId: l.itemId, batch: l.batch, expiry: l.expiry, note: g.no })), 'Barcode labels ' + g.no));
+        $('#dPrint', el).addEventListener('click', () => printGrn(g));
+        const pb = $('#dPost', el);
+        if (pb) pb.addEventListener('click', () => confirm({ title: 'Post ' + g.no + ' to stock?', tone: 'primary', icon: 'package-check', confirm: 'Post GRN', body: 'Posting cannot be undone. Use a purchase return for goods sent back.',
+          impact: [`${Kit.num(Kit.sumBy(g.lines, l => l.qty))} units added to ${esc(M.whName(g.warehouseId))}`, `Stock value ${Kit.money(val(g))}`, `PO ${esc(p.no)} received quantities are updated`],
+          onConfirm: () => { post(g); toast(g.no + ' posted to stock'); close(); refresh(); } }));
+      } });
+  }
+
+  /* ---------- New GRN against a PO ---------- */
+  function create(poId) {
+    const p0 = poId ? po(poId) : null;
+    drawer({ title: 'New goods receipt', sub: 'Receive all or part of the open quantity. Each line needs a batch and expiry.', wide: true,
+      body: `<div class="err-summary hidden"></div><div class="form-grid c4">
+        ${field({ id: 'gPo', label: 'Purchase order', type: 'select', options: awaiting().map(p => [p.id, p.no + ' · ' + M.vendorName(p.vendorId)]), value: p0 ? p0.id : '', req: true })}
+        ${field({ id: 'gDn', label: 'Vendor delivery note no.', req: true, max: 30, placeholder: 'e.g. DN-55120' })}
+        ${field({ id: 'gDate', label: 'Received on', type: 'date', value: db.TODAY, req: true, attrs: `max="${db.TODAY}"` })}
+        ${field({ id: 'gWh', label: 'Store', value: '', readonly: true })}</div>
+        <div class="section-t" style="margin-top:16px">Lines</div><div id="gLines"><div class="empty">${icon('package')}<b>Choose a purchase order</b></div></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><span class="grow"></span><button class="btn" id="gDraft" disabled>${icon('save')} Save draft</button>${M.btn({ id: 'gPost', cls: 'primary', icon: 'package-check', label: 'Save and post', allow: canPost, why: 'Needs Verify permission' })}`,
+      onMount: (el, close) => {
+        let rows = [];
+        const draw = () => {
+          const p = po($('#gPo', el).value);
+          $('#gWh', el).value = p.id ? M.whName(p.warehouseId) : '';
+          if (!p.id) { rows = []; $('#gLines', el).innerHTML = `<div class="empty">${icon('package')}<b>Choose a purchase order</b></div>`; check(); return; }
+          const inDraft = (l) => Kit.sumBy(list().filter(g => g.status === 'Draft' && g.poId === p.id), g => Kit.sumBy(g.lines.filter(x => x.lineId === l.id), x => x.qty));
+          rows = p.lines.filter(l => l.qty - (l.received || 0) - inDraft(l) > 0).map(l => ({ lineId: l.id, itemId: l.itemId, open: l.qty - (l.received || 0) - inDraft(l), ordered: l.qty, received: (l.received || 0) + inDraft(l), qty: l.qty - (l.received || 0) - inDraft(l), batch: '', expiry: '', cost: l.price, on: true }));
+          $('#gLines', el).innerHTML = `<div class="table-wrap"><table class="tbl compact"><thead><tr><th></th><th>Item</th><th class="num">Ordered</th><th class="num">Received or in draft</th><th class="num">Open</th><th style="width:100px">Receive now</th><th style="width:140px">Batch</th><th style="width:150px">Expiry</th></tr></thead><tbody>
+            ${rows.map((r, i) => `<tr data-i="${i}"><td><input type="checkbox" data-k="on" checked aria-label="Receive line ${i + 1}"></td><td>${M.itemCell(r.itemId, Kit.money(r.cost))}</td><td class="num">${Kit.num(r.ordered)}</td><td class="num">${Kit.num(r.received)}</td><td class="num b">${Kit.num(r.open)}</td>
+              <td><input class="input" type="number" min="1" max="${r.open}" data-k="qty" value="${r.qty}" aria-label="Quantity, line ${i + 1}"></td><td><input class="input mono" data-k="batch" maxlength="20" placeholder="Batch / lot" aria-label="Batch, line ${i + 1}"></td><td><input class="input" type="date" data-k="expiry" min="${Kit.addDays(db.TODAY, 1)}" aria-label="Expiry, line ${i + 1}"></td></tr>`).join('')}
+            </tbody></table></div><div class="small muted" style="margin-top:8px">${icon('info')} Partial receipt is allowed. The PO stays open for the balance. Quantity cannot exceed the open quantity.</div><div id="gWarn"></div>`;
+          $$('[data-k]', $('#gLines', el)).forEach(inp => inp.addEventListener('input', () => { const r = rows[+inp.closest('tr').dataset.i]; const k = inp.dataset.k; r[k] = k === 'on' ? inp.checked : k === 'qty' ? Number(inp.value) : inp.value.trim(); check(); }));
+          check();
+        };
+        const problems = () => {
+          const errs = {}; const use = rows.filter(r => r.on);
+          if (!$('#gPo', el).value) errs.gPo = 'Choose a purchase order.';
+          if (!$('#gDn', el).value.trim()) errs.gDn = 'Enter the vendor delivery note number.';
+          if (!use.length && rows.length) errs.gL = 'Tick at least one line to receive.';
+          use.forEach((r, i) => {
+            const n = M.item(r.itemId).code;
+            if (!(r.qty > 0)) errs['q' + i] = n + ': quantity must be above zero.'; else if (r.qty > r.open) errs['q' + i] = n + ': quantity is more than the open quantity (' + r.open + ').';
+            if (!r.batch) errs['b' + i] = n + ': batch number is required.';
+            if (!r.expiry) errs['e' + i] = n + ': expiry date is required.'; else if (r.expiry <= db.TODAY) errs['e' + i] = n + ': the expiry date has passed. Reject the line instead.';
+          });
+          return errs;
+        };
+        const check = () => {
+          const ok = !Object.keys(problems()).length && rows.length;
+          $('#gDraft', el).disabled = !ok; const pb = $('#gPost', el); if (canPost) pb.disabled = !ok;
+          const near = rows.filter(r => r.on && r.expiry && r.expiry > db.TODAY && r.expiry <= Kit.addDays(db.TODAY, 180));
+          const w = $('#gWarn', el); if (w) w.innerHTML = near.length ? `<div class="banner warn" style="margin-top:8px">${icon('triangle-alert')}<span>${near.map(r => esc(M.item(r.itemId).code)).join(', ')} expire within 6 months. Check the vendor's shelf-life commitment before accepting.</span></div>` : '';
+        };
+        const store = (doPost) => {
+          if (!showErrors(el, problems())) return;
+          const p = po($('#gPo', el).value);
+          const g = { id: UI.uid('mgr'), no: M.docNo('GRN-26-', 'materialGRNs'), date: $('#gDate', el).value, poId: p.id, vendorId: p.vendorId, warehouseId: p.warehouseId, deliveryNote: $('#gDn', el).value.trim(), status: 'Draft', receivedBy: M.meName(), postedBy: '', postedAt: '',
+            lines: rows.filter(r => r.on).map(r => ({ lineId: r.lineId, itemId: r.itemId, qty: r.qty, batch: r.batch.toUpperCase(), expiry: r.expiry, cost: r.cost })) };
+          db.materialGRNs.push(g); save(); audit('GRN created', 'Goods receipt', { id: g.id, label: g.no }, [['PO', '', p.no], ['Lines', '', String(g.lines.length)]]);
+          if (doPost) post(g);
+          toast(doPost ? g.no + ' posted. Stock updated.' : g.no + ' saved as draft'); close(); tab = 'today'; refresh();
+          if (doPost && can(OPT, 'print')) M.printLabels(g.lines.map(l => ({ itemId: l.itemId, batch: l.batch, expiry: l.expiry, note: g.no })), 'Barcode labels ' + g.no);
+        };
+        $('#gPo', el).addEventListener('change', draw);
+        $('#gDn', el).addEventListener('input', check);
+        $('#gDraft', el).addEventListener('click', () => store(false));
+        $('#gPost', el).addEventListener('click', () => store(true));
+        draw();
+      } });
+  }
+  $('#newGrn').addEventListener('click', () => create(null));
+  if (param('po') && can(OPT, 'add')) create(param('po'));
+  M.openFromQuery(list(), open);
+})();
+</script>
+</body>
+</html>

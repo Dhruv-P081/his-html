@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Patient billing · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<style>.nw{white-space:nowrap}</style>
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-finance.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/finance.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, drawer, confirm, field, showErrors, uid, nowStamp } = UI;
+  const OPT = 'finance.bill.invoice';
+  if (!UI.page({ opt: OPT, title: 'Patient billing', subtitle: 'Invoices for OPD, ER and inpatient visits with the payer and patient split, discounts, finalization, cancellation and credit notes.',
+    actions: Fin.btn({ cls: 'primary', attrs: 'id="newInv"', icon: 'plus', label: 'New invoice', gate: Fin.gate(OPT, 'add') }) })) return;
+  const T = Fin.T, me = Fin.meName();
+  const INV = () => db.invoices || [];
+  const reqFor = (id) => db.financeDiscountReqs.find(r => r.invoiceId === id && r.status === 'Pending approval');
+  const scheme = (id) => db.financeSchemes.find(s => s.id === id);
+  const payerName = (v) => v.payerId ? (Kit.payer(v.payerId) || {}).name : 'Cash (self-pay)';
+
+  $('#page').innerHTML = `<div class="grid g4" id="kp" style="margin-bottom:16px"></div><div id="tabs" style="margin-bottom:12px"></div><div id="tbl"></div>`;
+  function kpis() {
+    const open = INV().filter(v => ['Unpaid', 'Partially paid'].includes(v.status));
+    const today = INV().filter(v => v.date === T && v.status !== 'Cancelled');
+    $('#kp').innerHTML = Kit.kpi('Billed today', Fin.money(Kit.sumBy(today.filter(v => v.status !== 'Draft'), v => v.total)), { icon: 'receipt-text', foot: today.length + ' invoices, ' + today.filter(v => v.status === 'Draft').length + ' drafts' })
+      + Kit.kpi('Patient balances due', Fin.money(Kit.sumBy(open, Fin.invPtOut)), { icon: 'wallet', foot: open.length + ' unpaid or part paid invoices' })
+      + Kit.kpi('Interim inpatient bills', INV().filter(v => v.status === 'Interim').length, { icon: 'bed-double', foot: Fin.money(Kit.sumBy(INV().filter(v => v.status === 'Interim'), v => v.total)) + ' running total' })
+      + Kit.kpi('Discounts waiting approval', db.financeDiscountReqs.filter(r => r.status === 'Pending approval').length, { icon: 'percent', foot: Fin.money(Kit.sumBy(db.financeDiscountReqs.filter(r => r.status === 'Pending approval'), r => r.amount)) + ' requested' });
+  }
+  const TABS = { all: () => true, Draft: v => v.status === 'Draft', Interim: v => v.status === 'Interim', open: v => ['Unpaid', 'Partially paid'].includes(v.status), Paid: v => v.status === 'Paid', Cancelled: v => v.status === 'Cancelled' };
+  let tab = 'all', t;
+  function drawTabs() {
+    Kit.tabs($('#tabs'), [{ id: 'all', label: 'All', count: INV().length }, { id: 'Draft', label: 'Draft', count: INV().filter(TABS.Draft).length }, { id: 'Interim', label: 'Interim', count: INV().filter(TABS.Interim).length },
+      { id: 'open', label: 'Unpaid', count: INV().filter(TABS.open).length }, { id: 'Paid', label: 'Paid', count: INV().filter(TABS.Paid).length }, { id: 'Cancelled', label: 'Cancelled', count: INV().filter(TABS.Cancelled).length },
+      { id: 'disc', label: 'Discount approvals', icon: 'percent', count: db.financeDiscountReqs.filter(r => r.status === 'Pending approval').length }], tab, (x) => { tab = x; drawTable(); });
+  }
+  function refresh() { kpis(); drawTabs(); if (t) t.redraw(); }
+  function drawTable() {
+    if (tab === 'disc') return drawDisc();
+    t = UI.table($('#tbl'), {
+      columns: [
+        { label: 'Invoice', sort: v => v.no, render: v => `<div class="cell-main"><b class="mono nw">${esc(v.no)}</b><span class="nw">${v.date === T ? '<b>Today</b>' : esc(Kit.day(v.date))}</span></div>` },
+        { label: 'Patient', sort: v => Kit.ptName(v.patientId), render: v => Kit.patientCell(Kit.pt(v.patientId)) },
+        { label: 'Visit', render: v => { const e = Kit.enc(v.encounterId); return `<span class="tag">${esc(v.type)}</span> <span class="small mono">${esc(e ? e.no : '')}</span>`; } },
+        { label: 'Payer', sort: v => payerName(v), render: v => `<span class="small">${esc(payerName(v))}</span>` },
+        { label: 'Net total', cls: 'num', sort: v => v.total, render: v => Fin.amt(v.total) },
+        { label: 'Payer share', cls: 'num', render: v => v.payerAmount ? Fin.amt(v.payerAmount) : '<span class="muted">-</span>' },
+        { label: 'Patient due', cls: 'num', sort: v => Fin.invPtOut(v), render: v => { const o = Fin.invPtOut(v); return o > 0 ? `<b>${Fin.amt(o)}</b>` : '<span class="muted">0.000</span>'; } },
+        { label: 'Status', sort: v => v.status, render: v => Kit.status(v.status) + (reqFor(v.id) ? ' <span class="badge b-warn nodot" title="Discount waiting approval">%</span>' : '') + (v.discount ? ' <span class="tag">Disc.</span>' : '') },
+      ],
+      rows: () => INV().filter(TABS[tab]).slice().sort((a, b) => (b.date + b.no).localeCompare(a.date + a.no)),
+      search: v => [v.no, Kit.ptName(v.patientId), (Kit.pt(v.patientId) || {}).mrn, (Kit.enc(v.encounterId) || {}).no].join(' '), searchPlaceholder: 'Invoice, patient, MRN or visit number',
+      filters: [
+        { label: 'Visit type', options: [['OPD', 'OPD'], ['ER', 'ER'], ['IPD', 'IPD']], test: (v, x) => v.type === x },
+        { label: 'Payer', options: [['cash', 'Cash (self-pay)']].concat(db.payers.map(p => [p.id, p.name])), test: (v, x) => x === 'cash' ? !v.payerId : v.payerId === x },
+        { label: 'Date', options: [['today', 'Today'], ['7', 'Last 7 days'], ['month', 'This month'], ['older', 'Before this month']], test: (v, x) => x === 'today' ? v.date === T : x === '7' ? Fin.days(v.date) <= 7 : x === 'month' ? v.date.slice(0, 7) === T.slice(0, 7) : v.date.slice(0, 7) < T.slice(0, 7) },
+      ],
+      onRow: v => openInv(v.id), empty: 'No invoices', pageSize: 12,
+    });
+  }
+  function drawDisc() {
+    t = UI.table($('#tbl'), {
+      columns: [
+        { label: 'Invoice', render: r => { const v = INV().find(x => x.id === r.invoiceId) || {}; return `<div class="cell-main"><b class="mono">${esc(v.no || '')}</b><span>${esc(Kit.ptName(v.patientId))}</span></div>`; } },
+        { label: 'Scheme', render: r => r.schemeId ? `<span class="mono">${esc((scheme(r.schemeId) || {}).code)}</span><div class="xs muted">${esc((scheme(r.schemeId) || {}).name || '')}</div>` : '<span class="tag">Manual discount</span>' },
+        { label: 'Reason', render: r => `<span class="small">${esc(r.reason)}</span>` },
+        { label: 'Discount', cls: 'num', sort: r => r.amount, render: r => `<b>${Fin.amt(r.amount)}</b><div class="xs muted">${r.pct}%</div>` },
+        { label: 'Requested by', render: r => `${esc(r.by)}${r.by === me ? ' <span class="badge b-warn nodot">You</span>' : ''}<div class="xs muted">${esc(Kit.when(r.at))}</div>` },
+        { label: 'Status', render: r => Kit.status(r.status) + (r.approvedBy ? `<div class="xs muted">${esc(r.approvedBy)}</div>` : '') },
+        { label: '', cls: 'actions', render: r => r.status === 'Pending approval' ? Fin.btn({ cls: 'xs success', attrs: `data-ap="${r.id}"`, icon: 'check', label: 'Approve', gate: Fin.gate(OPT, 'approve', r) }) + ' ' + Fin.btn({ cls: 'xs danger', attrs: `data-rj="${r.id}"`, icon: 'x', label: 'Reject', gate: Fin.gate(OPT, 'approve', r) }) : `<button class="btn xs" data-op="${r.invoiceId}">Open</button>` },
+      ],
+      rows: () => db.financeDiscountReqs.slice().sort((a, b) => (a.status === 'Pending approval' ? 0 : 1) - (b.status === 'Pending approval' ? 0 : 1) || b.at.localeCompare(a.at)),
+      search: r => [r.reason, r.by, (INV().find(x => x.id === r.invoiceId) || {}).no].join(' '), empty: 'No discount requests',
+      onRow: r => openInv(r.invoiceId),
+      afterDraw: (tb) => {
+        $$('[data-ap]', tb).forEach(b => b.addEventListener('click', () => decideDisc(db.financeDiscountReqs.find(r => r.id === b.dataset.ap), true)));
+        $$('[data-rj]', tb).forEach(b => b.addEventListener('click', () => decideDisc(db.financeDiscountReqs.find(r => r.id === b.dataset.rj), false)));
+      },
+    });
+  }
+  function decideDisc(r, ok, after) {
+    const v = INV().find(x => x.id === r.invoiceId);
+    if (ok) {
+      if (!v || !(['Draft', 'Interim'].includes(v.status) || (v.status === 'Unpaid' && v.paid === 0))) { toast('The invoice has payments or is closed. Raise a credit note instead.', 'err'); return; }
+      confirm({ title: 'Approve discount?', tone: 'primary', icon: 'percent', body: `${Fin.money(r.amount)} on invoice <b>${esc(v.no)}</b> for ${esc(Kit.ptName(v.patientId))}. The payer and patient split is recalculated.`, confirm: 'Approve discount', onConfirm: () => {
+        const before = Fin.amt(v.total);
+        v.discount = Fin.r3((v.discount || 0) + r.amount); v.schemeId = r.schemeId || v.schemeId || ''; v.discountNote = r.reason; Fin.recalc(v); if (v.status === 'Unpaid') Fin.invStatus(v);
+        Object.assign(r, { status: 'Approved', approvedBy: me, approvedAt: nowStamp() });
+        save(); audit('Discount approved', 'Invoice', { id: v.id, label: v.no }, [['Net total', before, Fin.amt(v.total)], ['Discount', '', Fin.amt(r.amount)]]);
+        toast('Discount approved and applied'); refresh(); after && after();
+      } });
+    } else {
+      confirm({ title: 'Reject discount?', body: `The invoice keeps its current price.`, reason: true, confirm: 'Reject', onConfirm: (reason) => {
+        Object.assign(r, { status: 'Rejected', approvedBy: me, approvedAt: nowStamp(), rejectReason: reason }); save();
+        audit('Discount rejected', 'Invoice', { id: r.invoiceId, label: (v || {}).no }, [['Discount', Fin.amt(r.amount), 'Rejected']], { reason });
+        toast('Discount rejected'); refresh(); after && after();
+      } });
+    }
+  }
+
+  /* ---------- Invoice detail ---------- */
+  function openInv(id) {
+    const v = INV().find(x => x.id === id); if (!v) return;
+    const d = drawer({ title: 'Invoice ' + v.no, sub: esc(v.type + ' · ' + Kit.day(v.date)), wide: true, body: '<div id="ivB"></div>', foot: '<div id="ivF" class="row wrap grow" style="gap:8px"></div>' });
+    const el = d.el;
+    function render() {
+      const p = Kit.pt(v.patientId), e = Kit.enc(v.encounterId), req = reqFor(v.id);
+      const editable = ['Draft', 'Interim'].includes(v.status);
+      const canEdit = can(OPT, 'edit') && editable;
+      const ptOut = Fin.invPtOut(v), pyOut = Fin.invPyOut(v);
+      const est = !Fin.OPEN_INV(v) && v.status !== 'Cancelled', ptDue = est ? Math.max(0, Fin.r3(v.patientAmount - v.paid)) : ptOut;
+      const sch = scheme(v.schemeId);
+      const svcOpts = Fin.SVC_CATS.filter(c => !['Laboratory', 'Radiology'].includes(c)).map(c => `<optgroup label="${esc(c)}">${db.services.filter(s => s.category === c && s.status === 'Active').map(s => `<option value="${s.id}">${esc(s.code)} · ${esc(s.name)} · ${Fin.amt(s.price)}</option>`).join('')}</optgroup>`).join('')
+        + `<optgroup label="Laboratory">${(db.labTests || []).filter(x => x.status === 'Active').map(x => `<option value="lab:${x.id}">LAB-${esc(x.code)} · ${esc(x.name)} · ${Fin.amt(x.price)}</option>`).join('')}</optgroup>`
+        + `<optgroup label="Radiology">${(db.radExams || []).filter(x => x.status === 'Active').map(x => `<option value="rad:${x.id}">RAD-${esc(x.code)} · ${esc(x.name)} · ${Fin.amt(x.price)}</option>`).join('')}</optgroup>`;
+      $('#ivB', el).innerHTML = `${Kit.patientBanner(p, e, `<span class="badge b-neutral nodot">${esc(Fin.ptCat(p))}</span>`)}
+        <div class="row wrap" style="margin:14px 0;gap:8px">${Kit.status(v.status)}${v.postedBatch ? `<span class="tag">${icon('workflow')} Posted in ${esc(v.postedBatch)}</span>` : v.date < T && Fin.OPEN_INV(v) ? `<span class="tag">${icon('workflow')} Posted to GL</span>` : ''}${v.claimStatus ? `<span class="tag">Claim: ${esc(v.claimStatus)}</span>` : ''}<span class="grow"></span><span class="small muted">Created by ${esc(v.by || '')}${v.finalizedBy ? ' · finalized by ' + esc(v.finalizedBy) + ' ' + esc(Kit.when(v.finalizedAt)) : ''}</span></div>
+        ${v.status === 'Cancelled' ? `<div class="banner err" style="margin-bottom:12px">${icon('ban')}<span>Cancelled by ${esc(v.cancelledBy || '')}: ${esc(v.cancelReason || '')}</span></div>` : ''}
+        ${req ? `<div class="banner warn" style="margin-bottom:12px">${icon('percent')}<span><b>Discount waiting for approval:</b> ${Fin.money(req.amount)} (${req.pct}%) requested by ${esc(req.by)}. ${esc(req.reason)}. The invoice cannot be finalized until it is approved or rejected.</span>${Fin.btn({ cls: 'sm success', attrs: 'id="dAp"', icon: 'check', label: 'Approve', gate: Fin.gate(OPT, 'approve', req) })}${Fin.btn({ cls: 'sm danger', attrs: 'id="dRj"', icon: 'x', label: 'Reject', gate: Fin.gate(OPT, 'approve', req) })}</div>` : ''}
+        <div class="grid g-side">
+          <div class="card"><div class="card-head"><h3>${icon('list')} Charges</h3><div class="actions"><span class="small muted">${(v.lines || []).length} lines</span></div></div>
+            <div class="table-wrap"><table class="tbl compact"><thead><tr><th>Code</th><th>Description</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Amount</th>${canEdit ? '<th></th>' : ''}</tr></thead><tbody>
+            ${(v.lines || []).map((l, i) => `<tr><td class="mono small nw">${esc(l.code)}</td><td>${esc(l.desc)}<div class="xs muted">${esc(Fin.svcCat(l) || 'Uncategorised')}${l.markup ? ` · <span class="badge b-violet nodot">Markup ${l.markup.pct}% ${esc(l.markup.code)}</span>` : ''}</div></td><td class="num">${l.qty}</td><td class="num">${Fin.amt(l.price)}</td><td class="num"><b>${Fin.amt(l.qty * l.price)}</b></td>${canEdit ? `<td class="actions"><button class="btn xs ghost" data-rm="${i}" aria-label="Remove line">${icon('trash-2')}</button></td>` : ''}</tr>`).join('') || `<tr><td colspan="6"><div class="empty">${icon('receipt-text')}<b>No charges yet</b><span>Add services from the charge master below.</span></div></td></tr>`}
+            </tbody></table></div>
+            ${canEdit ? `<div class="card-foot"><div class="row wrap" style="gap:8px;align-items:flex-end">
+              <div class="field grow" style="min-width:260px"><label for="aSvc">Add charge (charge master)</label><select class="input" id="aSvc"><option value="">Select a service</option>${svcOpts}</select></div>
+              <div class="field" style="width:90px"><label for="aQty">Qty</label><input class="input" id="aQty" type="number" min="1" max="99" value="1"></div>
+              <button class="btn primary" id="aAdd" disabled>${icon('plus')} Add</button></div><div class="xs muted" id="aHint" style="margin-top:6px"></div></div>` : editable ? `<div class="card-foot small muted">${icon('lock')} You need Edit permission to change charges.</div>` : `<div class="card-foot small muted">${icon('lock')} Finalized invoices cannot be edited. Use a credit note for corrections.</div>`}
+          </div>
+          <div class="card card-pad">
+            <div class="section-t">Payer and patient split</div>
+            <dl class="kv tight">
+              <dt>Payer</dt><dd>${esc(Kit.payerLabel(p))}</dd>
+              ${v.planId ? `<dt>Plan terms</dt><dd>${(Kit.plan(v.planId) || {}).copayPct}% co-pay, deductible ${Fin.amt((Kit.plan(v.planId) || {}).deductible)}, max ${Fin.amt((Kit.plan(v.planId) || {}).maxCopay)}</dd>` : ''}
+              <dt>Gross</dt><dd class="num" style="text-align:start">${Fin.money(Fin.gross(v))}</dd>
+              <dt>Discount</dt><dd>${v.discount ? `- ${Fin.money(v.discount)}<div class="xs muted">${esc(sch ? sch.code + ' ' + sch.name : v.discountNote || 'Manual')}</div>` : '<span class="muted">None</span>'}</dd>
+              <dt>Net total</dt><dd><b>${Fin.money(v.total)}</b></dd>
+              <dt>Payer share</dt><dd>${Fin.money(v.payerAmount)}${pyOut ? `<div class="xs muted">${Fin.amt(pyOut)} outstanding from payer</div>` : ''}</dd>
+              <dt>Patient share</dt><dd>${Fin.money(v.patientAmount)}</dd>
+              <dt>Paid</dt><dd>${Fin.money(v.paid)}</dd>
+              ${Fin.invAdj(v, 'Patient') ? `<dt>Credits</dt><dd>- ${Fin.money(Fin.invAdj(v, 'Patient'))}</dd>` : ''}
+              <dt>${est ? 'Estimated due' : 'Balance due'}</dt><dd><b style="font-size:16px;color:${ptDue > 0 ? 'var(--error)' : 'inherit'}">${Fin.money(ptDue)}</b>${est ? '<div class="xs muted">Payable when the bill is finalized</div>' : ''}</dd>
+            </dl>
+            ${ptOut > 0 && can('finance.bill.receipt', 'add') ? `<a class="btn success" style="width:100%;margin-top:14px;justify-content:center" href="${R('finance/cash.html?inv=' + v.id)}">${icon('banknote')} Collect ${Fin.money(ptOut)}</a>` : ''}
+          </div>
+        </div>`;
+      // footer
+      const locked = Fin.lockMsg(v.date);
+      const finG = !can(OPT, 'edit') ? Fin.gate(OPT, 'edit') : !editable ? { ok: false, why: 'Already finalized' } : !(v.lines || []).length ? { ok: false, why: 'Add at least one charge' } : req ? { ok: false, why: 'A discount is waiting for approval' } : locked ? { ok: false, why: locked } : { ok: true };
+      const posted = v.postedBatch || (v.date < T && Fin.OPEN_INV(v));
+      const canG = !can(OPT, 'cancel') ? Fin.gate(OPT, 'cancel') : v.status === 'Cancelled' ? { ok: false, why: 'Already cancelled' } : v.paid > 0 ? { ok: false, why: 'Has payments. Cancel the receipt or raise a credit note.' } : posted ? { ok: false, why: 'Posted to the ledger. Raise a credit note instead.' } : { ok: true };
+      const discG = !can(OPT, 'edit') ? Fin.gate(OPT, 'edit') : !(['Draft', 'Interim'].includes(v.status) || (v.status === 'Unpaid' && v.paid === 0)) ? { ok: false, why: 'Discounts apply before payment. Use a credit note.' } : req ? { ok: false, why: 'A discount is already waiting for approval' } : !(v.lines || []).length ? { ok: false, why: 'Add charges first' } : { ok: true };
+      const cnG = !can('finance.ar', 'add') ? { ok: false, why: 'Needs Add permission on Accounts Receivable' } : !Fin.OPEN_INV(v) ? { ok: false, why: 'Only finalized invoices take credit notes' } : !(ptOut > 0 || pyOut > 0) ? { ok: false, why: 'Nothing outstanding to credit' } : { ok: true };
+      $('#ivF', el).innerHTML = Fin.btn({ attrs: 'id="fPrint"', icon: 'printer', label: 'Print', gate: Fin.gate(OPT, 'print') })
+        + Fin.btn({ attrs: 'id="fCn"', icon: 'file-minus', label: 'Credit note', gate: cnG })
+        + Fin.btn({ cls: 'danger', attrs: 'id="fCancel"', icon: 'ban', label: 'Cancel invoice', gate: canG })
+        + '<span class="grow"></span>'
+        + Fin.btn({ attrs: 'id="fDisc"', icon: 'percent', label: 'Apply discount', gate: discG })
+        + (editable ? Fin.btn({ cls: 'primary', attrs: 'id="fFin"', icon: 'lock', label: v.status === 'Interim' ? 'Finalize final bill' : 'Finalize invoice', gate: finG }) : '');
+      wire();
+    }
+    function wire() {
+      const on = (s, f) => { const b = $(s, el); if (b) b.addEventListener('click', f); };
+      $$('[data-rm]', el).forEach(b => b.addEventListener('click', () => {
+        const l = v.lines[+b.dataset.rm];
+        confirm({ title: 'Remove this charge?', body: `${esc(l.code)} ${esc(l.desc)}, ${Fin.money(l.qty * l.price)}.`, confirm: 'Remove', onConfirm: () => {
+          v.lines.splice(+b.dataset.rm, 1); Fin.recalc(v); save(); audit('Charge removed', 'Invoice', { id: v.id, label: v.no }, [['Line', l.code + ' ' + l.desc, '(removed)']]); render(); refresh();
+        } });
+      }));
+      const sv = $('#aSvc', el), qty = $('#aQty', el), add = $('#aAdd', el);
+      const pickLine = () => {
+        const val = sv.value; if (!val) return null;
+        let base;
+        if (val.startsWith('lab:')) { const x = db.labTests.find(y => y.id === val.slice(4)); base = { code: 'LAB-' + x.code, desc: x.name, price: x.price, category: 'Laboratory' }; }
+        else if (val.startsWith('rad:')) { const x = db.radExams.find(y => y.id === val.slice(4)); base = { code: 'RAD-' + x.code, desc: x.name, price: x.price, category: 'Radiology' }; }
+        else { const s = db.services.find(y => y.id === val); base = { code: s.code, desc: s.name, price: s.price, category: s.category }; }
+        const mk = Fin.markupFor(base.category, v);
+        const q = Math.round(+qty.value);
+        return Object.assign(base, { qty: q, price: mk ? Fin.r3(base.price * (1 + mk.value / 100)) : base.price, markup: mk ? { code: mk.code, pct: mk.value } : undefined, base: base.price });
+      };
+      const check = () => { const l = pickLine(); const ok = !!l && l.qty >= 1 && l.qty <= 99; add.disabled = !ok; $('#aHint', el).innerHTML = l ? `${esc(l.code)} at ${Fin.money(l.price)}${l.markup ? ` (base ${Fin.amt(l.base)} + ${l.markup.pct}% markup scheme ${esc(l.markup.code)})` : ''} × ${l.qty} = <b>${Fin.money(l.price * l.qty)}</b>` : ''; };
+      if (sv) { sv.addEventListener('change', check); qty.addEventListener('input', check);
+        add.addEventListener('click', () => { const l = pickLine(); delete l.base; if (!l.markup) delete l.markup; v.lines.push(l); Fin.recalc(v); save(); audit('Charge added', 'Invoice', { id: v.id, label: v.no }, [['Line', '', `${l.code} x${l.qty} ${Fin.amt(l.qty * l.price)}`]]); toast('Charge added'); render(); refresh(); }); }
+      on('#dAp', () => decideDisc(reqFor(v.id), true, render));
+      on('#dRj', () => decideDisc(reqFor(v.id), false, render));
+      on('#fPrint', () => { Fin.printInvoice(v); audit('Invoice printed', 'Invoice', { id: v.id, label: v.no }, []); });
+      on('#fDisc', () => discount(v, render));
+      on('#fCn', () => creditNote(v, render));
+      on('#fCancel', () => confirm({ title: 'Cancel invoice ' + v.no + '?', body: 'The invoice stays in the list as cancelled and is not billed or posted.', impact: [`Net total ${Fin.money(v.total)} is removed from billing`, v.payerId ? 'No claim is raised to the payer' : 'No patient balance is raised'], reason: true, confirm: 'Cancel invoice', onConfirm: (reason) => {
+        const before = v.status; Object.assign(v, { status: 'Cancelled', cancelReason: reason, cancelledBy: Fin.meName(), cancelledAt: nowStamp() });
+        db.financeDiscountReqs.filter(r => r.invoiceId === v.id && r.status === 'Pending approval').forEach(r => { r.status = 'Cancelled'; });
+        save(); audit('Invoice cancelled', 'Invoice', { id: v.id, label: v.no }, [['Status', before, 'Cancelled']], { reason }); toast('Invoice cancelled'); render(); refresh();
+      } }));
+      on('#fFin', () => confirm({ title: (v.status === 'Interim' ? 'Finalize final bill ' : 'Finalize invoice ') + v.no + '?', tone: 'primary', icon: 'lock', body: 'Charges are locked. Corrections after this need a credit note.', impact: [`Net total ${Fin.money(v.total)}`, `Payer share ${Fin.money(v.payerAmount)}, patient share ${Fin.money(v.patientAmount)}`, 'Posted to the ledger in tonight\'s billing auto-posting batch'], confirm: 'Finalize', onConfirm: () => {
+        const before = v.status; v.status = 'Unpaid'; v.finalizedBy = Fin.meName(); v.finalizedAt = nowStamp(); Fin.invStatus(v);
+        save(); audit('Invoice finalized', 'Invoice', { id: v.id, label: v.no }, [['Status', before, v.status], ['Net total', '', Fin.amt(v.total)]]); toast('Invoice finalized'); render(); refresh();
+      } }));
+    }
+    render();
+  }
+
+  function discount(v, done) {
+    const p = Kit.pt(v.patientId), cat = Fin.ptCat(p);
+    const list = db.financeSchemes.filter(s => s.kind === 'Discount' && Fin.schemeLive(s, v.date) && (!s.payerId || s.payerId === v.payerId));
+    const eligible = (s) => Kit.sumBy(v.lines, l => s.categories.includes(Fin.svcCat(l)) ? l.qty * l.price : 0);
+    drawer({ title: 'Apply discount', sub: esc(v.no + ' · ' + Kit.ptName(v.patientId) + ' · patient category ' + cat),
+      body: `<div class="err-summary hidden"></div>
+        <div class="section-t">Discount scheme</div>
+        <div class="list-rows pad card" id="sList">${list.map(s => `<label class="click" style="cursor:pointer"><input type="radio" name="sc" value="${s.id}"><div class="grow"><b>${esc(s.name)}</b> <span class="mono xs">${esc(s.code)}</span><div class="xs muted">${s.value}% on ${esc(s.categories.join(', '))} · for ${esc(s.patientCat)}${s.payerId ? ' · ' + esc((Kit.payer(s.payerId) || {}).name) : ''} · approval ${s.approvalLimit ? 'above ' + Fin.amt(s.approvalLimit) : 'always'}</div></div><b class="num">${Fin.amt(eligible(s) * s.value / 100)}</b></label>`).join('')}
+          <label class="click" style="cursor:pointer"><input type="radio" name="sc" value="manual"><div class="grow"><b>Manual discount</b><div class="xs muted">Percentage of the gross. Always needs approval.</div></div></label></div>
+        <div class="form-grid" style="margin-top:14px">
+          ${field({ id: 'dPct', label: 'Manual discount %', type: 'number', value: '', attrs: 'min="1" max="100" disabled' })}
+          ${field({ id: 'dRef', label: 'Reference', placeholder: 'Referral, badge or approval number', value: '' })}
+          ${field({ id: 'dReason', label: 'Reason', type: 'textarea', req: true, full: true })}
+          <label class="check full hidden" id="dElWrap"><input type="checkbox" id="dEl"> <span id="dElT"></span></label>
+        </div>
+        <div class="banner info" id="dOut" style="margin-top:12px">${icon('calculator')}<span>Choose a scheme or a manual discount.</span></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="dGo" disabled>Apply</button>`,
+      onMount: (el, close) => {
+        let pick = null, amount = 0, needs = false;
+        const calc = () => {
+          const val = ($('input[name=sc]:checked', el) || {}).value;
+          $('#dPct', el).disabled = val !== 'manual';
+          const s = list.find(x => x.id === val);
+          pick = val ? (s || 'manual') : null;
+          if (s) { amount = Fin.r3(eligible(s) * s.value / 100); needs = !s.approvalLimit || amount > s.approvalLimit; }
+          else if (val === 'manual') { const pc = +$('#dPct', el).value; amount = pc > 0 && pc <= 100 ? Fin.r3(Fin.gross(v) * pc / 100) : 0; needs = true; }
+          const elig = s && !['All', 'General', cat].includes(s.patientCat);
+          $('#dElWrap', el).classList.toggle('hidden', !elig);
+          $('#dElT', el).textContent = elig ? `I have checked that the patient is eligible (${s.patientCat}).` : '';
+          const ok = !!pick && amount > 0 && amount <= Fin.gross(v) && $('#dReason', el).value.trim().length >= 3 && (!elig || $('#dEl', el).checked);
+          $('#dGo', el).disabled = !ok;
+          $('#dGo', el).textContent = needs ? 'Send for approval' : 'Apply discount';
+          $('#dOut', el).className = 'banner ' + (needs ? 'warn' : 'ok');
+          $('#dOut', el).innerHTML = pick ? `${icon(needs ? 'stamp' : 'circle-check')}<span>Discount <b>${Fin.money(amount)}</b>. Net becomes ${Fin.money(Fin.gross(v) - amount - 0)}. ${needs ? 'This is above the approval limit, so a second user must approve it.' : 'Within the scheme limit, applied now.'}</span>` : `${icon('calculator')}<span>Choose a scheme or a manual discount.</span>`;
+        };
+        $$('input,textarea', el).forEach(i => i.addEventListener('input', calc)); $$('input[type=radio],input[type=checkbox]', el).forEach(i => i.addEventListener('change', calc));
+        $('#dGo', el).addEventListener('click', () => {
+          const reason = $('#dReason', el).value.trim() + ($('#dRef', el).value.trim() ? ' (' + $('#dRef', el).value.trim() + ')' : '');
+          const pct = pick === 'manual' ? +$('#dPct', el).value : pick.value;
+          if (!needs) {
+            const before = Fin.amt(v.total); v.discount = amount; v.schemeId = pick.id; v.discountNote = reason; Fin.recalc(v); if (v.status === 'Unpaid') Fin.invStatus(v);
+            save(); audit('Discount applied', 'Invoice', { id: v.id, label: v.no }, [['Net total', before, Fin.amt(v.total)], ['Scheme', '', pick.code]]); toast('Discount applied');
+          } else {
+            db.financeDiscountReqs.push({ id: uid('dr'), invoiceId: v.id, schemeId: pick === 'manual' ? '' : pick.id, pct, amount, reason, status: 'Pending approval', by: Fin.meName(), at: nowStamp(), approvedBy: '', approvedAt: '' });
+            save(); audit('Discount requested', 'Invoice', { id: v.id, label: v.no }, [['Discount', '', Fin.amt(amount) + ' (' + pct + '%)']], { reason }); toast('Discount sent for approval');
+          }
+          close(); done(); refresh();
+        });
+      } });
+  }
+
+  function creditNote(v, done) {
+    const ptOut = Fin.invPtOut(v), pyOut = Fin.invPyOut(v);
+    const parties = [].concat(ptOut > 0 ? [['Patient', 'Patient · ' + Kit.ptName(v.patientId) + ' · ' + Fin.amt(ptOut) + ' outstanding']] : []).concat(pyOut > 0 ? [['Insurer', 'Payer · ' + (Kit.payer(v.payerId) || {}).name + ' · ' + Fin.amt(pyOut) + ' outstanding']] : []);
+    drawer({ title: 'Credit note for ' + v.no, sub: 'Reduces the outstanding balance after approval (Accounts Receivable).',
+      body: `<div class="err-summary hidden"></div><div class="form-grid">${field({ id: 'cParty', label: 'Credit to', type: 'select', options: parties, value: parties[0][0], req: true, full: true, placeholder: false })}${field({ id: 'cAmt', label: 'Amount (KWD)', type: 'number', req: true, attrs: 'step="0.001" min="0.001"' })}<div></div>${field({ id: 'cReason', label: 'Reason', type: 'textarea', req: true, full: true })}</div>
+        <div class="banner info" style="margin-top:12px">${icon('stamp')}<span>A second user approves the credit note on Accounts Receivable. It then posts to Discounts allowed and the receivable account.</span></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="cGo" disabled>Raise credit note</button>`,
+      onMount: (el, close) => {
+        const max = () => $('#cParty', el).value === 'Patient' ? ptOut : pyOut;
+        const chk = () => { const a = +$('#cAmt', el).value; const errs = {}; if ($('#cAmt', el).value && (a <= 0 || a > max())) errs.cAmt = `Enter an amount up to ${Fin.amt(max())}.`; showErrors(el, errs); $('#cGo', el).disabled = !(a > 0 && a <= max() && $('#cReason', el).value.trim().length >= 3); };
+        $$('input,textarea,select', el).forEach(i => i.addEventListener('input', chk));
+        $('#cGo', el).addEventListener('click', () => {
+          const party = $('#cParty', el).value;
+          const cn = { id: uid('cn'), no: Fin.nextNo('CN', db.financeCreditNotes), date: T, party, partyId: party === 'Patient' ? v.patientId : v.payerId, invoiceId: v.id, openItemId: '', amount: Fin.r3(+$('#cAmt', el).value), reason: $('#cReason', el).value.trim(), status: 'Pending approval', by: Fin.meName(), at: nowStamp(), approvedBy: '', approvedAt: '' };
+          db.financeCreditNotes.push(cn); save(); audit('Credit note raised', 'Credit note', { id: cn.id, label: cn.no }, [['Invoice', '', v.no], ['Amount', '', Fin.amt(cn.amount)]], { reason: cn.reason });
+          close(); toast(cn.no + ' sent for approval'); done(); refresh();
+        });
+      } });
+  }
+
+  function newInvoice() {
+    Kit.pickPatient({ title: 'New invoice: find patient', onPick: (p) => {
+      const encs = (db.encounters || []).filter(e => e.patientId === p.id).sort((a, b) => b.start.localeCompare(a.start)).slice(0, 6);
+      drawer({ title: 'New invoice', sub: esc(p.name + ' · ' + p.mrn),
+        body: `${Kit.patientBanner(p)}<div class="section-t" style="margin-top:14px">Visit</div><div class="list-rows pad card">${encs.map((e, i) => `<label class="click" style="cursor:pointer"><input type="radio" name="en" value="${e.id}" ${i === 0 ? 'checked' : ''}><div class="grow"><b>${esc(e.type)} ${esc(e.no)}</b><div class="xs muted">${esc(Kit.when(e.start))} · ${esc(Kit.docName(e.doctorId))} · ${esc(e.status)}</div></div>${INV().some(v => v.encounterId === e.id && v.status !== 'Cancelled') ? '<span class="badge b-warn nodot">Has invoice</span>' : ''}</label>`).join('')}
+          <label class="click" style="cursor:pointer"><input type="radio" name="en" value="" ${encs.length ? '' : 'checked'}><div class="grow"><b>Walk-in services</b><div class="xs muted">No visit, for example a health check package or lab only</div></div></label></div>
+          <div class="banner info" style="margin-top:12px">${icon('shield-check')}<span>Payer: <b>${esc(Kit.payerLabel(p))}</b>. The split is calculated from the plan terms.</span></div>`,
+        foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="nGo">${icon('plus')} Create draft invoice</button>`,
+        onMount: (el, close) => $('#nGo', el).addEventListener('click', () => {
+          const eid = ($('input[name=en]:checked', el) || {}).value || '';
+          const e = Kit.enc(eid);
+          const v = { id: uid('iv'), no: Fin.nextNo('INV', INV()), encounterId: eid, patientId: p.id, date: T, type: e ? e.type : 'OPD', lines: [], total: 0, payerId: p.payerId || null, planId: p.planId || null, payerAmount: 0, patientAmount: 0, paid: 0, status: e && e.type === 'IPD' ? 'Interim' : 'Draft', claimStatus: p.planId ? 'Not submitted' : '', by: Fin.meName() };
+          if (e && e.type !== 'IPD') { const d = Kit.doc(e.doctorId); const s = db.services.find(x => x.code === (e.type === 'ER' ? (e.triage <= 2 ? 'SRV-ER-1' : 'SRV-ER-3') : d && d.grade === 'Consultant' ? 'SRV-CON-C' : 'SRV-CON-S')); if (s) v.lines.push({ code: s.code, desc: s.name, qty: 1, price: s.price, category: s.category }); }
+          Fin.recalc(v); db.invoices.push(v); save(); audit('Invoice created', 'Invoice', { id: v.id, label: v.no }, [['Status', '', v.status]]);
+          close(); toast('Draft invoice ' + v.no + ' created'); tab = 'all'; refresh(); drawTabs(); openInv(v.id);
+        }) });
+    } });
+  }
+  const nb = $('#newInv'); if (nb) nb.addEventListener('click', newInvoice);
+  kpis(); drawTabs(); drawTable();
+  const qid = UI.param('id'); if (qid) openInv(qid);
+})();
+</script>
+</body>
+</html>

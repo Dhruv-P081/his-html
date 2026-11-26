@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Radiology overview · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-radiology.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/lab.js"></script><script src="../assets/radiology.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, esc, icon, $, R } = UI;
+  if (!UI.page({ module: 'radiology', title: 'Radiology overview', subtitle: 'Imaging requests, reporting and critical findings (SOW V4 Module 6).',
+    actions: `<a class="btn" href="${R('radiology/critical.html')}">${icon('bell-ring')} Critical findings</a><a class="btn primary" href="${R('radiology/reporting.html')}">${icon('file-pen-line')} Reporting worklist</a>` })) return;
+  const all = Rad.orders(), open = all.filter(Rad.isOpen);
+  const cnt = (k) => all.filter(o => Rad.stageKey(o) === k).length;
+  const crit = all.filter(o => o.report && o.report.critical && /Reported|Approved/.test(o.status));
+  const acked = (o) => (db.radiologyCalls || []).some(c => c.orderId === o.id && c.kind === 'Call' && c.outcome === 'Reached' && c.readBack);
+  const critOpen = crit.filter(o => !acked(o));
+  const mods = [...new Set(db.radExams.map(x => x.modality))];
+  const appr = all.filter(o => o.report && o.report.approvedAt);
+  const inTat = appr.filter(o => !Rad.tat(o).late).length;
+  const stages = Rad.STAGES.slice(0, 5);
+  const work = all.filter(o => ['performed', 'reported', 'verified'].includes(Rad.stageKey(o))).sort((a, b) => Rad.tat(b).pct - Rad.tat(a).pct);
+  $('#page').innerHTML = `
+    <div class="grid g4" style="margin-bottom:16px">
+      ${Kit.kpi('Open imaging requests', open.length, { icon: 'clipboard-list', foot: cnt('new') + ' new · ' + cnt('scheduled') + ' scheduled', href: R('radiology/orders.html') })}
+      ${Kit.kpi('Waiting for a report', cnt('performed'), { icon: 'file-pen-line', foot: 'Exams performed, not reported', href: R('radiology/reporting.html') })}
+      ${Kit.kpi('Waiting for approval', cnt('reported') + cnt('verified'), { icon: 'signature', foot: cnt('reported') + ' to verify · ' + cnt('verified') + ' to approve', href: R('radiology/reporting.html') })}
+      ${Kit.kpi('Critical not acknowledged', critOpen.length, { icon: 'bell-ring', foot: 'Report TAT within target: ' + (appr.length ? Math.round(100 * inTat / appr.length) + '%' : '-'), href: R('radiology/critical.html') })}
+    </div>
+    <div class="grid g-side" style="margin-bottom:16px">
+      <div class="card"><div class="card-head"><h3>${icon('chart-column')} Requests by stage</h3></div><div class="card-pad">
+        ${Kit.barChart({ labels: stages.map(s => s[1]), values: stages.map(s => cnt(s[0])), colors: ['#2F6BC5', '#0891B2', '#E0670E', '#D23F6A', '#7C4DDB'], title: 'Radiology requests by stage', height: 150 })}</div></div>
+      <div class="card"><div class="card-head"><h3>${icon('scan-line')} Exams by modality</h3></div><div class="card-pad">
+        ${Kit.donut(mods.map((m, i) => [m, all.filter(o => Rad.exam(o.code).modality === m && !/Rejected|Cancelled/.test(o.status)).length, Kit.PALETTE[i % 7]]).filter(r => r[1]), { centerLabel: 'Exams' })}</div></div>
+    </div>
+    <div class="grid g-side">
+      <div class="card"><div class="card-head"><h3>${icon('list-todo')} Reporting worklist</h3><div class="actions"><a class="btn sm" href="${R('radiology/reporting.html')}">Open ${icon('arrow-right')}</a></div></div>
+        ${work.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>Patient</th><th>Exam</th><th>Stage</th><th>TAT</th></tr></thead><tbody>${work.map(o => `<tr class="click" onclick="location.href='${R('radiology/reporting.html?id=' + o.id)}'"><td>${Kit.patientCell(Kit.pt(o.patientId))}</td><td><b>${esc(o.name)}</b><div class="small muted">${esc(Rad.exam(o.code).modality)} · ${Kit.priority(o.priority)}</div></td><td>${Rad.stageBadge(o)}</td><td>${Rad.tatCell(o)}</td></tr>`).join('')}</tbody></table></div>` : `<div class="empty">${icon('circle-check')}<b>Nothing waiting</b></div>`}</div>
+      <div class="card"><div class="card-head"><h3>${icon('bell-ring')} Critical findings</h3><div class="actions"><a class="btn sm" href="${R('radiology/critical.html')}">Open console ${icon('arrow-right')}</a></div></div>
+        ${crit.length ? `<div class="list-rows pad">${crit.map(o => `<div style="flex-direction:column;align-items:stretch;gap:6px">${Kit.patientCell(Kit.pt(o.patientId))}<div><b class="flag-h small">${esc(o.report.criticalText)}</b><div class="small">${esc(o.name)} · ${acked(o) ? '<span class="badge b-ok">Acknowledged</span>' : `<span class="badge b-err">${icon('timer')} ${Lab.dur(Lab.waitMins(o.report.authoredAt))}</span>`}</div></div></div>`).join('')}</div>` : `<div class="empty">${icon('shield-check')}<b>No critical findings</b></div>`}</div>
+    </div>`;
+})();
+</script>
+</body>
+</html>

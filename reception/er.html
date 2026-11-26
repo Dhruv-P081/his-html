@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Emergency board · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-reception.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/reception.js"></script>
+<style>
+  .erb { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+  @media (max-width: 1280px) { .erb { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  .lane .item { border-inline-start: 5px solid var(--outline); }
+  .esi { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+  .esi button { border: 2px solid var(--line); border-radius: 12px; background: var(--card); padding: 10px 8px; cursor: pointer; text-align: start; font: inherit; color: var(--ink); display: flex; flex-direction: column; gap: 3px; }
+  .esi button.on { box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary-light) 35%, transparent); }
+  .esi button b { font-size: 18px; }
+  .esi button span { font-size: 11.5px; color: var(--sub); }
+  .tri-legend { display: flex; gap: 8px; flex-wrap: wrap; }
+  .tri-legend span { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; color: var(--sub); }
+  .tri-legend i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+  #ql td { white-space: nowrap; }
+</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, fmtDate, confirm, field } = UI;
+  const Rc = window.Reception;
+  const OPT = 'reception.er';
+  if (!UI.page({ opt: OPT, title: 'Emergency department', subtitle: 'Register arrivals, triage on the ESI 1-5 scale and route patients to the treatment areas.',
+    actions: `<button class="btn" id="regUnk" ${Rc.gate(OPT, 'add')}>${icon('user-round-x')} Unidentified patient</button><button class="btn primary" id="reg" ${Rc.gate(OPT, 'add')}>${icon('siren')} Register ER arrival</button>` })) return;
+  const T = db.TODAY;
+  const TR = () => (db.receptionTriage || []).filter(t => t.status !== 'Inactive').sort((a, b) => a.level - b.level);
+  const triOf = (l) => TR().find(t => t.level === l) || {};
+  const live = () => db.encounters.filter(e => e.type === 'ER' && !/Discharged|Cancelled|Left without being seen|Admitted/.test(e.status));
+  const departed = () => db.encounters.filter(e => e.type === 'ER' && /Discharged|Cancelled|Left without being seen|Admitted/.test(e.status) && e.start.startsWith(T));
+  const add = (s, m) => { const d = new Date(s.replace(' ', 'T')); d.setMinutes(d.getMinutes() + m); const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`; };
+  const triAt = (e) => e.triagedAt || (e.triage ? add(e.start, 3 + e.triage * 2) : '');
+  const seenAt = (e) => e.seenAt || (/Under treatment|Under observation|Discharged|Admitted/.test(e.status) && e.triage ? add(e.start, Math.max(4, Math.round((triOf(e.triage).targetMins || 30) * 0.7))) : '');
+  const los = (e) => Rc.mins(e.start, e.end || null);
+  const overdue = (e) => e.triage && !seenAt(e) && Rc.mins(e.start) > (triOf(e.triage).targetMins || 999);
+  const COLS = [['triage', 'Awaiting triage', 'clipboard-pen']].concat(Rc.AREAS.map(a => [a, a, { Resuscitation: 'heart-pulse', 'Acute bay': 'activity', 'Minor treatment': 'bandage', 'Fast track': 'zap' }[a]]));
+  $('#page').innerHTML = `<div class="grid g4" style="margin-bottom:16px" id="kpi"></div>
+    <div class="card card-pad" style="margin-bottom:16px"><div class="row wrap"><b class="small">Triage scale (ESI)</b><div class="tri-legend grow">${TR().map(t => `<span><i style="background:${t.hex}"></i>${t.level} ${esc(t.name)} · ${t.targetMins ? 'seen within ' + t.targetMins + ' min' : 'immediate'}</span>`).join('')}</div><div id="view"></div></div></div>
+    <div id="body"></div>`;
+  let view = 'board';
+  Kit.seg($('#view'), [['board', 'Board', 'layout-grid'], ['queue', 'Queue and TAT', 'list'], ['out', 'Departed today', 'log-out']], view, (v) => { view = v; drawBody(); });
+  function kpis() {
+    const L = live(); const tri = L.filter(e => e.triage).map(e => Rc.mins(e.start, triAt(e))); const seen = L.concat(departed()).filter(e => seenAt(e)).map(e => Rc.mins(e.start, seenAt(e)));
+    const avg = (a) => a.length ? Rc.dur(Math.round(a.reduce((x, y) => x + y, 0) / a.length)) : '-';
+    $('#kpi').innerHTML = Kit.kpi('In ER now', L.length, { icon: 'siren', foot: L.filter(e => !e.triage).length + ' awaiting triage' })
+      + Kit.kpi('ESI 1 and 2', L.filter(e => e.triage && e.triage <= 2).length, { icon: 'heart-pulse', foot: 'In resuscitation: ' + L.filter(e => e.area === 'Resuscitation').length })
+      + Kit.kpi('Door to triage', avg(tri), { icon: 'timer', foot: 'Average for patients in ER' })
+      + Kit.kpi('Door to doctor', avg(seen), { icon: 'stethoscope', foot: L.filter(overdue).length + ' over target now' });
+  }
+  function card(e) {
+    const p = Kit.pt(e.patientId) || {}; const tr = triOf(e.triage); const m = Rc.mins(e.start);
+    return `<div class="item" data-id="${e.id}" style="border-inline-start-color:${tr.hex || 'var(--outline)'}">
+      <div class="row" style="gap:8px">${e.triage ? Kit.triage(e.triage) : '<span class="badge b-neutral nodot">No ESI</span>'}<span class="grow"></span><span class="token" style="height:24px;min-width:40px;font-size:11.5px">${esc(e.token)}</span></div>
+      <b style="display:block;font-size:13px;margin-top:6px">${esc(p.name || '')}</b>
+      <div class="small muted" style="margin-top:2px">${esc(p.mrn || '')} · ${esc(Kit.sexAge(p) || 'Age unknown')}${p.alias ? ' · ' + Kit.status('Temporary alias') : ''}</div>
+      <div class="small" style="margin-top:4px">${esc(e.complaint || '')}</div>
+      <div class="row wrap small" style="margin-top:6px;gap:6px">${Kit.status(e.status, e.status === 'Awaiting triage' ? 'warn' : null)}<span class="grow"></span><span class="badge ${overdue(e) ? 'b-err' : m > 240 ? 'b-warn' : 'b-neutral'} nodot">${icon('clock')} ${Rc.dur(m)}</span></div>
+      ${e.admitRequestId ? `<div class="xs" style="margin-top:4px;color:var(--info)">${icon('bed-double')} Admission requested</div>` : ''}</div>`;
+  }
+  function drawBody() {
+    kpis();
+    const host = $('#body'); const L = live();
+    if (view === 'board') {
+      host.innerHTML = `<div class="erb">${COLS.map(([k, label, ic]) => { const items = L.filter(e => k === 'triage' ? !e.triage : e.triage && e.area === k).sort((a, b) => a.triage - b.triage || a.start.localeCompare(b.start));
+        return `<div class="lane"><div class="lane-h">${icon(ic)}${esc(label)}<span class="grow"></span><span class="tag">${items.length}</span></div>${items.map(card).join('') || `<div class="small mute" style="padding:14px 4px;text-align:center">No patients</div>`}</div>`; }).join('')}</div>`;
+      $$('.item', host).forEach(n => n.addEventListener('click', () => detail(Kit.enc(n.dataset.id))));
+    } else {
+      const rows = view === 'queue' ? L : departed();
+      UI.table(host, { columns: [
+        { label: 'Token', sort: (e) => e.token, render: (e) => `<span class="token">${esc(e.token)}</span>` },
+        { label: 'ESI', sort: (e) => e.triage || 9, render: (e) => e.triage ? Kit.triage(e.triage) : '<span class="mute">-</span>' },
+        { label: 'Patient', sort: (e) => Kit.ptName(e.patientId), render: (e) => Kit.patientCell(Kit.pt(e.patientId)) },
+        { label: 'Area', sort: (e) => e.area, render: (e) => esc(e.triage ? e.area : 'Awaiting triage') + `<div class="small muted">${esc(e.arrival || '')}</div>` },
+        { label: 'Arrived', sort: (e) => e.start, render: (e) => `<b>${Kit.time(e.start)}</b>` },
+        { label: 'Door to triage', render: (e) => triAt(e) ? Rc.dur(Rc.mins(e.start, triAt(e))) : '<span class="badge b-warn nodot">Waiting</span>' },
+        { label: 'Door to doctor', render: (e) => seenAt(e) ? Rc.dur(Rc.mins(e.start, seenAt(e))) : overdue(e) ? `<span class="badge b-err nodot">Over ${triOf(e.triage).targetMins} min</span>` : '<span class="mute">-</span>' },
+        { label: 'Length of stay', sort: (e) => los(e), render: (e) => Rc.dur(los(e)) },
+        { label: 'Status', render: (e) => Kit.status(e.status, e.status === 'Awaiting triage' ? 'warn' : null) + (e.disposition ? `<div class="small muted">${esc(e.disposition)}</div>` : '') }],
+        rows, search: (e) => { const p = Kit.pt(e.patientId) || {}; return [e.token, e.no, p.name, p.mrn, e.complaint].join(' '); }, searchPlaceholder: 'Token, patient or complaint',
+        filters: [{ label: 'ESI', options: TR().map(t => [String(t.level), t.level + ' ' + t.name]), test: (e, v) => String(e.triage) === v }, { label: 'Area', options: Rc.AREAS.map(a => [a, a]), test: (e, v) => e.area === v }],
+        onRow: (e) => detail(e), empty: view === 'queue' ? 'Nobody in the ER' : 'No departures today', emptyIcon: 'siren' });
+      $('#body .table-wrap').id = 'ql';
+    }
+  }
+  /* Register arrival (known patient or unidentified alias). */
+  function register(unknown) {
+    let p = null, mode = unknown ? 'unk' : 'known';
+    UI.drawer({ title: 'Register ER arrival', sub: 'Registration first, triage next. Unidentified patients get a temporary alias.',
+      body: `<div id="mode" style="margin-bottom:12px"></div><div id="who"></div><div class="err-summary hidden"></div><div class="form-grid" style="margin-top:12px">
+        ${field({ id: 'eCompl', label: 'Chief complaint', req: true, full: true, max: 120 })}
+        ${field({ id: 'eArr', label: 'Arrival mode', type: 'select', options: ['Walk-in', 'Ambulance', 'Police', 'Transfer from another hospital'].map(x => [x, x]), value: 'Walk-in', placeholder: false })}
+        ${field({ id: 'eBy', label: 'Brought by', max: 60, placeholder: 'Relative, paramedic unit or police' })}</div>
+        <label class="check" style="margin-top:12px"><input type="checkbox" id="eTri" checked> Triage now</label>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="eGo" disabled>${icon('check')} Register</button>`,
+      onMount: (el, close) => {
+        const who = $('#who', el);
+        const drawWho = () => {
+          if (mode === 'known') { who.innerHTML = p ? Kit.patientBanner(p) + `<button class="btn sm" id="ePick" type="button">${icon('repeat')} Change</button>` : `<div class="banner info">${icon('user-search')}<span class="grow">Find the patient in the MPI.</span><button class="btn sm primary" type="button" id="ePick">${icon('search')} Find patient</button></div>`;
+            $('#ePick', el).addEventListener('click', () => Kit.pickPatient({ filter: (x) => !Rc.isMerged(x) && !live().some(e => e.patientId === x.id), onPick: (x) => { p = x; drawWho(); chk(); } })); }
+          else who.innerHTML = `<div class="banner warn" style="margin-bottom:10px">${icon('user-round-x')}<span>Identity unknown. The patient is registered under a temporary alias and a temporary MRN. Complete the profile when identity is confirmed.</span></div><div class="form-grid c3">
+            ${field({ id: 'uG', label: 'Gender', type: 'select', options: [['Male', 'Male'], ['Female', 'Female'], ['Unknown', 'Unknown']], req: true })}
+            ${field({ id: 'uAge', label: 'Estimated age (years)', type: 'number', attrs: 'min="0" max="110"' })}
+            ${field({ id: 'uMark', label: 'Identifying features', max: 80, placeholder: 'Clothing, tattoo, scar' })}</div>`;
+          $$('input,select', who).forEach(i => { i.addEventListener('input', chk); i.addEventListener('change', chk); });
+        };
+        const chk = () => { $('#eGo', el).disabled = !($('#eCompl', el).value.trim().length >= 3 && (mode === 'known' ? p : ($('#uG', el) || {}).value)); };
+        Kit.seg($('#mode', el), [['known', 'Known patient', 'user-check'], ['unk', 'Unidentified (alias)', 'user-round-x']], mode, (v) => { mode = v; drawWho(); chk(); });
+        $('#eCompl', el).addEventListener('input', chk);
+        $('#eGo', el).addEventListener('click', () => {
+          const no = Kit.nextNo('ER-26-', db.encounters);
+          if (mode === 'unk') {
+            const g = $('#uG', el).value, age = $('#uAge', el).value; const n = no.replace('ER-26-', '');
+            p = { id: UI.uid('pt'), mrn: 'MRN-TMP-' + n, civilId: '', name: `Unknown ${g === 'Unknown' ? 'patient' : g} (ER-${n})`, nameAr: '', gender: g === 'Unknown' ? '' : g, dob: age ? (2026 - Number(age)) + '-01-01' : '', dobEstimated: !!age, nationality: '', mobile: '', email: '', bloodGroup: '', lang: '', address: '', emergency: { name: '', relation: '', phone: '' }, allergies: [], chronic: [], payerId: null, planId: null, policyNo: '', policyTo: '', vip: false, status: 'Temporary alias', registeredAt: Rc.now(), branchId: 'br_01', alias: true, aliasNote: $('#uMark', el).value.trim(), registeredBy: Rc.myName() };
+            db.patients.push(p);
+          }
+          const toks = db.encounters.filter(e => e.type === 'ER' && e.start.startsWith(T) && /^E\d+$/.test(e.token || ''));
+          const e = { id: UI.uid('en'), no, type: 'ER', patientId: p.id, doctorId: 'dr_09', clinicId: null, deptId: 'dp_01', branchId: 'br_01', start: Rc.now(), end: '', status: 'Awaiting triage', triage: null, area: '', complaint: $('#eCompl', el).value.trim(), payer: p.payerId ? 'Insurance' : 'Cash', arrival: $('#eArr', el).value, broughtBy: $('#eBy', el).value.trim(), token: 'E' + String(toks.reduce((m, x) => Math.max(m, parseInt(x.token.slice(1), 10)), 0) + 1).padStart(3, '0'), createdBy: Rc.myName() };
+          db.encounters.push(e); save();
+          audit(mode === 'unk' ? 'Registered unidentified ER patient' : 'Registered ER arrival', 'Encounter', { id: e.id, label: e.no + ' ' + p.name }, [['Token', '', e.token], ['MRN', '', p.mrn]]);
+          close(); toast(`${p.name} registered, token ${e.token}`); drawBody();
+          if ($('#eTri', el).checked) setTimeout(() => triage(e), 60);
+        });
+        drawWho(); chk();
+      } });
+  }
+  function triage(e) {
+    if (!can(OPT, 'edit')) { toast('You need Edit permission on Emergency (ER).', 'err'); return; }
+    const p = Kit.pt(e.patientId); let lvl = e.triage || null; const v = e.triageVitals || {};
+    UI.drawer({ title: (e.triage ? 'Re-triage ' : 'Triage ') + e.token, sub: esc(p.name) + ' · ' + esc(e.complaint),
+      body: `${Kit.patientBanner(p, e)}<div class="section-t" style="margin-bottom:10px">ESI level</div><div class="esi" id="esi"></div>
+        <div class="form-grid c4" style="margin-top:16px"><div class="section-t">Vital signs at triage</div>
+          ${field({ id: 'vHr', label: 'Heart rate', type: 'number', value: v.hr || '' })}${field({ id: 'vBp', label: 'Blood pressure', value: v.bp || '', placeholder: '120/80' })}${field({ id: 'vSp', label: 'SpO2 %', type: 'number', value: v.spo2 || '' })}${field({ id: 'vTe', label: 'Temperature', type: 'number', value: v.temp || '', attrs: 'step="0.1"' })}
+          ${field({ id: 'vRr', label: 'Respiratory rate', type: 'number', value: v.rr || '' })}${field({ id: 'vPa', label: 'Pain 0-10', type: 'number', value: v.pain || '', attrs: 'min="0" max="10"' })}
+          ${field({ id: 'tArea', label: 'Route to area', type: 'select', options: Rc.AREAS.map(a => [a, a]), value: e.area || '', req: true })}
+          ${field({ id: 'tNote', label: 'Triage note', max: 160, value: e.triageNote || '' })}</div>
+        <div id="tAlert" style="margin-top:12px"></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="tGo" disabled>${icon('check')} Save triage</button>`,
+      onMount: (el, close) => {
+        const drawEsi = () => { $('#esi', el).innerHTML = TR().map(t => `<button type="button" data-l="${t.level}" class="${lvl === t.level ? 'on' : ''}" style="border-color:${lvl === t.level ? t.hex : 'var(--line)'};${lvl === t.level ? 'background:color-mix(in srgb,' + t.hex + ' 12%, var(--card))' : ''}"><b style="color:${t.hex}">${t.level}</b><strong style="font-size:12.5px">${esc(t.name)}</strong><span>${esc(t.colour)} · ${t.targetMins ? t.targetMins + ' min' : 'Immediate'}</span><span>${esc(t.rule)}</span></button>`).join('');
+          $$('[data-l]', el).forEach(b => b.addEventListener('click', () => { lvl = +b.dataset.l; $('#tArea', el).value = triOf(lvl).area; drawEsi(); chk(); })); };
+        const chk = () => {
+          const sp = +$('#vSp', el).value, hr = +$('#vHr', el).value; const al = [];
+          if (sp && sp < 92) al.push('SpO2 below 92%'); if (hr && (hr > 130 || hr < 45)) al.push('Heart rate out of range');
+          $('#tAlert', el).innerHTML = al.length && lvl > 2 ? `<div class="alert-cdss">${icon('triangle-alert')}<span>${al.join('. ')}. Consider ESI 2 (danger zone vitals).</span></div>` : '';
+          $('#tGo', el).disabled = !(lvl && $('#tArea', el).value);
+        };
+        $$('input,select', el).forEach(i => { i.addEventListener('input', chk); i.addEventListener('change', chk); });
+        $('#tGo', el).addEventListener('click', () => {
+          const before = [e.triage, e.area];
+          Object.assign(e, { triage: lvl, area: $('#tArea', el).value, triagedAt: e.triagedAt || Rc.now(), triageNote: $('#tNote', el).value.trim(), triageVitals: { hr: $('#vHr', el).value, bp: $('#vBp', el).value, spo2: $('#vSp', el).value, temp: $('#vTe', el).value, rr: $('#vRr', el).value, pain: $('#vPa', el).value }, triagedBy: Rc.myName() });
+          if (e.status === 'Awaiting triage') e.status = 'Waiting';
+          save(); audit(before[0] ? 'Re-triaged ER patient' : 'Triaged ER patient', 'Encounter', { id: e.id, label: e.no + ' ' + p.name }, [['ESI', String(before[0] || ''), String(lvl)], ['Area', before[1] || '', e.area]]);
+          close(); toast(`${e.token} triaged ESI ${lvl}, routed to ${e.area}`); drawBody();
+        });
+        drawEsi(); chk();
+      } });
+  }
+  function detail(e) {
+    const p = Kit.pt(e.patientId); const tr = triOf(e.triage); const isLive = !/Discharged|Cancelled|Left without being seen|Admitted/.test(e.status);
+    const req = (db.receptionAdmRequests || []).find(r => r.id === e.admitRequestId);
+    UI.drawer({ title: e.token + ' · ' + e.no, sub: esc(e.status) + ' · arrived ' + esc(fmtDate(e.start)) + ' by ' + esc(e.arrival || ''),
+      body: `${p.alias ? `<div class="banner warn" style="margin-bottom:12px">${icon('user-round-x')}<span class="grow">Temporary alias. ${esc(p.aliasNote || '')}</span><button class="btn sm" id="dFix" ${Rc.gate('reception.reg.patient', 'edit')}>Complete profile</button></div>` : ''}
+        ${Kit.patientBanner(p, e)}
+        <dl class="kv"><dt>Triage</dt><dd>${e.triage ? `${Kit.triage(e.triage)} ${esc(tr.name)} · ${esc(tr.colour)} · target ${tr.targetMins} min` : '<span class="badge b-warn">Awaiting triage</span>'}</dd><dt>Area</dt><dd>${esc(e.area || '-')}</dd><dt>Chief complaint</dt><dd>${esc(e.complaint)}</dd>
+          <dt>Door to triage</dt><dd>${triAt(e) ? Rc.dur(Rc.mins(e.start, triAt(e))) : '-'}</dd><dt>Door to doctor</dt><dd>${seenAt(e) ? Rc.dur(Rc.mins(e.start, seenAt(e))) : overdue(e) ? '<span class="badge b-err">Over target</span>' : '-'}</dd><dt>Length of stay</dt><dd>${Rc.dur(los(e))}</dd>
+          ${e.triageVitals ? `<dt>Triage vitals</dt><dd class="small">HR ${esc(e.triageVitals.hr || '-')} · BP ${esc(e.triageVitals.bp || '-')} · SpO2 ${esc(e.triageVitals.spo2 || '-')} · T ${esc(e.triageVitals.temp || '-')} · pain ${esc(e.triageVitals.pain || '-')}</dd>` : ''}
+          ${req ? `<dt>Admission</dt><dd>${esc(req.no)} ${Kit.status(req.status)} <a href="${R('reception/admissions.html?req=' + req.id)}">Open</a></dd>` : ''}
+          ${e.disposition ? `<dt>Disposition</dt><dd>${esc(e.disposition)}${e.cancelReason ? ' · ' + esc(e.cancelReason) : ''}</dd>` : ''}</dl>
+        ${isLive ? `<div class="section-t" style="margin:16px 0 8px">Move to</div><div class="row wrap">${Rc.AREAS.map(a => `<button class="btn sm ${e.area === a ? 'primary' : ''}" data-area="${a}" ${Rc.gate(OPT, 'edit')} ${!e.triage ? 'disabled title="Triage first"' : ''}>${esc(a)}</button>`).join('')}</div>
+        <div class="section-t" style="margin:16px 0 8px">Status</div><div class="row wrap">${['Waiting', 'Under treatment', 'Under observation'].map(s => `<button class="btn sm ${e.status === s ? 'primary' : ''}" data-st="${s}" ${Rc.gate(OPT, 'edit')} ${!e.triage ? 'disabled title="Triage first"' : ''}>${esc(s)}</button>`).join('')}</div>` : ''}`,
+      foot: isLive ? `<button class="btn danger" id="dCx" ${Rc.gate(OPT, 'cancel')}>Cancel or LWBS</button><span class="grow"></span><button class="btn" id="dBand" ${Rc.gate(OPT, 'print')}>${icon('printer')} Wristband</button><button class="btn" id="dTri" ${Rc.gate(OPT, 'edit')}>${icon('clipboard-pen')} ${e.triage ? 'Re-triage' : 'Triage'}</button><button class="btn" id="dAdm" ${Rc.gate('reception.visit.adm', 'add')} ${e.admitRequestId ? 'disabled title="Admission already requested"' : ''}>${icon('bed-double')} Request admission</button><button class="btn primary" id="dOut" ${Rc.gate(OPT, 'edit')} ${!e.triage ? 'disabled title="Triage first"' : ''}>${icon('log-out')} Discharge from ER</button>`
+        : `<a class="btn" href="${R('reception/patient.html?id=' + p.id)}">${icon('user')} Patient 360</a><span class="grow"></span><button class="btn" data-close>Close</button>`,
+      onMount: (el, close) => {
+        const on = (id, f) => { const b = $('#' + id, el); if (b) b.addEventListener('click', f); };
+        on('dFix', () => { close(); Rc.registerDrawer(p, { onSave: drawBody }); });
+        on('dBand', () => Rc.printWristband(p, e));
+        on('dTri', () => { close(); triage(e); });
+        on('dAdm', () => { close(); Rc.admitRequest(p, (r) => { e.admitRequestId = r.id; save(); drawBody(); }, { type: 'Emergency', admittingId: 'dr_09', reason: e.complaint, source: 'ER', erEncounterId: e.id }); });
+        $$('[data-area]', el).forEach(b => b.addEventListener('click', () => { const bf = e.area; e.area = b.dataset.area; save(); audit('Moved ER patient', 'Encounter', { id: e.id, label: e.no }, [['Area', bf, e.area]]); close(); toast(e.token + ' moved to ' + e.area); drawBody(); }));
+        $$('[data-st]', el).forEach(b => b.addEventListener('click', () => { const bf = e.status; e.status = b.dataset.st; if (e.status !== 'Waiting' && !e.seenAt) e.seenAt = Rc.now(); save(); audit('Updated ER status', 'Encounter', { id: e.id, label: e.no }, [['Status', bf, e.status]]); close(); drawBody(); }));
+        on('dOut', () => { close(); let disp = 'Discharged home';
+          confirm({ title: 'Discharge ' + e.token + ' from ER?', tone: 'primary', confirm: 'Discharge', icon: 'log-out', body: esc(p.name) + ' leaves the ER board.',
+            extra: `<div class="field" style="margin-top:12px"><label>Disposition</label><select class="input" id="dispSel">${['Discharged home', 'Admitted to ward', 'Transferred to another hospital', 'Left against medical advice', 'Death'].map(x => `<option>${x}</option>`).join('')}</select></div>`,
+            onMount: (m) => $('#dispSel', m).addEventListener('change', (ev) => { disp = ev.target.value; }),
+            onConfirm: () => { const bf = e.status; e.status = disp === 'Admitted to ward' ? 'Admitted' : 'Discharged'; e.disposition = disp; e.end = Rc.now(); save(); audit('Discharged from ER', 'Encounter', { id: e.id, label: e.no + ' ' + p.name }, [['Status', bf, e.status], ['Disposition', '', disp]]); toast(e.token + ': ' + disp); drawBody(); } }); });
+        on('dCx', () => { close(); let kind = 'Left without being seen';
+          confirm({ title: 'Remove ' + e.token + ' from the ER?', confirm: 'Remove', reason: true, body: 'Use this for registration errors or patients who left before being seen.',
+            extra: `<div class="field" style="margin-top:12px"><label>Type</label><select class="input" id="cxK"><option>Left without being seen</option><option>Cancelled</option></select></div>`,
+            onMount: (m) => $('#cxK', m).addEventListener('change', (ev) => { kind = ev.target.value; }),
+            onConfirm: (reason) => { const bf = e.status; e.status = kind; e.cancelReason = reason; e.disposition = kind; e.end = Rc.now(); save(); audit('Removed from ER', 'Encounter', { id: e.id, label: e.no }, [['Status', bf, kind]], { reason }); toast('Removed from the board'); drawBody(); } }); });
+      } });
+  }
+  $('#reg').addEventListener('click', () => register(false));
+  $('#regUnk').addEventListener('click', () => register(true));
+  drawBody();
+})();
+</script>
+</body>
+</html>

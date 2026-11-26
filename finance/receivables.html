@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Accounts receivable · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<style>.nw{white-space:nowrap}.bk-cell{min-width:96px}</style>
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-finance.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/finance.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, drawer, confirm, field, showErrors, uid, nowStamp } = UI;
+  const OPT = 'finance.ar';
+  if (!UI.page({ opt: OPT, title: 'Accounts receivable', subtitle: 'Patient and insurer ageing (0-30, 31-60, 61-90, 91-180, over 180 days), statements, credit notes and write-offs with maker-checker approval.',
+    actions: Fin.btn({ attrs: 'id="newWo"', icon: 'eraser', label: 'Write-off', gate: Fin.gate(OPT, 'add') }) + Fin.btn({ cls: 'primary', attrs: 'id="newCn"', icon: 'file-minus', label: 'Credit note', gate: Fin.gate(OPT, 'add') }) })) return;
+  const T = Fin.T, me = Fin.meName();
+  let tab = UI.param('tab') || 'pt';
+  $('#page').innerHTML = `<div class="grid g5" id="kp" style="margin-bottom:16px"></div><div id="tabs" style="margin-bottom:12px"></div><div id="body"></div>`;
+  const pName = (party, id) => Fin.partyName(party, id);
+
+  function kpis() {
+    const items = Fin.arItems(tab === 'ins' ? 'Insurer' : 'Patient').concat(tab === 'pt' || tab === 'ins' ? [] : Fin.arItems('Insurer'));
+    const b = [0, 0, 0, 0, 0]; items.forEach(x => { b[x.bucket] += x.out; });
+    const tot = b.reduce((s, x) => s + x, 0) || 1;
+    $('#kp').innerHTML = Fin.BUCKETS.map((l, i) => Kit.kpi(l + ' days', Fin.amt(b[i]).replace(/\.\d+$/, ''), { unit: 'KWD', foot: Math.round(100 * b[i] / tot) + '% of ' + (tab === 'pt' ? 'patient' : tab === 'ins' ? 'insurer' : 'total') + ' receivables', icon: i >= 3 ? 'triangle-alert' : 'hourglass' })).join('');
+  }
+  function drawTabs() {
+    const pc = db.financeCreditNotes.filter(c => c.status === 'Pending approval').length, pw = db.financeWriteOffs.filter(c => c.status === 'Pending approval').length;
+    Kit.tabs($('#tabs'), [{ id: 'pt', label: 'Patient ageing', icon: 'user', count: Fin.ageing('Patient').length }, { id: 'ins', label: 'Insurer and corporate ageing', icon: 'shield-check', count: Fin.ageing('Insurer').length },
+      { id: 'cn', label: 'Credit notes', icon: 'file-minus', count: pc || null }, { id: 'wo', label: 'Write-offs', icon: 'eraser', count: pw || null }], tab, (x) => { tab = x; kpis(); draw(); });
+  }
+  function refresh() { kpis(); drawTabs(); draw(); }
+  function draw() { if (tab === 'pt' || tab === 'ins') ageingTable(tab === 'pt' ? 'Patient' : 'Insurer'); else adjTable(tab); }
+
+  function ageingTable(party) {
+    const rows = Fin.ageing(party);
+    const tot = [0, 0, 0, 0, 0]; rows.forEach(r => r.b.forEach((v, i) => { tot[i] += v; }));
+    UI.table($('#body'), {
+      columns: [{ label: party === 'Patient' ? 'Patient' : 'Payer', sort: r => r.name, render: r => party === 'Patient' ? Kit.patientCell(Kit.pt(r.partyId)) : `<div class="cell-main"><b>${esc(r.name)}</b><span>${esc((Kit.payer(r.partyId) || {}).type || '')} · ${(Kit.payer(r.partyId) || {}).creditDays || 0} credit days</span></div>` }]
+        .concat(Fin.BUCKETS.map((l, i) => ({ label: l, cls: 'num bk-cell', sort: r => r.b[i], render: r => r.b[i] ? `<span style="${i >= 3 ? 'color:var(--error);font-weight:700' : ''}">${Fin.amt(r.b[i])}</span>` : '<span class="muted">-</span>' })))
+        .concat([{ label: 'Total', cls: 'num', sort: r => r.total, render: r => `<b>${Fin.amt(r.total)}</b>` }, { label: 'Items', cls: 'num', render: r => r.items.length },
+          { label: '', cls: 'actions', render: r => `<button class="btn xs" data-st="${esc(r.partyId)}">${icon('file-text')} Statement</button>` }]),
+      rows: () => rows, search: r => r.name + ' ' + ((Kit.pt(r.partyId) || {}).mrn || ''), searchPlaceholder: party === 'Patient' ? 'Patient name or MRN' : 'Payer',
+      filters: [{ label: 'Oldest item', options: Fin.BUCKETS.map((l, i) => [String(i), l + ' days']), test: (r, v) => Math.max.apply(null, r.items.map(x => x.bucket)) === +v }],
+      onRow: r => statement(party, r.partyId), empty: 'No open receivables',
+      toolbar: `<span class="small muted">Total ${Fin.money(tot.reduce((s, x) => s + x, 0))}</span>`,
+      afterDraw: (tb) => $$('[data-st]', tb).forEach(b => b.addEventListener('click', () => statement(party, b.dataset.st))),
+    });
+  }
+
+  function statement(party, partyId) {
+    const draw = (el) => {
+      const items = Fin.arItems(party).filter(x => x.partyId === partyId);
+      const rc = db.financeReceipts.filter(r => r.status === 'Posted' && (party === 'Patient' ? r.patientId === partyId : r.payerId === partyId)).slice(-8);
+      const adj = db.financeCreditNotes.filter(c => c.partyId === partyId).map(c => Object.assign({ t: 'Credit note' }, c)).concat(db.financeWriteOffs.filter(c => c.partyId === partyId).map(c => Object.assign({ t: 'Write-off' }, c)));
+      const p = party === 'Patient' ? Kit.pt(partyId) : null;
+      $('#stB', el).innerHTML = `${p ? Kit.patientBanner(p) : `<div class="card card-pad"><b style="font-size:16px">${esc(pName(party, partyId))}</b><div class="small muted">${esc((Kit.payer(partyId) || {}).type || '')} · TPA ${esc((Kit.payer(partyId) || {}).tpa || 'none')} · ${esc((Kit.payer(partyId) || {}).contact || '')}</div></div>`}
+        <div class="grid g5" style="margin:14px 0">${Fin.BUCKETS.map((l, i) => `<div class="card card-pad"><div class="xs muted b">${l} days</div><b>${Fin.amt(Kit.sumBy(items.filter(x => x.bucket === i), x => x.out))}</b></div>`).join('')}</div>
+        <div class="card"><div class="card-head"><h3>${icon('list')} Open items</h3><div class="actions"><b>${Fin.money(Kit.sumBy(items, x => x.out))}</b></div></div>
+        <div class="table-wrap"><table class="tbl compact"><thead><tr><th>Reference</th><th>Date</th><th>Description</th><th class="num">Age</th><th class="num">Original</th><th class="num">Outstanding</th><th></th></tr></thead><tbody>
+        ${items.map(x => `<tr><td class="mono small nw">${x.invoiceId ? `<a href="${R('finance/billing.html?id=' + x.invoiceId)}">${esc(x.ref)}</a>` : esc(x.ref)}</td><td class="nw">${esc(Kit.day(x.date))}</td><td class="small">${esc(x.desc)}</td><td class="num">${Fin.ageTag(x.days)}</td><td class="num">${Fin.amt(x.amount)}</td><td class="num"><b>${Fin.amt(x.out)}</b></td><td class="actions nw">${Fin.btn({ cls: 'xs', attrs: `data-cn="${x.key}"`, icon: 'file-minus', title: 'Credit note', gate: Fin.gate(OPT, 'add') })} ${Fin.btn({ cls: 'xs danger', attrs: `data-wo="${x.key}"`, icon: 'eraser', title: 'Write-off', gate: Fin.gate(OPT, 'add') })}</td></tr>`).join('') || `<tr><td colspan="7"><div class="empty">${icon('circle-check')}<b>No open items</b></div></td></tr>`}
+        </tbody></table></div></div>
+        <div class="grid g2" style="margin-top:14px"><div class="card"><div class="card-head"><h3>${icon('banknote')} Recent receipts</h3></div><div class="list-rows pad">${rc.map(r => `<div><div class="grow"><b class="mono small">${esc(r.no)}</b><div class="xs muted">${esc(Kit.day(r.date))} · ${esc(r.mode)}</div></div><b class="num">${Fin.amt(r.amount)}</b></div>`).join('') || '<div class="muted small">No receipts</div>'}</div></div>
+        <div class="card"><div class="card-head"><h3>${icon('file-minus')} Credit notes and write-offs</h3></div><div class="list-rows pad">${adj.map(c => `<div><div class="grow"><b>${esc(c.t)} <span class="mono small">${esc(c.no)}</span></b><div class="xs muted">${esc(c.reason)}</div></div><div style="text-align:end"><b class="num">${Fin.amt(c.amount)}</b><div>${Kit.status(c.status)}</div></div></div>`).join('') || '<div class="muted small">None</div>'}</div></div></div>`;
+      const byKey = (k) => items.find(x => x.key === k);
+      $$('[data-cn]', el).forEach(b => b.addEventListener('click', () => adjForm('cn', byKey(b.dataset.cn), () => draw(el))));
+      $$('[data-wo]', el).forEach(b => b.addEventListener('click', () => adjForm('wo', byKey(b.dataset.wo), () => draw(el))));
+      return items;
+    };
+    drawer({ title: 'Statement of account', sub: esc(pName(party, partyId) + ' · as at ' + Kit.day(T)), wide: true, body: '<div id="stB"></div>',
+      foot: `<button class="btn" data-close>Close</button><span class="grow"></span>${Fin.btn({ cls: 'primary', attrs: 'id="stPr"', icon: 'printer', label: 'Print statement', gate: Fin.gate(OPT, 'print') })}`,
+      onMount: (el) => {
+        draw(el);
+        $('#stPr', el).addEventListener('click', () => {
+          const items = Fin.arItems(party).filter(x => x.partyId === partyId);
+          const p = party === 'Patient' ? Kit.pt(partyId) : null;
+          Kit.printDoc({ title: 'Statement of account', sub: pName(party, partyId), html: `<h3 style="margin:0 0 8px">Statement of account as at ${esc(Kit.day(T))}</h3>${Fin.kvSheet([[party === 'Patient' ? 'Patient' : 'Payer', pName(party, partyId) + (p ? ' (' + p.mrn + ')' : '')], ['Address', p ? p.address : ((Kit.payer(partyId) || {}).contact || '')], ['Currency', 'KWD']])}
+            ${Fin.sheetTable(['Reference', 'Date', 'Description', 'Days', 'Amount', 'Outstanding'], items.map(x => [x.ref, Kit.day(x.date), x.desc, String(x.days), x.amount, x.out]), ['Total', '', '', '', '', Kit.sumBy(items, x => x.out)])}
+            ${Fin.sheetTable(Fin.BUCKETS.map(b => b + ' days'), [Fin.BUCKETS.map((b, i) => Kit.sumBy(items.filter(x => x.bucket === i), x => x.out))])}
+            <p style="font-size:11px;color:#555;margin-top:16px">Please settle the outstanding balance within your credit terms. Contact Finance, Tibbi Salmiya Hospital, +965 2222 1100.</p>` });
+          audit('Statement printed', 'Statement', { id: partyId, label: pName(party, partyId) }, []);
+        });
+      } });
+  }
+
+  /* ---------- Credit notes and write-offs ---------- */
+  const LIST = (k) => k === 'cn' ? db.financeCreditNotes : db.financeWriteOffs;
+  const NAME = (k) => k === 'cn' ? 'Credit note' : 'Write-off';
+  function adjTable(k) {
+    UI.table($('#body'), {
+      columns: [
+        { label: NAME(k), sort: c => c.no, render: c => `<div class="cell-main"><b class="mono nw">${esc(c.no)}</b><span>${esc(Kit.day(c.date))}</span></div>` },
+        { label: 'Party', sort: c => pName(c.party, c.partyId), render: c => `<b>${esc(pName(c.party, c.partyId))}</b><div class="xs muted">${esc(c.party)} · ${esc(itemRef(c))}</div>` },
+        { label: 'Reason', render: c => `<span class="small">${esc(c.reason)}</span>${c.rejectReason ? `<div class="xs" style="color:var(--error)">Rejected: ${esc(c.rejectReason)}</div>` : ''}` },
+        { label: 'Amount', cls: 'num', sort: c => c.amount, render: c => `<b>${Fin.amt(c.amount)}</b>` },
+        { label: 'Raised by', render: c => `<span class="small">${esc(c.by)}${c.by === me ? ' <span class="badge b-warn nodot">You</span>' : ''}</span><div class="xs muted">${esc(Kit.when(c.at))}</div>` },
+        { label: 'Status', sort: c => c.status, render: c => Kit.status(c.status) + (c.approvedBy ? `<div class="xs muted">${esc(c.approvedBy)}</div>` : '') },
+        { label: '', cls: 'actions', render: c => c.status === 'Pending approval' ? Fin.btn({ cls: 'xs success', attrs: `data-ap="${c.id}"`, icon: 'check', label: 'Approve', gate: Fin.gate(OPT, 'approve', c) }) + ' ' + Fin.btn({ cls: 'xs danger', attrs: `data-rj="${c.id}"`, icon: 'x', label: 'Reject', gate: Fin.gate(OPT, 'approve', c) }) : c.journalId ? `<a class="btn xs" href="${R('finance/journals.html?id=' + c.journalId)}">${icon('book-open')} Journal</a>` : '' },
+      ],
+      rows: () => LIST(k).slice().sort((a, b) => (a.status === 'Pending approval' ? 0 : 1) - (b.status === 'Pending approval' ? 0 : 1) || b.at.localeCompare(a.at)),
+      search: c => [c.no, pName(c.party, c.partyId), c.reason, c.by].join(' '),
+      filters: [{ label: 'Party', options: [['Patient', 'Patient'], ['Insurer', 'Insurer']], test: (c, v) => c.party === v }, { label: 'Status', options: ['Pending approval', 'Approved', 'Rejected'].map(x => [x, x]), test: (c, v) => c.status === v }],
+      empty: 'No ' + NAME(k).toLowerCase() + 's',
+      afterDraw: (tb) => {
+        $$('[data-ap]', tb).forEach(b => b.addEventListener('click', () => decide(k, LIST(k).find(c => c.id === b.dataset.ap), true)));
+        $$('[data-rj]', tb).forEach(b => b.addEventListener('click', () => decide(k, LIST(k).find(c => c.id === b.dataset.rj), false)));
+      },
+    });
+  }
+  function itemRef(c) {
+    if (c.invoiceId) return ((db.invoices || []).find(v => v.id === c.invoiceId) || {}).no || '';
+    return (db.financeArOpening.find(x => x.id === c.openItemId) || {}).no || '';
+  }
+  function itemOut(c) {
+    const it = Fin.arItems(c.party).find(x => (c.invoiceId && x.invoiceId === c.invoiceId) || (c.openItemId && x.openItemId === c.openItemId));
+    return it ? it.out : 0;
+  }
+  function decide(k, c, ok) {
+    if (ok) {
+      const out = itemOut(c);
+      if (c.amount > out + 0.0005) { toast(`The item now has only ${Fin.amt(out)} outstanding. Reject and raise a new ${NAME(k).toLowerCase()}.`, 'err'); return; }
+      const lock = Fin.lockMsg(T); if (lock) { toast(lock, 'err'); return; }
+      const dr = k === 'cn' ? '4900' : '5440', cr = Fin.recvCode(c.party, c.partyId);
+      confirm({ title: `Approve ${NAME(k).toLowerCase()} ${c.no}?`, tone: 'primary', icon: 'stamp', body: `${Fin.money(c.amount)} for ${esc(pName(c.party, c.partyId))}. ${esc(c.reason)}`, impact: [`Posts Dr ${esc(Fin.aLabel(Fin.AC(dr).id))}, Cr ${esc(Fin.aLabel(Fin.AC(cr).id))}`, `Outstanding on ${esc(itemRef(c))} drops from ${Fin.amt(out)} to ${Fin.amt(out - c.amount)}`], confirm: 'Approve and post', onConfirm: () => {
+        const j = Fin.autoJournal('AR', T, 'br_01', `${NAME(k)} ${c.no}: ${pName(c.party, c.partyId)}`, [Fin.L(dr, c.amount, 0, k === 'cn' ? 'cc_adm' : 'cc_adm', c.reason), Fin.L(cr, 0, c.amount, '', itemRef(c))], c.no);
+        Object.assign(c, { status: 'Approved', approvedBy: me, approvedAt: nowStamp(), journalId: j.id });
+        const inv = c.invoiceId && (db.invoices || []).find(v => v.id === c.invoiceId); if (inv && c.party === 'Patient') Fin.invStatus(inv);
+        save(); audit(NAME(k) + ' approved', NAME(k), { id: c.id, label: c.no }, [['Status', 'Pending approval', 'Approved'], ['Journal', '', j.no]]);
+        toast(`${c.no} approved and posted (${j.no})`); refresh();
+      } });
+    } else {
+      confirm({ title: `Reject ${c.no}?`, reason: true, confirm: 'Reject', onConfirm: (reason) => {
+        Object.assign(c, { status: 'Rejected', approvedBy: me, approvedAt: nowStamp(), rejectReason: reason }); save();
+        audit(NAME(k) + ' rejected', NAME(k), { id: c.id, label: c.no }, [['Status', 'Pending approval', 'Rejected']], { reason }); toast('Rejected'); refresh();
+      } });
+    }
+  }
+  function adjForm(k, item, done) {
+    drawer({ title: (k === 'cn' ? 'New credit note' : 'New write-off'), sub: k === 'cn' ? 'For billing corrections and agreed tariff differences' : 'For balances that cannot be collected. Needs approval by a second user.',
+      body: `<div class="err-summary hidden"></div><div class="form-grid">
+        ${field({ id: 'aParty', label: 'Party type', type: 'select', options: [['Patient', 'Patient'], ['Insurer', 'Insurer or corporate']], value: item ? item.party : 'Insurer', req: true, placeholder: false })}
+        ${field({ id: 'aWho', label: 'Party', type: 'select', options: [], req: true })}
+        ${field({ id: 'aItem', label: 'Open item', type: 'select', options: [], req: true, full: true })}
+        ${field({ id: 'aAmt', label: 'Amount (KWD)', type: 'number', req: true, attrs: 'step="0.001" min="0.001"' })}
+        ${k === 'wo' ? field({ id: 'aType', label: 'Write-off type', type: 'select', options: ['Uncollectable patient balance', 'Final insurer rejection', 'Small balance', 'Deceased or left the country'].map(x => [x, x]), req: true, placeholder: false }) : field({ id: 'aType', label: 'Credit type', type: 'select', options: ['Billing correction', 'Tariff difference', 'Package adjustment', 'Duplicate charge'].map(x => [x, x]), req: true, placeholder: false })}
+        ${field({ id: 'aReason', label: 'Reason', type: 'textarea', req: true, full: true })}
+        </div><div class="banner warn" style="margin-top:12px">${icon('stamp')}<span>Another user with Approve permission must approve it. You cannot approve your own request.</span></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="aGo" disabled>Submit for approval</button>`,
+      onMount: (el, close) => {
+        const fillWho = () => {
+          const party = $('#aParty', el).value, list = Fin.ageing(party);
+          $('#aWho', el).innerHTML = '<option value="">Select</option>' + list.map(r => `<option value="${esc(r.partyId)}">${esc(r.name)} · ${Fin.amt(r.total)}</option>`).join('');
+          if (item && item.party === party) $('#aWho', el).value = item.partyId;
+          fillItems();
+        };
+        const fillItems = () => {
+          const items = Fin.arItems($('#aParty', el).value).filter(x => x.partyId === $('#aWho', el).value);
+          $('#aItem', el).innerHTML = '<option value="">Select</option>' + items.map(x => `<option value="${esc(x.key)}">${esc(x.ref)} · ${esc(Kit.day(x.date))} · ${x.days} days · ${Fin.amt(x.out)} outstanding</option>`).join('');
+          if (item && items.some(x => x.key === item.key)) { $('#aItem', el).value = item.key; if (!$('#aAmt', el).value) $('#aAmt', el).value = item.out.toFixed(3); }
+          check();
+        };
+        const cur = () => Fin.arItems($('#aParty', el).value).find(x => x.key === $('#aItem', el).value);
+        const check = () => {
+          const it = cur(), a = +$('#aAmt', el).value, errs = {};
+          if (it && $('#aAmt', el).value && (a <= 0 || a > it.out + 0.0005)) errs.aAmt = `Enter up to ${Fin.amt(it.out)}.`;
+          showErrors(el, errs);
+          $('#aGo', el).disabled = !(it && a > 0 && a <= it.out + 0.0005 && $('#aReason', el).value.trim().length >= 3);
+        };
+        $('#aParty', el).addEventListener('change', () => { item = null; fillWho(); });
+        $('#aWho', el).addEventListener('change', fillItems);
+        $('#aItem', el).addEventListener('change', () => { const it = cur(); if (it) $('#aAmt', el).value = it.out.toFixed(3); check(); });
+        $$('input,textarea', el).forEach(i => i.addEventListener('input', check));
+        fillWho();
+        $('#aGo', el).addEventListener('click', () => {
+          const it = cur();
+          const rec = { id: uid(k), no: Fin.nextNo(k === 'cn' ? 'CN' : 'WO', LIST(k)), date: T, party: it.party, partyId: it.partyId, invoiceId: it.invoiceId, openItemId: it.openItemId, amount: Fin.r3(+$('#aAmt', el).value), reason: $('#aType', el).value + ': ' + $('#aReason', el).value.trim(), status: 'Pending approval', by: me, at: nowStamp(), approvedBy: '', approvedAt: '' };
+          LIST(k).push(rec); save(); audit(NAME(k) + ' raised', NAME(k), { id: rec.id, label: rec.no }, [['Item', '', it.ref], ['Amount', '', Fin.amt(rec.amount)]], { reason: rec.reason });
+          close(); toast(rec.no + ' sent for approval'); if (done) done(); refresh();
+        });
+      } });
+  }
+  $('#newCn') && $('#newCn').addEventListener('click', () => adjForm('cn'));
+  $('#newWo') && $('#newWo').addEventListener('click', () => adjForm('wo'));
+  kpis(); drawTabs(); draw();
+})();
+</script>
+</body>
+</html>

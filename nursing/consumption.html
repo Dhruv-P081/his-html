@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Item consumption · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-nursing.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/nursing.js"></script>
+<style>
+  .lines td { vertical-align: top; }
+  .lines .input { min-width: 0; }
+</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, can, toast, audit, field, showErrors, R } = UI;
+  const OPT = 'nursing.consume';
+  const canAdd = can(OPT, 'add'), canCancel = can(OPT, 'cancel');
+  if (!UI.page({ opt: OPT, title: 'Item consumption', subtitle: 'Patient consumption with or without billing drop-off, and departmental consumption. Stock is deducted from the ward sub-store by batch, earliest expiry first.',
+    actions: `${Nursing.wardSelect()}<button class="btn primary" id="newC" ${canAdd ? '' : 'disabled title="Needs Add permission"'}>${icon('plus')} New consumption</button>` })) return;
+  let ward = Nursing.getWard(), tab = 'all';
+  const storeOf = (w) => (Kit.ward(w) || {}).warehouseId || 'wh_04';
+  const avail = (itemId, wh) => db.stock.filter(s => s.itemId === itemId && s.warehouseId === wh && s.expiry >= db.TODAY).reduce((n, s) => n + Number(s.qty || 0), 0);
+  const storeItems = (wh) => db.items.filter(it => it.status === 'Active' && db.stock.some(s => s.itemId === it.id && s.warehouseId === wh));
+
+  function render() {
+    const wh = storeOf(ward), whName = UI.L.wName(wh);
+    const list = db.nursingConsumption.filter(c => c.warehouseId === wh);
+    const month = db.TODAY.slice(0, 7), posted = list.filter(c => c.status === 'Posted');
+    const low = storeItems(wh).filter(it => avail(it.id, wh) < Math.max(20, it.min / 5));
+    $('#page').innerHTML = `
+      ${(Kit.ward(ward) || {}).warehouseId ? '' : `<div class="banner info" style="margin-bottom:14px">${icon('info')}<span>${esc(Kit.ward(ward).name)} has no sub-store of its own. Its consumption is issued from ${esc(whName)}.</span></div>`}
+      <div class="grid g4" style="margin-bottom:16px">
+        ${Kit.kpi('Records this month', posted.filter(c => c.at.startsWith(month)).length, { icon: 'package', foot: whName })}
+        ${Kit.kpi('Billed to patients', Kit.money(Kit.sumBy(posted.filter(c => c.kind === 'Patient'), c => c.total)), { icon: 'receipt', foot: 'Added to interim invoices' })}
+        ${Kit.kpi('Units consumed', Kit.num(Kit.sumBy(posted, c => Kit.sumBy(c.lines, l => l.qty))), { icon: 'boxes', foot: posted.filter(c => c.kind === 'Department').length + ' departmental records' })}
+        ${Kit.kpi('Low stock items', low.length, { icon: 'package-minus', foot: 'In ' + whName })}
+      </div>
+      <div class="card" style="margin-bottom:16px"><div id="tabs"></div><div id="tbl"></div></div>
+        <div class="card"><div class="card-head"><h3>${icon('warehouse')} ${esc(whName)}</h3><a class="btn sm" href="${R('material/stock.html')}">Stock ${icon('arrow-right')}</a></div>
+          <div class="table-wrap"><table class="tbl compact"><thead><tr><th>Item</th><th>Code</th><th class="num">Price</th><th class="num">Batches</th><th class="num">Available</th><th>Level</th></tr></thead><tbody>${storeItems(wh).map(it => { const a = avail(it.id, wh), lowL = a < Math.max(20, it.min / 5); return `<tr><td><b>${esc(it.name)}</b></td><td class="mono small">${esc(it.code)}</td><td class="num">${Kit.money(it.price)}</td><td class="num">${db.stock.filter(s => s.itemId === it.id && s.warehouseId === wh && s.qty > 0).length}</td><td class="num"><b style="color:${lowL ? 'var(--error)' : 'inherit'}">${Kit.num(a)}</b> <span class="xs muted">${esc(it.uom)}</span></td><td>${Kit.status(lowL ? 'Low stock' : 'Available')}</td></tr>`; }).join('')}</tbody></table></div></div>`;
+    Kit.tabs($('#tabs'), [{ id: 'all', label: 'All', count: list.length }, { id: 'Patient', label: 'Patient', count: list.filter(c => c.kind === 'Patient').length }, { id: 'Department', label: 'Departmental', count: list.filter(c => c.kind === 'Department').length }, { id: 'Cancelled', label: 'Cancelled', count: list.filter(c => c.status === 'Cancelled').length }], tab, (t) => { tab = t; drawTable(list); });
+    drawTable(list);
+  }
+  function drawTable(list) {
+    UI.table($('#tbl'), {
+      columns: [{ label: 'Number', sort: c => c.no, render: c => `<span class="mono">${esc(c.no)}</span>` }, { label: 'Date', sort: c => c.at, render: c => Kit.when(c.at) },
+        { label: 'Patient or department', render: c => c.kind === 'Patient' ? `<b>${esc(Kit.ptName(c.patientId))}</b><div class="xs muted">${esc(Nursing.bedNo(Kit.enc(c.encounterId)))} · ${esc((Kit.pt(c.patientId) || {}).mrn)}</div>` : `<b>${esc(c.costCentre || 'Ward use')}</b><div class="xs muted">Departmental</div>` },
+        { label: 'Items', render: c => `<span class="small">${c.lines.map(l => esc((Kit.item(l.itemId) || {}).name) + ' x' + l.qty).join(', ')}</span>` },
+        { label: 'Billing', render: c => c.kind === 'Department' ? '<span class="tag">Not billable</span>' : c.billing ? `<span class="badge b-info nodot">Billed</span><div class="xs muted">${esc(c.invoiceNo || 'Interim invoice')}</div>` : '<span class="tag">No billing drop-off</span>' },
+        { label: 'Amount', cls: 'num', sort: c => c.total, render: c => c.total ? Kit.money(c.total) : '<span class="mute">-</span>' }, { label: 'Status', render: c => Kit.status(c.status) }],
+      rows: () => list.filter(c => tab === 'all' ? true : tab === 'Cancelled' ? c.status === 'Cancelled' : c.kind === tab).sort((a, b) => b.at.localeCompare(a.at)),
+      search: c => [c.no, Kit.ptName(c.patientId), c.costCentre, c.lines.map(l => (Kit.item(l.itemId) || {}).name).join(' ')].join(' '), searchPlaceholder: 'Search number, patient or item',
+      filters: [{ label: 'Status', options: [['Posted', 'Posted'], ['Cancelled', 'Cancelled']], test: (c, v) => c.status === v }, { label: 'Date', options: [['today', 'Today'], ['week', 'Last 7 days']], test: (c, v) => v === 'today' ? c.at.startsWith(db.TODAY) : c.at.slice(0, 10) >= Kit.addDays(db.TODAY, -7) }],
+      onRow: view, empty: 'No consumption recorded', emptyIcon: 'package',
+    });
+  }
+
+  /* FEFO deduction plan for one line (skips expired batches). */
+  function plan(itemId, wh, qty) {
+    const out = []; let left = qty;
+    db.stock.filter(s => s.itemId === itemId && s.warehouseId === wh && s.expiry >= db.TODAY && s.qty > 0).sort((a, b) => a.expiry.localeCompare(b.expiry)).forEach(s => { if (left <= 0) return; const take = Math.min(left, s.qty); out.push({ stockId: s.id, batch: s.batch, expiry: s.expiry, qty: take }); left -= take; });
+    return left > 0 ? null : out;
+  }
+  function newC() {
+    const wh = storeOf(ward), items = storeItems(wh), encs = Nursing.inpatients(ward);
+    let kind = 'Patient', lines = [{ itemId: '', qty: 1, billable: true }];
+    UI.drawer({ title: 'New item consumption', sub: `${esc(Kit.ward(ward).name)} · issued from ${esc(UI.L.wName(wh))}`, wide: true,
+      body: `<div class="err-summary hidden"></div><div id="kSeg" style="margin-bottom:14px"></div><div class="form-grid" id="head"></div>
+        <div class="section-t">Items</div><div class="table-wrap" style="border:1px solid var(--line);border-radius:12px"><table class="tbl compact lines"><thead><tr><th style="width:38%">Item</th><th style="width:90px">Quantity</th><th>Batches (earliest expiry first)</th><th id="bh">Bill</th><th class="num">Amount</th><th></th></tr></thead><tbody id="lb"></tbody></table></div>
+        <div class="row" style="margin-top:8px"><button class="btn sm" id="addL">${icon('plus')} Add item</button><span class="grow"></span><b id="tot"></b></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="cSave" disabled>Post consumption</button>`,
+      onMount: (el, close) => {
+        const drawHead = () => {
+          $('#head', el).innerHTML = kind === 'Patient' ? `${field({ id: 'cEnc', label: 'Patient', type: 'select', req: true, options: encs.map(e => [e.id, `${Nursing.bedNo(e)} · ${Kit.ptName(e.patientId)} (${(Kit.pt(e.patientId) || {}).mrn})`]) })}<div class="field"><label>Billing drop-off</label><label class="check" style="margin-top:8px"><input type="checkbox" id="cBill" checked> Add billable items to the patient's interim invoice</label></div>`
+            : `${field({ id: 'cCc', label: 'Cost centre', type: 'select', req: true, options: ['Nursing, Ward 3', 'Nursing, Ward 4', 'Nursing, Paediatric Ward', 'Nursing, ICU', 'Nursing, Private Suites'].map(x => [x, x]), value: 'Nursing, ' + (Kit.ward(ward).name.split(',')[0]) })}${field({ id: 'cNote', label: 'Purpose', req: true, max: 120, placeholder: 'For example dressing trolley top-up' })}`;
+          $$('#head select, #head input', el).forEach(i => { i.addEventListener('change', drawLines); i.addEventListener('input', chk); });
+        };
+        const bill = () => kind === 'Patient' && $('#cBill', el) && $('#cBill', el).checked;
+        const drawLines = () => {
+          $('#bh', el).style.display = bill() ? '' : 'none';
+          $('#lb', el).innerHTML = lines.map((l, i) => { const it = Kit.item(l.itemId), a = l.itemId ? avail(l.itemId, wh) : 0, pl = l.itemId && l.qty > 0 ? plan(l.itemId, wh, l.qty) : null;
+            return `<tr><td><select class="input" data-li="${i}" aria-label="Item"><option value="">Select item</option>${items.map(x => `<option value="${x.id}" ${x.id === l.itemId ? 'selected' : ''} ${lines.some((y, j) => j !== i && y.itemId === x.id) ? 'disabled' : ''}>${esc(x.name)} (${esc(x.code)})</option>`).join('')}</select>${it ? `<div class="xs muted" style="margin-top:3px">Available ${Kit.num(a)} ${esc(it.uom)} · ${Kit.money(it.price)} each</div>` : ''}</td>
+              <td><input class="input ${l.itemId && (!(l.qty > 0) || l.qty > a) ? 'bad' : ''}" type="number" min="1" step="1" value="${l.qty}" data-lq="${i}" aria-label="Quantity"></td>
+              <td class="small">${!l.itemId ? '<span class="mute">-</span>' : pl ? pl.map(b => `<span class="mono">${esc(b.batch)}</span> x${b.qty} <span class="xs muted">exp ${esc(b.expiry)}</span>`).join('<br>') : `<span style="color:var(--error);font-weight:700">Only ${Kit.num(a)} available</span>`}</td>
+              <td style="${bill() ? '' : 'display:none'}"><input type="checkbox" data-lb="${i}" ${l.billable ? 'checked' : ''} aria-label="Billable"></td>
+              <td class="num">${it && bill() && l.billable && l.qty > 0 ? Kit.money(it.price * l.qty) : '<span class="mute">-</span>'}</td>
+              <td><button class="btn xs ghost icon" data-lr="${i}" aria-label="Remove line" ${lines.length === 1 ? 'disabled' : ''}>${icon('trash-2')}</button></td></tr>`; }).join('');
+          $$('[data-li]', el).forEach(s => s.addEventListener('change', () => { lines[+s.dataset.li].itemId = s.value; drawLines(); }));
+          $$('[data-lq]', el).forEach(s => s.addEventListener('change', () => { lines[+s.dataset.lq].qty = Math.floor(+s.value); drawLines(); }));
+          $$('[data-lb]', el).forEach(s => s.addEventListener('change', () => { lines[+s.dataset.lb].billable = s.checked; drawLines(); }));
+          $$('[data-lr]', el).forEach(s => s.addEventListener('click', () => { lines.splice(+s.dataset.lr, 1); drawLines(); }));
+          const tot = bill() ? Kit.sumBy(lines, l => l.billable && l.itemId ? Kit.item(l.itemId).price * l.qty : 0) : 0;
+          $('#tot', el).textContent = bill() ? 'Billable total ' + Kit.money(tot) : 'Not billed';
+          chk();
+        };
+        const chk = () => {
+          const headOk = kind === 'Patient' ? !!($('#cEnc', el) && $('#cEnc', el).value) : !!($('#cCc', el) && $('#cCc', el).value && $('#cNote', el).value.trim());
+          const linesOk = lines.length && lines.every(l => l.itemId && l.qty > 0 && plan(l.itemId, wh, l.qty));
+          $('#cSave', el).disabled = !(headOk && linesOk);
+        };
+        Kit.seg($('#kSeg', el), [['Patient', 'Patient consumption', 'user'], ['Department', 'Departmental consumption', 'building-2']], kind, (k) => { kind = k; drawHead(); drawLines(); });
+        drawHead(); drawLines();
+        $('#addL', el).addEventListener('click', () => { lines.push({ itemId: '', qty: 1, billable: true }); drawLines(); });
+        $('#cSave', el).addEventListener('click', () => {
+          const errs = {};
+          if (kind === 'Department' && $('#cNote', el).value.trim().length < 3) errs.cNote = 'Purpose is required.';
+          if (!showErrors(el, errs)) return;
+          const e = kind === 'Patient' ? Kit.enc($('#cEnc', el).value) : null, billing = !!bill();
+          const rec = { id: UI.uid('nc'), no: Kit.nextNo('NIC-26-', db.nursingConsumption), kind, encounterId: e ? e.id : null, patientId: e ? e.patientId : null, wardId: ward, warehouseId: wh, costCentre: kind === 'Department' ? $('#cCc', el).value : '', billing: false, lines: [], total: 0, at: Nursing.now(), by: Nursing.myName(), status: 'Posted', note: kind === 'Department' ? $('#cNote', el).value.trim() : '' };
+          lines.forEach(l => { const it = Kit.item(l.itemId), bs = plan(l.itemId, wh, l.qty); bs.forEach(b => { const s = db.stock.find(x => x.id === b.stockId); s.qty -= b.qty; }); const billable = billing && l.billable; rec.lines.push({ itemId: l.itemId, qty: l.qty, batches: bs.map(b => ({ stockId: b.stockId, batch: b.batch, qty: b.qty })), billable, price: it.price, amount: billable ? +(it.price * l.qty).toFixed(3) : 0 }); });
+          rec.total = +Kit.sumBy(rec.lines, l => l.amount).toFixed(3);
+          rec.billing = rec.total > 0;
+          if (rec.billing) { const inv = dropToInvoice(e, rec); rec.invoiceId = inv.id; rec.invoiceNo = inv.no; }
+          db.nursingConsumption.push(rec); save();
+          audit('Item consumption posted', 'Item consumption', { id: rec.id, label: rec.no + (e ? ' ' + Kit.ptName(e.patientId) : ' ' + rec.costCentre) }, rec.lines.map(l => [(Kit.item(l.itemId) || {}).name, '', `${l.qty} from ${l.batches.map(b => b.batch).join(', ')}${l.billable ? ', billed' : ''}`]));
+          close(); toast(rec.billing ? `Posted. ${Kit.money(rec.total)} added to ${rec.invoiceNo}.` : 'Consumption posted, stock deducted'); render();
+        });
+      } });
+  }
+  /* Billing drop-off: add lines to the encounter's interim invoice (create one if the encounter has none). */
+  function dropToInvoice(e, rec) {
+    const p = Kit.pt(e.patientId), pl = p.planId ? Kit.plan(p.planId) : null;
+    let inv = db.invoices.find(i => i.encounterId === e.id && i.status === 'Interim');
+    if (!inv) { inv = { id: UI.uid('iv'), no: Kit.nextNo('INV-26-', db.invoices), encounterId: e.id, patientId: e.patientId, date: e.start.slice(0, 10), type: 'IPD', lines: [], total: 0, payerId: pl ? pl.payerId : null, planId: pl ? pl.id : null, payerAmount: 0, patientAmount: 0, paid: 0, status: 'Interim', claimStatus: pl ? 'Not submitted' : '', by: Nursing.myName() }; db.invoices.push(inv); }
+    rec.lines.filter(l => l.billable).forEach(l => { const it = Kit.item(l.itemId); inv.lines.push({ code: it.code, desc: `${it.name} (${rec.no})`, qty: l.qty, price: l.price }); });
+    adjust(inv, rec.total, pl);
+    return inv;
+  }
+  function adjust(inv, amount, pl) { const pat = pl ? amount * pl.copayPct / 100 : amount; inv.total = +(inv.total + amount).toFixed(3); inv.patientAmount = +(inv.patientAmount + pat).toFixed(3); inv.payerAmount = +(inv.payerAmount + amount - pat).toFixed(3); }
+  function view(c) {
+    const own = c.by === Nursing.myName();
+    UI.drawer({ title: 'Consumption ' + c.no, sub: `${Kit.when(c.at)} · ${esc(c.by)} · ${esc(UI.L.wName(c.warehouseId))}`, wide: true,
+      body: `${c.status === 'Cancelled' ? `<div class="banner err" style="margin-bottom:12px">${icon('ban')}<span>Cancelled by ${esc(c.cancelledBy)}: ${esc(c.cancelReason)}. Stock was returned to the original batches${c.billing ? ' and the invoice lines were reversed' : ''}.</span></div>` : ''}
+        ${c.kind === 'Patient' ? Kit.patientBanner(Kit.pt(c.patientId), Kit.enc(c.encounterId)) : `<dl class="kv"><dt>Cost centre</dt><dd>${esc(c.costCentre)}</dd><dt>Purpose</dt><dd>${esc(c.note)}</dd></dl>`}
+        <div class="table-wrap" style="margin-top:10px"><table class="tbl compact"><thead><tr><th>Item</th><th class="num">Qty</th><th>Batches</th><th>Billable</th><th class="num">Amount</th></tr></thead><tbody>${c.lines.map(l => { const it = Kit.item(l.itemId) || {}; return `<tr><td><b>${esc(it.name)}</b><div class="xs muted">${esc(it.code)}</div></td><td class="num">${l.qty}</td><td class="small mono">${l.batches.map(b => esc(b.batch) + ' x' + b.qty).join('<br>')}</td><td>${l.billable ? 'Yes' : 'No'}</td><td class="num">${l.amount ? Kit.money(l.amount) : '-'}</td></tr>`; }).join('')}</tbody>
+        <tfoot><tr><td colspan="4">Total billed${c.invoiceNo ? ' to ' + esc(c.invoiceNo) : ''}</td><td class="num">${Kit.money(c.total)}</td></tr></tfoot></table></div>`,
+      foot: `<button class="btn" data-close>Close</button><button class="btn" id="vp">${icon('printer')} Print slip</button>${c.status === 'Posted' ? `<button class="btn danger" id="vc" ${canCancel ? '' : 'disabled title="Needs Cancel permission"'}>${icon('x')} Cancel and return stock</button>` : ''}`,
+      onMount: (el, close) => {
+        $('#vp', el).addEventListener('click', () => Kit.printDoc({ title: 'Item consumption ' + c.no, sub: UI.L.wName(c.warehouseId), html: `<p>${c.kind === 'Patient' ? `Patient <b>${esc(Kit.ptName(c.patientId))}</b> · ${esc((Kit.pt(c.patientId) || {}).mrn)} · Bed ${esc(Nursing.bedNo(Kit.enc(c.encounterId)))}` : `Department <b>${esc(c.costCentre)}</b> · ${esc(c.note)}`} · ${esc(c.at)} · ${esc(c.by)}</p><table><thead><tr><th>Item</th><th>Qty</th><th>Batch</th><th>Amount</th></tr></thead><tbody>${c.lines.map(l => `<tr><td>${esc((Kit.item(l.itemId) || {}).name)}</td><td>${l.qty}</td><td>${l.batches.map(b => esc(b.batch)).join(', ')}</td><td>${l.amount ? Kit.money(l.amount) : '-'}</td></tr>`).join('')}</tbody></table><p>Total billed: <b>${Kit.money(c.total)}</b> ${c.invoiceNo ? '(' + esc(c.invoiceNo) + ')' : ''}</p><p style="margin-top:30px">Issued by ______________ Received by ______________</p>` }));
+        const vc = $('#vc', el); if (vc) vc.addEventListener('click', () => UI.confirm({ title: 'Cancel consumption ' + c.no + '?', body: 'Quantities go back to the same batches in the sub-store.', impact: c.billing ? [`${Kit.money(c.total)} is removed from invoice ${esc(c.invoiceNo || '')}`] : null, reason: true, confirm: 'Cancel consumption',
+          onConfirm: (reason) => {
+            c.lines.forEach(l => l.batches.forEach(b => { const s = db.stock.find(x => x.id === b.stockId); if (s) s.qty += b.qty; }));
+            if (c.billing) { const inv = db.invoices.find(i => i.id === c.invoiceId) || db.invoices.find(i => i.encounterId === c.encounterId && i.status === 'Interim'); if (inv) { const before = inv.lines.length; inv.lines = inv.lines.filter(x => !String(x.desc).includes('(' + c.no + ')')); if (inv.lines.length !== before) adjust(inv, -c.total, inv.planId ? Kit.plan(inv.planId) : null); } }
+            c.status = 'Cancelled'; c.cancelReason = reason; c.cancelledBy = Nursing.myName(); c.cancelledAt = Nursing.now(); save();
+            audit('Item consumption cancelled', 'Item consumption', { id: c.id, label: c.no }, [['Status', 'Posted', 'Cancelled']].concat(c.billing ? [['Invoice', Kit.money(c.total), 'Reversed']] : []), { reason });
+            close(); toast('Cancelled. Stock returned' + (c.billing ? ' and billing reversed' : '')); render();
+          } }));
+        void own;
+      } });
+  }
+  $('#newC').addEventListener('click', newC);
+  Nursing.bindWard((w) => { ward = w; render(); });
+  render();
+})();
+</script>
+</body>
+</html>

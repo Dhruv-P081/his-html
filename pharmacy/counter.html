@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Counter sale · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-pharmacy.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/pharmacy.js"></script>
+<style>
+  .pos { display: grid; grid-template-columns: minmax(0, 1fr) 420px; gap: 16px; align-items: start; }
+  @media (max-width: 1100px) { .pos { grid-template-columns: 1fr; } }
+  .prod { display: flex; gap: 12px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+  .prod:last-child { border-bottom: 0; }
+  .cart-line { padding: 10px 0; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: minmax(0, 1fr) 74px auto; gap: 8px; align-items: center; }
+  .totals { display: grid; grid-template-columns: 1fr auto; gap: 6px; font-size: 13px; }
+  .totals .big { font-size: 20px; font-weight: 800; }
+  .totals > :nth-child(even) { text-align: end; }
+</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, me, nowStamp, field, showErrors } = UI;
+  const P = Pharmacy, T = db.TODAY, WH = P.WH.OPD;
+  const OPT = 'pharmacy.sale';
+  if (!UI.page({ opt: OPT, title: 'Pharmacy counter sale', subtitle: 'Walk-in sale of over-the-counter medicines without a prescription. Outpatient Pharmacy stock.' })) return;
+
+  let cart = [], q = '', payMode = 'Cash', view = 'sale';
+  const products = () => db.items.filter(P.isOtc);
+  $('#page').innerHTML = `<div id="seg" style="margin-bottom:16px"></div><div id="body"></div>`;
+  Kit.tabs($('#seg'), [{ id: 'sale', label: 'New sale', icon: 'shopping-cart' }, { id: 'list', label: 'Sales today and history', icon: 'receipt' }], view, (v) => { view = v; draw(); });
+
+  function draw() { if (view === 'sale') drawSale(); else drawList(); }
+
+  function drawSale() {
+    const list = products().filter(it => !q || [it.name, it.brand, it.code, it.generic].join(' ').toLowerCase().includes(q.toLowerCase()));
+    const total = Kit.sumBy(cart, l => l.qty * l.price);
+    $('#body').innerHTML = `<div class="pos">
+      <div class="card"><div class="card-head"><h3>${icon('search')} Over-the-counter items</h3><div class="actions"><span class="small muted">${products().length} items allowed for sale without prescription</span></div></div>
+        <div class="card-pad" style="padding-bottom:6px"><div class="search">${icon('search')}<input class="input" id="q" placeholder="Search item, brand or code" value="${esc(q)}" aria-label="Search items"></div></div>
+        <div>${list.map(it => { const av = P.available(it.id, WH); const bs = P.usableBatches(it.id, WH); return `<div class="prod">
+          <span class="tile t-mint" style="width:36px;height:36px;border-radius:10px;display:grid;place-items:center">${icon('pill')}</span>
+          <div class="grow"><b>${esc(it.brand || it.name)}</b> <span class="small muted">${esc(it.name)}</span><div class="small muted"><span class="mono">${esc(it.code)}</span> · ${esc(it.category)} · ${bs.length} batch${bs.length === 1 ? '' : 'es'}${bs[0] ? ', next expiry ' + esc(Kit.day(bs[0].expiry)) : ''}</div></div>
+          <div style="text-align:end"><b>${Kit.money(it.price)}</b><div class="small ${av < it.min ? '' : 'muted'}" style="${av < it.min ? 'color:var(--warning)' : ''}">${av} in stock</div></div>
+          <button class="btn sm" data-add="${it.id}" ${av ? '' : 'disabled'} aria-label="Add ${esc(it.name)}">${icon('plus')} Add</button></div>`; }).join('') || `<div class="empty">${icon('search')}<b>No item found</b><span>Only over-the-counter items can be sold without a prescription.</span></div>`}</div>
+        <div class="card-pad small muted" style="border-top:1px solid var(--line)">${icon('info')} Items come from the Drug Category master where "OTC allowed" is ticked. Controlled drugs and prescription-only medicines are not listed.</div>
+      </div>
+      <div class="card" style="position:sticky;top:calc(var(--top-h) + 16px)"><div class="card-head"><h3>${icon('shopping-cart')} Sale</h3><div class="actions">${cart.length ? `<button class="btn xs ghost" id="clr">Clear</button>` : ''}</div></div>
+        <div class="card-pad">
+          <div class="err-summary hidden" style="margin-bottom:10px"></div>
+          ${cart.length ? cart.map((l, i) => { const it = Kit.item(l.itemId); const bs = P.usableBatches(l.itemId, WH); const b = db.stock.find(s => s.id === l.stockId) || {}; return `<div class="cart-line">
+            <div style="min-width:0"><b>${esc(it.brand || it.name)}</b><div class="small muted">${Kit.money(l.price)} each</div>
+              <select class="input" data-b="${i}" style="margin-top:6px;height:32px;font-size:12px" aria-label="Batch">${bs.map(s => `<option value="${s.id}" ${s.id === l.stockId ? 'selected' : ''}>${esc(s.batch)} · exp ${esc(Kit.day(s.expiry))} · ${s.qty} left${s === bs[0] ? ' (earliest)' : ''}</option>`).join('')}</select>
+              ${l.qty > Number(b.qty || 0) ? `<div class="xs" style="color:var(--error);margin-top:4px">Only ${b.qty || 0} in this batch</div>` : ''}</div>
+            <input class="input" type="number" min="1" data-q="${i}" value="${l.qty}" aria-label="Quantity">
+            <div style="text-align:end"><b class="num">${Kit.money(l.qty * l.price, false)}</b><div><button class="icon-btn" data-rm="${i}" aria-label="Remove">${icon('trash-2')}</button></div></div></div>`; }).join('')
+            : `<div class="empty" style="padding:18px">${icon('shopping-cart')}<b>No items yet</b><span>Search and add items on the left.</span></div>`}
+          <div class="form-grid" style="margin-top:14px">
+            ${field({ id: 'cName', label: 'Customer name', value: $('#cName') ? $('#cName').value : '', placeholder: 'Optional' })}
+            ${field({ id: 'cMob', label: 'Mobile', value: $('#cMob') ? $('#cMob').value : '', placeholder: '+965' })}
+            <div class="field full"><label>Payment</label><div id="pm"></div></div>
+            ${payMode === 'Cash' ? field({ id: 'tend', label: 'Cash received (KWD)', type: 'number', value: $('#tend') ? $('#tend').value : '', attrs: 'step="0.001" min="0"', req: true }) : field({ id: 'pref', label: payMode + ' reference', value: $('#pref') ? $('#pref').value : '', placeholder: payMode === 'KNET' ? 'KNET receipt number' : 'Card approval code', req: true })}
+            <div class="field"><label>Change</label><div style="padding-top:8px" id="chg" class="b">-</div></div>
+          </div>
+          <div class="totals" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)"><span class="muted">Items</span><span>${Kit.sumBy(cart, l => l.qty)}</span><span class="muted">VAT</span><span>${Kit.money(0)}</span><span class="b">Total</span><span class="big">${Kit.money(total)}</span></div>
+        </div>
+        <div class="sticky-foot"><button class="btn primary" id="pay" disabled ${can(OPT, 'add') ? '' : 'title="Needs Add permission"'}>${icon('circle-check')} Complete sale and print receipt</button></div>
+      </div></div>`;
+    Kit.seg($('#pm'), [['Cash', 'Cash', 'banknote'], ['KNET', 'KNET', 'credit-card'], ['Card', 'Card', 'credit-card']], payMode, (v) => { payMode = v; drawSale(); });
+    const qi = $('#q'); qi.addEventListener('input', () => { q = qi.value; const pos = qi.selectionStart; drawSale(); const n = $('#q'); n.focus(); n.setSelectionRange(pos, pos); });
+    $$('[data-add]').forEach(b => b.addEventListener('click', () => {
+      const it = Kit.item(b.dataset.add); const ex = cart.find(l => l.itemId === it.id);
+      if (ex) ex.qty += 1; else { const bs = P.usableBatches(it.id, WH); cart.push({ itemId: it.id, stockId: bs[0].id, qty: 1, price: it.price }); }
+      drawSale();
+    }));
+    $$('[data-q]').forEach(i => i.addEventListener('change', () => { cart[+i.dataset.q].qty = Math.max(1, Math.round(Number(i.value) || 1)); drawSale(); }));
+    $$('[data-b]').forEach(s => s.addEventListener('change', () => { cart[+s.dataset.b].stockId = s.value; drawSale(); }));
+    $$('[data-rm]').forEach(b => b.addEventListener('click', () => { cart.splice(+b.dataset.rm, 1); drawSale(); }));
+    const clr = $('#clr'); if (clr) clr.addEventListener('click', () => { cart = []; drawSale(); });
+    const btn = $('#pay');
+    const valid = () => {
+      const errs = {};
+      const stockOk = cart.every(l => l.qty <= Number((db.stock.find(s => s.id === l.stockId) || {}).qty || 0));
+      if (payMode === 'Cash') { const t = Number(($('#tend') || {}).value || 0); $('#chg').textContent = t >= total && total ? Kit.money(t - total) : '-'; if (t < total) errs.tend = 'Cash received is less than the total.'; }
+      else if (!($('#pref') || {}).value || $('#pref').value.trim().length < 4) errs.pref = 'Enter the payment reference.';
+      const mob = $('#cMob').value.trim(); if (mob && !UI.PHONE_RE.test(mob)) errs.cMob = 'Enter a valid mobile number.';
+      return { ok: cart.length && stockOk && !Object.keys(errs).length, errs };
+    };
+    const upd = () => { btn.disabled = !can(OPT, 'add') || !valid().ok; };
+    ['tend', 'pref', 'cMob'].forEach(id => { const el = $('#' + id); if (el) el.addEventListener('input', upd); });
+    upd();
+    btn.addEventListener('click', () => {
+      const v = valid(); if (!showErrors($('#body'), v.errs) || !v.ok) return;
+      const lines = cart.map(l => { const s = db.stock.find(x => x.id === l.stockId); return { itemId: l.itemId, stockId: s.id, batch: s.batch, expiry: s.expiry, qty: l.qty, price: l.price }; });
+      if (lines.some(l => l.expiry <= T)) { toast('An expired batch cannot be sold.', 'err'); return; }
+      lines.forEach(l => P.deduct([{ stockId: l.stockId, qty: l.qty }]));
+      const sale = { id: UI.uid('ps'), no: Kit.nextNo('CS-26-', db.pharmacySales), at: T + ' ' + nowStamp().slice(11), customer: $('#cName').value.trim(), mobile: $('#cMob').value.trim(), lines, total: +total.toFixed(3), payMode,
+        payRef: payMode === 'Cash' ? '' : $('#pref').value.trim(), tendered: payMode === 'Cash' ? Number($('#tend').value) : total, by: me().displayName, status: 'Completed', voidReason: '' };
+      db.pharmacySales.unshift(sale); save();
+      audit('Counter sale completed', 'Counter sale', { id: sale.id, label: sale.no }, [['Total', '', Kit.money(sale.total)], ['Payment', '', payMode + (sale.payRef ? ' ' + sale.payRef : '')]].concat(lines.map(l => [Kit.item(l.itemId).name, '', `${l.qty} from batch ${l.batch}`])));
+      toast(`${sale.no} completed`);
+      cart = []; drawSale(); receipt(sale);
+    });
+  }
+
+  function receipt(s) {
+    Kit.printDoc({ title: 'Receipt ' + s.no, sub: 'Outpatient Pharmacy · counter sale',
+      html: `<div style="display:flex;justify-content:space-between;margin-bottom:8px"><div><b>${esc(s.no)}</b><br>${esc(Kit.when(s.at))}</div><div style="text-align:end">${esc(s.customer || 'Walk-in customer')}<br>${esc(s.mobile || '')}</div></div>
+        <table><thead><tr><th>Item</th><th>Batch</th><th>Expiry</th><th>Qty</th><th>Price</th><th>Amount</th></tr></thead><tbody>${s.lines.map(l => `<tr><td>${esc(Kit.item(l.itemId).name)}</td><td>${esc(l.batch)}</td><td>${esc(Kit.day(l.expiry))}</td><td>${l.qty}</td><td>${Kit.money(l.price, false)}</td><td>${Kit.money(l.qty * l.price, false)}</td></tr>`).join('')}</tbody></table>
+        <div style="text-align:end;margin-top:10px"><div>Total <b>${Kit.money(s.total)}</b></div><div>Paid by ${esc(s.payMode)}${s.payRef ? ' (' + esc(s.payRef) + ')' : ''}${s.payMode === 'Cash' ? ` · received ${Kit.money(s.tendered)} · change ${Kit.money(s.tendered - s.total)}` : ''}</div></div>
+        <div style="margin-top:12px;font-size:11px;color:#555">Served by ${esc(s.by)}. Unopened items can be returned within 7 days with this receipt.${s.status === 'Voided' ? ' <b>VOIDED: ' + esc(s.voidReason) + '</b>' : ''}</div>` });
+  }
+
+  function drawList() {
+    const today = db.pharmacySales.filter(s => s.at.startsWith(T) && s.status === 'Completed');
+    $('#body').innerHTML = `<div class="grid g4" style="margin-bottom:16px">
+      ${Kit.kpi('Sales today', today.length, { icon: 'receipt' })}
+      ${Kit.kpi('Takings today', Kit.money(Kit.sumBy(today, s => s.total)), { icon: 'wallet' })}
+      ${['Cash', 'KNET'].map(m => Kit.kpi(m + ' today', Kit.money(Kit.sumBy(today.filter(s => s.payMode === m), s => s.total)), { icon: m === 'Cash' ? 'banknote' : 'credit-card', foot: today.filter(s => s.payMode === m).length + ' sales' })).join('')}
+    </div><div id="tbl"></div>`;
+    const t = UI.table($('#tbl'), {
+      columns: [
+        { label: 'Sale', sort: s => s.no, render: s => `<span class="mono b">${esc(s.no)}</span><div class="small muted">${esc(Kit.when(s.at))}</div>` },
+        { label: 'Customer', sort: s => s.customer, render: s => `${esc(s.customer || 'Walk-in customer')}<div class="small muted">${esc(s.mobile || '')}</div>` },
+        { label: 'Items', render: s => s.lines.map(l => `<div class="small">${esc(Kit.item(l.itemId).brand || Kit.item(l.itemId).name)} x ${l.qty}</div>`).join('') },
+        { label: 'Payment', sort: s => s.payMode, render: s => `${esc(s.payMode)}<div class="small muted mono">${esc(s.payRef || '')}</div>` },
+        { label: 'Total', cls: 'num', sort: s => s.total, render: s => `<span class="num b">${Kit.money(s.total)}</span>` },
+        { label: 'Cashier', sort: s => s.by, render: s => esc(s.by) },
+        { label: 'Status', sort: s => s.status, render: s => Kit.status(s.status === 'Voided' ? 'Cancelled' : s.status) },
+        { label: '', cls: 'actions', render: s => `<button class="btn xs" data-r="${s.id}" ${can(OPT, 'print') ? '' : 'disabled title="Needs Print permission"'}>${icon('printer')} Receipt</button>${s.status === 'Completed' && s.at.startsWith(T) ? `<button class="btn xs danger" data-v="${s.id}" ${can(OPT, 'cancel') ? '' : 'disabled title="Needs Cancel permission"'}>Void</button>` : ''}` },
+      ],
+      rows: () => db.pharmacySales.slice().sort((a, b) => b.at.localeCompare(a.at)),
+      search: s => [s.no, s.customer, s.mobile, s.payRef, s.lines.map(l => Kit.item(l.itemId).name).join(' ')].join(' '), searchPlaceholder: 'Search sale, customer, reference or item',
+      filters: [{ label: 'Payment', options: [['Cash', 'Cash'], ['KNET', 'KNET'], ['Card', 'Card']], test: (s, v) => s.payMode === v }, { label: 'Date', options: [['today', 'Today'], ['earlier', 'Earlier']], test: (s, v) => s.at.startsWith(T) === (v === 'today') }],
+      afterDraw: (tb) => {
+        $$('[data-r]', tb).forEach(b => b.addEventListener('click', () => receipt(db.pharmacySales.find(s => s.id === b.dataset.r))));
+        $$('[data-v]', tb).forEach(b => b.addEventListener('click', () => {
+          const s = db.pharmacySales.find(x => x.id === b.dataset.v);
+          UI.confirm({ title: `Void ${s.no}?`, body: 'The sale is cancelled, the items go back to the same batches and the payment must be refunded to the customer.', impact: [`Refund ${Kit.money(s.total)} by ${esc(s.payMode)}`].concat(s.lines.map(l => `${esc(Kit.item(l.itemId).name)} x ${l.qty} back to batch ${esc(l.batch)}`)), reason: true, confirm: 'Void sale', onConfirm: (reason) => {
+            s.lines.forEach(l => P.restock(l.stockId, l.qty)); s.status = 'Voided'; s.voidReason = reason; s.voidedBy = me().displayName; save();
+            audit('Counter sale voided', 'Counter sale', { id: s.id, label: s.no }, [['Status', 'Completed', 'Voided']], { reason }); toast(`${s.no} voided`); drawList();
+          } });
+        }));
+      },
+      empty: 'No sales found', pageSize: 10,
+    });
+  }
+  draw();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Insurance reports · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-insurance.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/insurance.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, $ } = UI;
+  const I = Insurance;
+  if (!UI.page({ opt: 'insurance.reports', title: 'Insurance reports', subtitle: 'Claims, pre-authorization, remittance and contract reports (SOW V4 Module 9, Annexure B).' })) return;
+  const T = db.TODAY;
+  const payerF = { id: 'payer', label: 'Payer', type: 'select', options: db.payers.map(p => [p.id, p.name]) };
+  const from = { id: 'from', label: 'From', type: 'date', value: Kit.addDays(T, -365) }, to = { id: 'to', label: 'To', type: 'date' };
+  const inRange = (d, v) => (!v.from || d >= v.from) && (!v.to || d <= v.to);
+  const claims = (v) => I.insured().filter(i => (!v.payer || i.payerId === v.payer) && inRange(i.date, v));
+  const days = (a, b) => Math.max(0, Math.round((new Date(b.slice(0, 10)) - new Date(a.slice(0, 10))) / 864e5));
+  const r3 = I.r3;
+  const sumCols = (rows, cols, label) => rows.length ? [label || 'Total'].concat(rows[0].slice(1).map((_, k) => cols.includes(k + 1) ? r3(rows.reduce((s, r) => s + (Number(r[k + 1]) || 0), 0)) : '')) : null;
+
+  $('#page').innerHTML = '<div id="rc"></div>';
+  Kit.reportCatalog($('#rc'), { opt: 'insurance.reports', reports: [
+    { id: 'ins_r01', title: 'Claims register', purpose: 'Every insured claim with payer share, patient share and claim status.',
+      filters: [payerF, { id: 'st', label: 'Claim status', type: 'select', options: ['Not submitted', 'In batch', 'Submitted', 'Paid', 'Partially paid', 'Rejected', 'Final denial'].map(s => [s, s]) }, from, to],
+      columns: ['Claim', 'Date', 'Patient', 'MRN', 'Payer', 'Plan', 'Gross', 'Patient share', 'Payer share', 'Status'],
+      rows: v => claims(v).filter(i => !v.st || i.claimStatus === v.st).map(i => [i.no, i.date, Kit.ptName(i.patientId), (Kit.pt(i.patientId) || {}).mrn, I.payerCode(i.payerId), (Kit.plan(i.planId) || {}).name || '', i.total, i.patientAmount, i.payerAmount, i.claimStatus]),
+      totals: rows => rows.length ? ['Total', '', rows.length + ' claims', '', '', '', r3(Kit.sumBy(rows, r => r[6])), r3(Kit.sumBy(rows, r => r[7])), r3(Kit.sumBy(rows, r => r[8])), ''] : null },
+    { id: 'ins_r02', title: 'Receivables ageing by payer', purpose: 'Open payer share (not yet remitted) by days since the service date.',
+      filters: [payerF, { id: 'to', label: 'As of', type: 'date' }],
+      columns: ['Payer', 'Claims', '0-30 days', '31-60 days', '61-90 days', 'Over 90 days', 'Total open'],
+      rows: v => db.payers.filter(p => !v.payer || p.id === v.payer).map(p => { const open = I.insured().filter(i => i.payerId === p.id && /Not submitted|In batch|Submitted/.test(i.claimStatus) && i.date <= (v.to || T)); const b = [0, 0, 0, 0]; open.forEach(i => { const d = days(i.date, v.to || T); b[d <= 30 ? 0 : d <= 60 ? 1 : d <= 90 ? 2 : 3] += i.payerAmount; }); return [p.name, open.length].concat(b.map(r3), [r3(b.reduce((s, x) => s + x, 0))]); }).filter(r => r[1]),
+      totals: rows => sumCols(rows, [1, 2, 3, 4, 5, 6]) },
+    { id: 'ins_r03', title: 'Rejection analysis by reason', purpose: 'Rejected and short-paid claims grouped by rejection reason code.',
+      filters: [payerF, from, to],
+      columns: ['Reason code', 'Reason', 'Category', 'Claims', 'Amount', 'Share of rejections'],
+      rows: v => { const l = claims(v).filter(i => /Rejected|Partially paid|Final denial/.test(i.claimStatus) || I.cd(i.id).resubmitCount); const g = Kit.groupBy(l, i => I.cd(i.id).rejectCode || I.cd(i.id).lastRejectCode || 'Not recorded'); return Object.entries(g).map(([c, x]) => { const rr = I.reason(c) || {}; return [c, rr.name || '', rr.category || '', x.length, r3(Kit.sumBy(x, i => i.payerAmount)), Math.round(100 * x.length / l.length) + '%']; }).sort((a, b) => b[3] - a[3]); },
+      totals: rows => sumCols(rows, [3, 4]) },
+    { id: 'ins_r04', title: 'Pre-authorization status summary', purpose: 'Requests by payer and status with requested and approved amounts.',
+      filters: [payerF, { id: 'st', label: 'Status', type: 'select', options: db.insurancePaStatuses.map(s => [s.name, s.name]) }, from, to],
+      columns: ['Request', 'Created', 'Patient', 'Payer', 'Services', 'Requested', 'Approved', 'Status', 'Payer reference'],
+      rows: v => db.insurancePreauths.filter(a => (!v.payer || a.payerId === v.payer) && (!v.st || a.status === v.st) && inRange(a.createdAt.slice(0, 10), v)).map(a => [a.no, a.createdAt.slice(0, 10), Kit.ptName(a.patientId), I.payerCode(a.payerId), a.lines.map(l => l.code).join(', '), a.amount, a.approvedAmount, a.status, a.payerRef || '']),
+      totals: rows => rows.length ? ['Total', '', rows.length + ' requests', '', '', r3(Kit.sumBy(rows, r => r[5])), r3(Kit.sumBy(rows, r => r[6])), '', ''] : null },
+    { id: 'ins_r05', title: 'Pre-authorization turnaround', purpose: 'Hours from submission to the payer decision, by payer.',
+      filters: [payerF, from, to],
+      columns: ['Payer', 'Decided requests', 'Average hours', 'Longest hours', 'Approved', 'Partially approved', 'Denied', 'Queries raised'],
+      rows: v => db.payers.filter(p => !v.payer || p.id === v.payer).map(p => { const l = db.insurancePreauths.filter(a => a.payerId === p.id && inRange(a.createdAt.slice(0, 10), v)); const dec = l.filter(a => /Approved|Partially approved|Denied/.test(a.status)); const hrs = dec.map(a => { const s = a.history.find(h => h.status === 'Submitted'), d = a.history.slice().reverse().find(h => /Approved|Denied/.test(h.status)); return s && d ? Math.max(0, (new Date(d.at.replace(' ', 'T')) - new Date(s.at.replace(' ', 'T'))) / 36e5) : 0; }); return [p.name, dec.length, hrs.length ? Math.round(10 * hrs.reduce((s, x) => s + x, 0) / hrs.length) / 10 : 0, hrs.length ? Math.round(10 * Math.max.apply(null, hrs)) / 10 : 0, dec.filter(a => a.status === 'Approved').length, dec.filter(a => a.status === 'Partially approved').length, dec.filter(a => a.status === 'Denied').length, l.reduce((s, a) => s + a.queries.length, 0)]; }).filter(r => r[1] || r[7]) },
+    { id: 'ins_r06', title: 'Claim batch summary', purpose: 'Batches with claim count, amount, type and submission dates.',
+      filters: [payerF, { id: 'st', label: 'Batch status', type: 'select', options: ['Draft', 'Validated', 'Exported', 'Submitted', 'Remitted'].map(s => [s, s]) }, { id: 'ty', label: 'Type', type: 'select', options: [['Original', 'Original'], ['Resubmission', 'Resubmission']] }],
+      columns: ['Batch', 'Type', 'Payer', 'Service from', 'Service to', 'Claims', 'Payer share', 'Created by', 'Submitted', 'Status'],
+      rows: v => db.insuranceBatches.filter(b => (!v.payer || b.payerId === v.payer) && (!v.st || b.status === v.st) && (!v.ty || b.type === v.ty)).map(b => [b.no, b.type, I.payerCode(b.payerId), b.from, b.to, b.invoiceIds.length, r3(Kit.sumBy(b.invoiceIds.map(I.inv).filter(Boolean), i => i.payerAmount)), b.createdBy, b.submittedAt ? b.submittedAt.slice(0, 10) : '', b.status]),
+      totals: rows => rows.length ? ['Total', '', '', '', '', Kit.sumBy(rows, r => r[5]), r3(Kit.sumBy(rows, r => r[6])), '', '', ''] : null },
+    { id: 'ins_r07', title: 'Remittance reconciliation', purpose: 'Remittance lines with claimed, paid, difference and result.',
+      filters: [payerF, { id: 'res', label: 'Line result', type: 'select', options: ['Paid', 'Short-paid', 'Denied', 'Unmatched', 'Duplicate'].map(s => [s, s]) }, { id: 'st', label: 'Remittance status', type: 'select', options: [['Uploaded', 'Uploaded'], ['Posted', 'Posted'], ['Discarded', 'Discarded']] }],
+      columns: ['Remittance', 'Payer reference', 'Payer', 'Claim', 'Claimed', 'Paid', 'Difference', 'Code', 'Result', 'Status'],
+      rows: v => db.insuranceRemittances.filter(r => (!v.payer || r.payerId === v.payer) && (!v.st || r.status === v.st)).reduce((a, r) => a.concat(r.lines.filter(l => !v.res || l.status === v.res).map(l => [r.no, r.payerRef, I.payerCode(r.payerId), l.invoiceNo, l.claimed, l.paid, r3(l.claimed - l.paid), l.denialCode, l.status, r.status])), []),
+      totals: rows => rows.length ? ['Total', '', '', rows.length + ' lines', r3(Kit.sumBy(rows, r => r[4])), r3(Kit.sumBy(rows, r => r[5])), r3(Kit.sumBy(rows, r => r[6])), '', '', ''] : null },
+    { id: 'ins_r08', title: 'Payer contract coverage summary', purpose: 'Contracts with validity, plans and rule counts by type (exclusions, pre-auth).',
+      filters: [payerF, { id: 'st', label: 'Contract status', type: 'select', options: ['Draft', 'Pending approval', 'Active', 'Rejected', 'Expired', 'Superseded'].map(s => [s, s]) }],
+      columns: ['Contract', 'Name', 'Payer', 'TPA', 'Valid from', 'Valid to', 'Rules', 'Pre-auth rules', 'Exclusions', 'Status', 'Approved by'],
+      rows: v => db.insuranceContracts.filter(c => (!v.payer || c.payerId === v.payer) && (!v.st || c.status === v.st)).map(c => [c.no, c.name, I.payerCode(c.payerId), c.tpa || 'Direct', c.from, c.to, c.rules.length, c.rules.filter(r => r.preauth).length, c.rules.filter(r => r.excluded).length, c.status, c.approvedBy || '']) },
+    { id: 'ins_r09', title: 'Claim validation exceptions', purpose: 'Open claims that fail the authority rule set, one row per issue.',
+      filters: [payerF, { id: 'sev', label: 'Severity', type: 'select', options: [['Error', 'Error'], ['Warning', 'Warning']] }, { id: 'rule', label: 'Rule', type: 'select', options: db.insuranceRules.map(r => [r.code, r.code + ' ' + r.name]) }],
+      columns: ['Claim', 'Date', 'Patient', 'Payer', 'Claim status', 'Rule', 'Severity', 'Issue'],
+      rows: v => I.insured().filter(i => /Not submitted|In batch|Rejected/.test(i.claimStatus) && (!v.payer || i.payerId === v.payer)).reduce((a, i) => a.concat(I.validate(i).filter(x => (!v.sev || x.sev === v.sev) && (!v.rule || x.code === v.rule)).map(x => [i.no, i.date, Kit.ptName(i.patientId), I.payerCode(i.payerId), i.claimStatus, x.code, x.sev, x.msg])), []) },
+    { id: 'ins_r10', title: 'Collections by payer', purpose: 'Claimed versus collected payer share, short-payments and denials by payer.',
+      filters: [payerF, from, to],
+      columns: ['Payer', 'Claims settled', 'Claimed', 'Collected', 'Short-paid', 'Denied', 'Collection rate'],
+      rows: v => db.payers.filter(p => !v.payer || p.id === v.payer).map(p => { const l = claims(Object.assign({}, v, { payer: p.id })).filter(i => /Paid|Partially paid|Rejected|Final denial/.test(i.claimStatus)); const claimed = Kit.sumBy(l, i => i.payerAmount), got = Kit.sumBy(l, i => I.cd(i.id).paidAmount), sh = Kit.sumBy(l, i => I.cd(i.id).shortAmount), den = Kit.sumBy(l.filter(i => /Rejected|Final denial/.test(i.claimStatus)), i => i.payerAmount); return [p.name, l.length, r3(claimed), r3(got), r3(sh), r3(den), claimed ? Math.round(100 * got / claimed) + '%' : '-']; }).filter(r => r[1]),
+      totals: rows => sumCols(rows, [1, 2, 3, 4, 5]) },
+  ] });
+})();
+</script>
+</body>
+</html>

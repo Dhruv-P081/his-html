@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vendor invoice matching · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-material.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/material.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, drawer, confirm, field, showErrors, nowStamp, fmtDate, param } = UI;
+  const M = Material, OPT = 'material.match';
+  if (!UI.page({ opt: OPT, title: 'Vendor invoice matching', subtitle: 'Three-way match of purchase order, goods receipt and vendor invoice, with price and quantity tolerance.',
+    actions: M.btn({ id: 'newInv', cls: 'primary', icon: 'plus', label: 'Enter vendor invoice', allow: can(OPT, 'add'), why: 'Needs Add permission' }) })) return;
+  const S = db.materialSettings;
+  const list = () => db.materialInvoices;
+  const po = (id) => db.materialPOs.find(p => p.id === id) || { lines: [] };
+  const grnQty = (poId, lineId, itemId, grnIds) => Kit.sumBy(db.materialGRNs.filter(g => g.poId === poId && g.status === 'Posted' && (!grnIds || grnIds.includes(g.id))), g => Kit.sumBy(g.lines.filter(l => l.lineId === lineId || (!l.lineId && l.itemId === itemId)), l => l.qty));
+
+  /* Three-way match of one invoice. */
+  function match(x) {
+    const p = po(x.poId);
+    const rows = x.lines.map(l => {
+      const pl = p.lines.find(y => y.id === l.lineId || y.itemId === l.itemId) || {};
+      const gq = grnQty(x.poId, pl.id, l.itemId, x.grnIds);
+      const pPct = pl.price ? 100 * (l.price - pl.price) / pl.price : 0;
+      const qDiff = l.qty - gq;
+      const qPct = gq ? 100 * qDiff / gq : (l.qty ? 100 : 0);
+      const priceOk = Math.abs(pPct) <= S.priceTolPct + 1e-9, qtyOk = Math.abs(qPct) <= S.qtyTolPct + 1e-9;
+      return { l, pl, gq, pPct, qDiff, priceOk, qtyOk, ok: priceOk && qtyOk, invAmt: l.qty * l.price, expAmt: gq * (pl.price || 0) };
+    });
+    const inv = Kit.sumBy(rows, r => r.invAmt), exp = Kit.sumBy(rows, r => r.expAmt), diff = inv - exp;
+    const ok = rows.every(r => r.ok) && Math.abs(diff) <= S.amtTol;
+    return { rows, inv, exp, diff, ok, state: ok ? 'Matched' : 'Variance' };
+  }
+  const shown = (x) => x.status === 'Pending' ? match(x).state : x.status;
+
+  $('#page').innerHTML = `<div class="grid g4" style="margin-bottom:16px" id="kpis"></div><div id="tabs" style="margin-bottom:12px"></div><div id="tbl"></div>
+    <div class="row wrap" style="margin-top:10px;gap:14px">${Kit.scopeNote(`Tolerance: price ±${S.priceTolPct}% per line, quantity ±${S.qtyTolPct}% per line, invoice total ±${Kit.money(S.amtTol)}. Set in Material Masters.`)}${Kit.scopeNote('Approved invoices pass to Accounts Payable (Finance, Module 11) for payment.')}</div>`;
+  let tab = param('tab') || 'open';
+  const TABS = [['open', 'To match', x => x.status === 'Pending'], ['Variance', 'Variance', x => shown(x) === 'Variance'], ['On hold', 'On hold', x => x.status === 'On hold'], ['Approved', 'Approved', x => x.status === 'Approved'], ['all', 'All', () => true]];
+  const drawTabs = () => Kit.tabs($('#tabs'), TABS.map(([id, label, f]) => ({ id, label, count: list().filter(f).length })), tab, (t) => { tab = t; t1.redraw(); });
+  const drawKpis = () => {
+    const pend = list().filter(x => x.status === 'Pending');
+    $('#kpis').innerHTML = Kit.kpi('Invoices to match', pend.length, { icon: 'scale', foot: Kit.money(Kit.sumBy(pend, x => match(x).inv)) })
+      + Kit.kpi('With variance', list().filter(x => shown(x) === 'Variance').length, { icon: 'triangle-alert', foot: 'Outside tolerance' })
+      + Kit.kpi('On hold', list().filter(x => x.status === 'On hold').length, { icon: 'pause', foot: 'Waiting for vendor' })
+      + Kit.kpi('GRNs not invoiced', db.materialGRNs.filter(g => g.status === 'Posted' && !list().some(x => (x.grnIds || []).includes(g.id))).length, { icon: 'package-check', foot: 'Posted receipts without an invoice' });
+  };
+  const t1 = UI.table($('#tbl'), {
+    columns: [
+      { label: 'Match no.', sort: x => x.no, render: x => `<span class="mono b nw">${esc(x.no)}</span><div class="xs muted">${fmtDate(x.date)}</div>` },
+      { label: 'Vendor invoice', sort: x => x.vendorInvNo, render: x => `<span class="mono">${esc(x.vendorInvNo)}</span><div class="small">${esc(M.vendorName(x.vendorId))}</div>` },
+      { label: 'PO / GRN', render: x => `<span class="mono small">${esc(po(x.poId).no)}</span><div class="xs muted mono">${(x.grnIds || []).map(id => (db.materialGRNs.find(g => g.id === id) || {}).no).join(', ')}</div>` },
+      { label: 'Invoice amount', cls: 'num', sort: x => match(x).inv, render: x => `<span class="num nw">${Kit.money(match(x).inv)}</span>` },
+      { label: 'Variance', cls: 'num', sort: x => match(x).diff, render: x => { const m = match(x); return `<span class="num nw ${Math.abs(m.diff) > 0.0005 ? 'mm-var-neg' : ''}">${m.diff > 0 ? '+' : ''}${Kit.money(m.diff, false)}</span><div class="xs muted">${m.rows.filter(r => !r.ok).length} line(s) out</div>`; } },
+      { label: 'Due', sort: x => x.dueDate, render: x => `<span class="nw">${fmtDate(x.dueDate)}</span>` },
+      { label: 'Status', sort: x => shown(x), render: x => M.st(shown(x)) + (x.status === 'Pending' ? '<div class="xs muted">Waiting approval</div>' : '') },
+    ],
+    rows: () => list().filter(TABS.find(t => t[0] === tab)[2]).slice().sort((a, b) => b.no.localeCompare(a.no)),
+    search: x => [x.no, x.vendorInvNo, M.vendorName(x.vendorId), po(x.poId).no].join(' '),
+    searchPlaceholder: 'Search invoice, vendor or PO',
+    filters: [{ label: 'Vendor', options: M.vendorOpts(), test: (x, v) => x.vendorId === v }],
+    onRow: open, empty: 'No invoices in this view', emptyIcon: 'scale',
+  });
+  const refresh = () => { drawTabs(); drawKpis(); t1.redraw(); };
+  drawTabs(); drawKpis();
+
+  const matchTable = (m) => `<div class="table-wrap"><table class="tbl compact"><thead><tr><th>Item</th><th class="num">PO qty</th><th class="num">GRN qty</th><th class="num">Invoice qty</th><th class="num">PO price</th><th class="num">Invoice price</th><th class="num">Price var.</th><th class="num">Amount var.</th><th>Result</th></tr></thead><tbody>
+    ${m.rows.map(r => `<tr><td>${M.itemCell(r.l.itemId)}</td><td class="num">${Kit.num(r.pl.qty)}</td><td class="num">${Kit.num(r.gq)}</td><td class="num ${r.qtyOk ? '' : 'mm-var-neg'}">${Kit.num(r.l.qty)}</td><td class="num">${Kit.money(r.pl.price, false)}</td><td class="num ${r.priceOk ? '' : 'mm-var-neg'}">${Kit.money(r.l.price, false)}</td>
+      <td class="num ${r.priceOk ? '' : 'mm-var-neg'}">${r.pPct > 0 ? '+' : ''}${r.pPct.toFixed(1)}%</td><td class="num">${Kit.money(r.invAmt - r.expAmt, false)}</td><td>${r.ok ? M.st('Matched') : M.st(!r.priceOk && !r.qtyOk ? 'Mismatch' : !r.priceOk ? 'Price variance' : 'Qty variance', 'err')}</td></tr>`).join('')}
+    </tbody><tfoot><tr><td colspan="7" style="text-align:end"><b>Invoice ${Kit.money(m.inv)} vs expected ${Kit.money(m.exp)}</b></td><td class="num"><b class="${m.ok ? '' : 'mm-var-neg'}">${Kit.money(m.diff, false)}</b></td><td>${M.st(m.state)}</td></tr></tfoot></table></div>`;
+
+  function open(x) {
+    const m = match(x);
+    const ap = M.canAct(OPT, 'approve', x);
+    drawer({ title: x.no, sub: `${esc(M.vendorName(x.vendorId))} · vendor invoice ${esc(x.vendorInvNo)} · ${M.st(shown(x))}`, wide: true,
+      body: `${x.status === 'On hold' ? `<div class="banner warn" style="margin-bottom:12px">${icon('pause')}<span>On hold: ${esc(x.holdReason || '')}</span></div>` : ''}
+        ${x.status === 'Approved' ? `<div class="banner ok" style="margin-bottom:12px">${icon('circle-check')}<span>Approved by ${esc(x.approvedBy)} on ${fmtDate(x.approvedAt)}${x.override ? ' with variance override: ' + esc(x.override) : ''}. Passed to Accounts Payable.</span></div>` : ''}
+        ${x.status === 'Pending' && !m.ok ? `<div class="banner err" style="margin-bottom:12px">${icon('triangle-alert')}<span>Outside tolerance. Hold the invoice and ask the vendor for a credit note, or approve with an override reason.</span></div>` : ''}
+        ${x.status === 'Pending' && m.ok ? `<div class="banner ok" style="margin-bottom:12px">${icon('circle-check')}<span>PO, GRN and invoice agree within tolerance.</span></div>` : ''}
+        <div class="grid g3" style="margin-bottom:14px">
+          <div class="card card-pad"><div class="section-t">${icon('shopping-bag')} Purchase order</div>${M.kv([['PO', `<a class="mono" href="${R('material/po.html?id=' + x.poId)}">${esc(po(x.poId).no)}</a>`], ['Value', Kit.money(M.total(po(x.poId).lines))], ['Terms', po(x.poId).paymentTerms + ' days']], 'tight')}</div>
+          <div class="card card-pad"><div class="section-t">${icon('package-check')} Goods receipts</div>${M.kv([['GRN', (x.grnIds || []).map(id => { const g = db.materialGRNs.find(y => y.id === id) || {}; return `<a class="mono" href="${R('material/grn.html?id=' + g.id)}">${esc(g.no)}</a>`; }).join(', ')], ['Received value', Kit.money(m.exp)]], 'tight')}</div>
+          <div class="card card-pad"><div class="section-t">${icon('receipt')} Vendor invoice</div>${M.kv([['Invoice no.', `<span class="mono">${esc(x.vendorInvNo)}</span>`], ['Date / due', fmtDate(x.date) + ' / ' + fmtDate(x.dueDate)], ['Amount', Kit.money(m.inv)], ['Entered by', esc(x.createdBy)]], 'tight')}</div>
+        </div>
+        <div class="card"><div class="card-head"><h3>${icon('scale')} Three-way match</h3></div>${matchTable(m)}</div>`,
+      foot: `<span class="grow"></span><button class="btn" data-close>Close</button>
+        ${x.status === 'Pending' ? M.btn({ id: 'dHold', cls: 'danger', icon: 'pause', label: 'Put on hold', allow: ap.ok || can(OPT, 'add') ? true : ap }) : ''}
+        ${x.status === 'On hold' ? M.btn({ id: 'dRelease', icon: 'play', label: 'Release hold', allow: can(OPT, 'approve'), why: 'Needs Approve permission' }) : ''}
+        ${x.status === 'Pending' ? M.btn({ id: 'dApprove', cls: m.ok ? 'success' : 'primary', icon: 'check', label: m.ok ? 'Approve for payment' : 'Approve with override', allow: ap }) : ''}`,
+      onMount: (el, close) => {
+        const on = (id, fn) => { const b = $('#' + id, el); if (b) b.addEventListener('click', fn); };
+        on('dHold', () => confirm({ title: 'Put ' + x.no + ' on hold?', body: 'The invoice is not passed for payment until it is released.', confirm: 'Hold invoice', reason: true, tone: 'warn',
+          onConfirm: (reason) => { x.status = 'On hold'; x.holdReason = reason; save(); audit('Invoice held', 'Vendor invoice', { id: x.id, label: x.no }, [['Status', 'Pending', 'On hold']], { reason }); toast(x.no + ' on hold'); close(); refresh(); } }));
+        on('dRelease', () => confirm({ title: 'Release ' + x.no + '?', tone: 'primary', confirm: 'Release', body: 'The invoice returns to the matching queue.', reason: true,
+          onConfirm: (reason) => { x.status = 'Pending'; save(); audit('Invoice released', 'Vendor invoice', { id: x.id, label: x.no }, [['Status', 'On hold', 'Pending']], { reason }); toast(x.no + ' released'); close(); refresh(); } }));
+        on('dApprove', () => confirm({ title: (m.ok ? 'Approve ' : 'Approve with variance: ') + x.no + '?', tone: m.ok ? 'primary' : 'danger', icon: 'check', confirm: m.ok ? 'Approve' : 'Approve with override',
+          body: m.ok ? `${Kit.money(m.inv)} is passed to Accounts Payable.` : `The invoice is ${Kit.money(m.diff)} away from the expected amount. Record why it is accepted.`, reason: !m.ok,
+          onConfirm: (reason) => { x.status = 'Approved'; x.approvedBy = M.meName(); x.approvedAt = nowStamp(); if (reason) x.override = reason;
+            const p = po(x.poId); if (p.status === 'Received' && list().filter(y => y.poId === p.id).every(y => y.status === 'Approved')) p.status = 'Closed';
+            save(); audit('Invoice approved', 'Vendor invoice', { id: x.id, label: x.no }, [['Status', 'Pending', 'Approved'], ['Variance', '', Kit.money(m.diff)]], { reason: reason || '' }); toast(x.no + ' approved for payment'); close(); refresh(); } }));
+      } });
+  }
+
+  /* ---------- Enter an invoice ---------- */
+  function create() {
+    const pos = db.materialPOs.filter(p => db.materialGRNs.some(g => g.poId === p.id && g.status === 'Posted'));
+    drawer({ title: 'Enter vendor invoice', sub: 'Pick the PO and the receipts the invoice covers. The match updates as you type.', wide: true,
+      body: `<div class="err-summary hidden"></div><div class="form-grid c4">
+        ${field({ id: 'iPo', label: 'Purchase order', type: 'select', options: pos.map(p => [p.id, p.no + ' · ' + M.vendorName(p.vendorId)]), req: true })}
+        ${field({ id: 'iNo', label: 'Vendor invoice no.', req: true, max: 30 })}
+        ${field({ id: 'iDate', label: 'Invoice date', type: 'date', value: db.TODAY, req: true, attrs: `max="${db.TODAY}"` })}
+        ${field({ id: 'iDue', label: 'Due date', type: 'date', req: true })}</div>
+        <div id="iGrn" style="margin-top:12px"></div><div class="section-t" style="margin-top:14px">Invoice lines</div><div id="iLines"></div><div id="iMatch" style="margin-top:12px"></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><span class="grow"></span><button class="btn primary" id="iSave" disabled>${icon('scale')} Save and match</button>`,
+      onMount: (el, close) => {
+        let lines = [], grnIds = [];
+        const p = () => po($('#iPo', el).value);
+        const draft = () => ({ poId: p().id, grnIds, lines: lines.filter(l => l.on) });
+        const drawLines = () => {
+          if (!p().id) { $('#iLines', el).innerHTML = `<div class="empty">${icon('scale')}<b>Choose a purchase order</b></div>`; $('#iMatch', el).innerHTML = ''; return check(); }
+          $('#iLines', el).innerHTML = `<div class="table-wrap"><table class="tbl compact"><thead><tr><th></th><th>Item</th><th class="num">GRN qty</th><th class="num">PO price</th><th style="width:110px">Invoice qty</th><th style="width:130px">Invoice price</th></tr></thead><tbody>
+            ${lines.map((l, i) => `<tr data-i="${i}"><td><input type="checkbox" data-k="on" ${l.on ? 'checked' : ''} aria-label="Include line ${i + 1}"></td><td>${M.itemCell(l.itemId)}</td><td class="num">${Kit.num(grnQty(p().id, l.lineId, l.itemId, grnIds))}</td><td class="num">${Kit.money(l.poPrice, false)}</td><td><input class="input" type="number" min="0" data-k="qty" value="${l.qty}" aria-label="Invoice quantity, line ${i + 1}"></td><td><input class="input" type="number" min="0" step="0.001" data-k="price" value="${l.price}" aria-label="Invoice price, line ${i + 1}"></td></tr>`).join('')}</tbody></table></div>`;
+          $$('[data-k]', $('#iLines', el)).forEach(inp => inp.addEventListener('input', () => { const l = lines[+inp.closest('tr').dataset.i]; l[inp.dataset.k] = inp.dataset.k === 'on' ? inp.checked : Number(inp.value); preview(); }));
+          preview();
+        };
+        const preview = () => { const d = draft(); $('#iMatch', el).innerHTML = d.lines.length ? `<div class="card"><div class="card-head"><h3>${icon('scale')} Match preview</h3></div>${matchTable(match(d))}</div>` : ''; check(); };
+        const drawGrn = () => {
+          const gs = db.materialGRNs.filter(g => g.poId === p().id && g.status === 'Posted');
+          const used = new Set(list().flatMap(x => x.grnIds || []));
+          grnIds = gs.filter(g => !used.has(g.id)).map(g => g.id);
+          $('#iGrn', el).innerHTML = gs.length ? `<div class="small b" style="margin-bottom:6px">Goods receipts covered</div><div class="row wrap">${gs.map(g => `<label class="check"><input type="checkbox" value="${g.id}" ${grnIds.includes(g.id) ? 'checked' : ''}> <span class="mono">${esc(g.no)}</span> <span class="small muted">${fmtDate(g.date)}${used.has(g.id) ? ' · already invoiced' : ''}</span></label>`).join('')}</div>` : '';
+          $$('#iGrn input', el).forEach(c => c.addEventListener('change', () => { grnIds = $$('#iGrn input:checked', el).map(x => x.value); lines.forEach(l => { l.qty = grnQty(p().id, l.lineId, l.itemId, grnIds); }); drawLines(); }));
+          lines = p().lines.map(l => ({ lineId: l.id, itemId: l.itemId, poPrice: l.price, price: l.price, qty: grnQty(p().id, l.id, l.itemId, grnIds), on: true })).filter(l => grnQty(p().id, l.lineId, l.itemId, null) > 0);
+          const v = Kit.vendor(p().vendorId); if (v && !$('#iDue', el).value) $('#iDue', el).value = Kit.addDays($('#iDate', el).value || db.TODAY, v.paymentTerms || 30);
+          drawLines();
+        };
+        const problems = () => {
+          const e = {};
+          if (!p().id) e.iPo = 'Choose a purchase order.';
+          const no = $('#iNo', el).value.trim();
+          if (!no) e.iNo = 'Enter the vendor invoice number.'; else if (list().some(x => x.vendorId === p().vendorId && x.vendorInvNo.toUpperCase() === no.toUpperCase())) e.iNo = 'This vendor invoice number is already entered (duplicate).';
+          if (!$('#iDate', el).value) e.iDate = 'Invoice date is required.';
+          if (!$('#iDue', el).value) e.iDue = 'Due date is required.'; else if ($('#iDue', el).value < $('#iDate', el).value) e.iDue = 'Due date cannot be before the invoice date.';
+          if (p().id && !grnIds.length) e.iGrn = 'Tick at least one goods receipt.';
+          if (p().id && !draft().lines.some(l => l.qty > 0)) e.iL = 'At least one line needs a quantity.';
+          return e;
+        };
+        const check = () => { $('#iSave', el).disabled = Object.keys(problems()).length > 0; };
+        $('#iPo', el).addEventListener('change', () => { $('#iDue', el).value = ''; drawGrn(); });
+        $$('#iNo,#iDate,#iDue', el).forEach(i => i.addEventListener('input', check));
+        $('#iSave', el).addEventListener('click', () => {
+          if (!showErrors(el, problems())) return;
+          const x = { id: UI.uid('mvi'), no: M.docNo('VIN-26-', 'materialInvoices'), vendorInvNo: $('#iNo', el).value.trim(), vendorId: p().vendorId, poId: p().id, grnIds: grnIds.slice(), date: $('#iDate', el).value, dueDate: $('#iDue', el).value, createdBy: M.meName(), createdAt: nowStamp(), status: 'Pending',
+            lines: draft().lines.filter(l => l.qty > 0).map(l => ({ lineId: l.lineId, itemId: l.itemId, qty: l.qty, price: l.price })) };
+          db.materialInvoices.push(x); save(); const m = match(x);
+          audit('Vendor invoice entered', 'Vendor invoice', { id: x.id, label: x.no }, [['Vendor invoice', '', x.vendorInvNo], ['Match', '', m.state], ['Variance', '', Kit.money(m.diff)]]);
+          toast(x.no + ': ' + (m.ok ? 'matched within tolerance' : 'variance found')); close(); tab = 'all'; refresh(); open(x);
+        });
+        drawLines();
+      } });
+  }
+  $('#newInv').addEventListener('click', create);
+  M.openFromQuery(list(), open);
+})();
+</script>
+</body>
+</html>

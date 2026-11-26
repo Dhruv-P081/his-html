@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HR Masters · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-hr.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/hr.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, icon, $, R, can } = UI;
+  if (!UI.page({ opt: 'hr.masters', title: 'HR Masters', subtitle: 'Designations, grades, leave types, allowances and deductions, shifts, loan types and indemnity rules.' })) return;
+  $('#page').innerHTML = `<div class="banner info" style="margin-bottom:14px">${icon('link')}<span><b>Employee Master</b> is linked to the User Master. Core employee records come from Administration (read-only here, ${(db.employees || []).length} records) and HR adds staff and HR details in <a href="${R('hr/employees.html')}">Employees</a>. User accounts are kept in ${can('admin.security.users', 'view') ? `<a href="${R('users.html')}">User Master</a>` : 'the User Master'}.</span></div><div id="m"></div>`;
+  const gradeOpts = db.hrGrades.map(g => [g.code, g.code + ' · ' + g.name]);
+  Kit.masters($('#m'), { opt: 'hr.masters', defs: [
+    { id: 'desig', title: 'Designations', icon: 'briefcase', key: 'hrDesignations', columns: ['code', 'name', 'grade', 'category'], fields: [
+      { key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Designation', req: true },
+      { key: 'grade', label: 'Default grade', type: 'select', options: gradeOpts, req: true }, { key: 'category', label: 'Staff category', type: 'select', options: ['Doctor', 'Nurse', 'Allied health', 'Administration', 'Support'], req: true }] },
+    { id: 'grade', title: 'Grades', icon: 'layers', key: 'hrGrades', columns: ['code', 'name', 'minBasic', 'maxBasic', 'leaveDays'], note: 'Salary range is checked when an employee is added or edited.', fields: [
+      { key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Grade name', req: true },
+      { key: 'minBasic', label: 'Minimum basic (KWD)', type: 'number', money: true, req: true }, { key: 'maxBasic', label: 'Maximum basic (KWD)', type: 'number', money: true, req: true },
+      { key: 'leaveDays', label: 'Annual leave days', type: 'number', req: true }] },
+    { id: 'leave', title: 'Leave types', icon: 'plane', key: 'hrLeaveTypes', columns: ['code', 'name', 'days', 'count', 'paid'], fields: [
+      { key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Leave type', req: true }, { key: 'days', label: 'Days per year', type: 'number', req: true },
+      { key: 'count', label: 'Counted as', type: 'select', options: ['Working days', 'Calendar days'], req: true }, { key: 'gender', label: 'Eligible', type: 'select', options: ['All', 'Female', 'Male'], req: true },
+      { key: 'paid', label: 'Paid leave', type: 'check' }, { key: 'carry', label: 'Balance carries forward', type: 'check' }, { key: 'doc', label: 'Supporting document required', type: 'check' },
+      { key: 'note', label: 'Rule note', type: 'textarea', full: true }] },
+    { id: 'pay', title: 'Allowances and deductions', icon: 'wallet', key: 'hrPayComponents', columns: ['code', 'name', 'kind', 'calc', 'pifss'], fields: [
+      { key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Name', req: true }, { key: 'kind', label: 'Kind', type: 'select', options: ['Allowance', 'Deduction'], req: true },
+      { key: 'calc', label: 'Calculation', type: 'select', options: ['Fixed amount', 'Percent of salary', 'Per hour', 'Per day'], req: true },
+      { key: 'pct', label: 'Percent', type: 'number' }, { key: 'cap', label: 'Salary cap (KWD)', type: 'number' },
+      { key: 'pifss', label: 'Counts for PIFSS contribution', type: 'check' }, { key: 'note', label: 'Note', type: 'textarea', full: true }] },
+    { id: 'shift', title: 'Shifts', icon: 'clock', key: 'hrShifts', columns: ['code', 'name', 'start', 'end', 'hours', 'type'], note: 'Used by the duty roster and attendance. Grace minutes decide when an arrival is late.', fields: [
+      { key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Shift name', req: true }, { key: 'type', label: 'Type', type: 'select', options: ['Work', 'On call', 'Off', 'Leave'], req: true },
+      { key: 'start', label: 'Start', type: 'time' }, { key: 'end', label: 'End', type: 'time' }, { key: 'hours', label: 'Paid hours', type: 'number', req: true }, { key: 'grace', label: 'Late grace (minutes)', type: 'number' }] },
+    { id: 'loan', title: 'Loan types', icon: 'hand-coins', key: 'hrLoanTypes', columns: ['code', 'name', 'maxMultiple', 'maxInst', 'minService'], fields: [
+      { key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Loan type', req: true }, { key: 'maxMultiple', label: 'Maximum, times basic salary', type: 'number', req: true },
+      { key: 'maxInst', label: 'Maximum instalments', type: 'number', req: true }, { key: 'minService', label: 'Minimum service (months)', type: 'number', req: true }, { key: 'note', label: 'Note', type: 'textarea', full: true }] },
+    { id: 'indem', title: 'Indemnity rules', icon: 'scale', key: 'hrIndemnityRules', columns: ['code', 'name', 'type', 'value', 'unit'], note: 'Kuwait Labour Law 6 of 2010 (private sector). The End of Service screen reads these rules.', fields: [
+      { key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Rule', req: true }, { key: 'type', label: 'Rule type', type: 'select', options: ['Accrual', 'Resignation share', 'Cap', 'Divisor'], req: true },
+      { key: 'sector', label: 'Sector', type: 'select', options: ['Private', 'Oil sector'], req: true }, { key: 'from', label: 'From years of service', type: 'number' }, { key: 'to', label: 'To years of service', type: 'number' },
+      { key: 'value', label: 'Value', type: 'number', req: true }, { key: 'unit', label: 'Unit', type: 'select', options: ['days per year', '% of indemnity', 'months', 'days'], req: true }, { key: 'note', label: 'Legal reference', type: 'textarea', full: true }] },
+  ] });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Material Management overview · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-material.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/material.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, esc, icon, $, R, can, fmtDate } = UI;
+  const M = Material;
+  if (!UI.page({ module: 'material', title: 'Material Management overview', subtitle: ((can('material.pr', 'view') || can('material.po', 'view')) ? 'Procurement, receiving, stores and stock for ' : 'Material requests, stores and stock for ') + esc(M.whName(M.ctxWh()) || 'your stores') + ' (SOW V4 Module 10).',
+    actions: (can('material.stock.view', 'view') ? `<a class="btn" href="${R('material/stock.html?view=alerts')}">${icon('bell-ring')} Reorder alerts</a>` : '') + (can('material.pr', 'add') ? `<a class="btn primary" href="${R('material/pr.html?new=1')}">${icon('plus')} New requisition</a>` : '') })) return;
+  const T = db.TODAY;
+  const stores = M.stores().map(w => w.id);
+  const openPr = db.materialPRs.filter(p => /Draft|Pending approval|Approved/.test(p.status));
+  const openPo = db.materialPOs.filter(p => /Draft|Pending approval|Approved|Partially received/.test(p.status));
+  const poAmt = (p) => M.total(p.lines);
+  const stockRows = db.stock.filter(s => stores.includes(s.warehouseId) && s.qty > 0);
+  const alerts = stores.reduce((a, w) => a.concat(M.alerts(w)), []);
+  const grnToday = db.materialGRNs.filter(g => g.date === T);
+
+  const vis = (o) => can(o, 'view');
+  const procView = vis('material.pr') || vis('material.po');
+  /* Everything waiting for an approval that this user may open, with whether they may act. */
+  const OPTS = { 'Requisition': 'material.pr', 'Purchase order': 'material.po', 'Material request': 'material.stock.req', 'Purchase return': 'material.returns', 'Stock count': 'material.count', 'Vendor invoice': 'material.match' };
+  const pend = [].concat(
+    db.materialPRs.filter(p => p.status === 'Pending approval').map(p => ({ kind: 'Requisition', no: p.no, who: p.createdBy, what: M.deptName(p.deptId), amt: M.total(p.lines), at: p.createdAt, href: 'material/pr.html?id=' + p.id, ok: M.canAct('material.pr', 'approve', p).ok, urgent: p.priority === 'Urgent' })),
+    db.materialPOs.filter(p => p.status === 'Pending approval').map(p => ({ kind: 'Purchase order', no: p.no, who: p.createdBy, what: M.vendorName(p.vendorId), amt: poAmt(p), at: p.createdAt, href: 'material/po.html?id=' + p.id, ok: M.canAct('material.po', 'approve', p).ok })),
+    db.materialRequests.filter(r => r.status === 'Pending approval' && (stores.includes(r.fromWarehouseId) || stores.includes(r.forWarehouseId))).map(r => ({ kind: 'Material request', no: r.no, who: r.requestedBy, what: r.wardId ? M.wardName(r.wardId) : M.deptName(r.deptId), amt: null, at: r.at, href: 'material/requests.html?id=' + r.id, ok: M.canAct('material.stock.req', 'approve', r).ok, urgent: r.priority === 'Urgent' })),
+    db.materialReturns.filter(r => r.status === 'Pending approval').map(r => ({ kind: 'Purchase return', no: r.no, who: r.createdBy, what: M.vendorName(r.vendorId), amt: M.total(r.lines, 'qty', 'cost'), at: r.createdAt, href: 'material/returns.html?id=' + r.id, ok: M.canAct('material.returns', 'approve', r).ok })),
+    db.materialCounts.filter(c => c.status === 'Pending approval' && stores.includes(c.warehouseId)).map(c => ({ kind: 'Stock count', no: c.no, who: c.createdBy, what: M.whName(c.warehouseId), amt: null, at: c.submittedAt, href: 'material/stock-count.html?id=' + c.id, ok: M.canAct('material.count', 'approve', c).ok })),
+    db.materialInvoices.filter(x => x.status === 'Pending').map(x => ({ kind: 'Vendor invoice', no: x.no, who: x.createdBy, what: M.vendorName(x.vendorId), amt: M.total(x.lines), at: x.createdAt, href: 'material/invoice-match.html?id=' + x.id, ok: M.canAct('material.match', 'approve', x).ok })),
+  ).filter(x => vis(OPTS[x.kind])).sort((a, b) => (b.urgent ? 1 : 0) - (a.urgent ? 1 : 0) || String(a.at).localeCompare(String(b.at)));
+
+  const byStore = stores.map(w => [M.whName(w), M.bookValue(db.stock.filter(s => s.warehouseId === w && s.qty > 0))]).filter(r => r[1] > 0);
+  const byVendor = Object.entries(Kit.groupBy(openPo, p => M.vendorName(p.vendorId))).map(([v, ps]) => [v, Kit.sumBy(ps, p => Kit.sumBy(p.lines, l => (l.qty - (l.received || 0)) * l.price))]).filter(r => r[1] > 0).sort((a, b) => b[1] - a[1]).slice(0, 4);
+  const byCat = Object.entries(Kit.groupBy(stockRows, r => (M.item(r.itemId) || {}).category || 'Other')).map(([c, rs]) => [c, Math.round(M.bookValue(rs))]).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  /* Stock movement, last 14 days: receipts (GRN) vs issues and transfers out. */
+  const days = Array.from({ length: 14 }, (_, i) => Kit.addDays(T, i - 13));
+  const rec = days.map(d => Kit.sumBy(db.materialGRNs.filter(g => g.status === 'Posted' && g.date === d && stores.includes(g.warehouseId)), g => M.total(g.lines, 'qty', 'cost'))
+    + Kit.sumBy(db.materialTransfers.filter(t => t.type === 'Transfer' && t.status === 'Received' && String(t.receivedAt || '').slice(0, 10) === d && stores.includes(t.toWh) && !stores.includes(t.fromWh)), t => M.total(t.lines, 'qty', 'cost')));
+  const iss = days.map(d => Kit.sumBy(db.materialTransfers.filter(t => t.date === d && /Issued|Received|In transit/.test(t.status) && stores.includes(t.fromWh)), t => M.total(t.lines, 'qty', 'cost')));
+  const myReq = db.materialRequests.filter(r => stores.includes(r.fromWarehouseId) || stores.includes(r.forWarehouseId));
+  const transit = db.materialTransfers.filter(t => t.status === 'In transit' && stores.includes(t.toWh));
+  const expiring = stockRows.filter(s => M.expTone(s.expiry)).sort((a, b) => String(a.expiry).localeCompare(String(b.expiry)));
+
+  $('#page').innerHTML = `
+    <div class="grid g5" style="margin-bottom:16px">
+      ${procView ? Kit.kpi('Open PRs / POs', openPr.length + ' / ' + openPo.length, { icon: 'shopping-bag', foot: Kit.money(Kit.sumBy(openPo, poAmt)) + ' on open POs', href: R(vis('material.po') ? 'material/po.html' : 'material/pr.html') })
+        : Kit.kpi('Open material requests', myReq.filter(r => /Pending approval|^Approved$|Partially issued/.test(r.status)).length, { icon: 'hand-helping', foot: 'For your stores', href: R('material/requests.html') })}
+      ${Kit.kpi('Pending approvals', pend.length, { icon: 'hourglass', foot: pend.filter(p => p.ok).length + ' you can approve' })}
+      ${!vis('material.grn') ? Kit.kpi('Incoming transfers', transit.length, { icon: 'truck', foot: 'In transit to your stores' }) : Kit.kpi('GRNs today', grnToday.length, { icon: 'package-check', foot: grnToday.filter(g => g.status === 'Draft').length + ' draft, ' + grnToday.filter(g => g.status === 'Posted').length + ' posted', href: R('material/grn.html') })}
+      ${Kit.kpi('Stock value', Kit.num(M.bookValue(stockRows)), { unit: 'KWD', icon: 'wallet', foot: M.methodName() + ' · ' + stores.length + ' store(s)', href: R('material/stock.html?view=valuation') })}
+      ${Kit.kpi('Reorder alerts', alerts.length, { icon: 'bell-ring', foot: alerts.filter(a => a.status === 'Out of stock').length + ' out of stock', href: R('material/stock.html?view=alerts') })}
+    </div>
+    <div class="grid g2" style="margin-bottom:16px">
+      <div class="card"><div class="card-head"><h3>${icon('chart-column')} Stock movement, last 14 days</h3><div class="actions"><span class="small muted">KWD value</span></div></div><div class="card-pad">
+        ${M.groupBars({ labels: days.map(d => d.slice(8) + '/' + d.slice(5, 7)), series: [{ name: 'Received (GRN)', color: '#0E9F6E', values: rec }, { name: 'Issued and transferred', color: '#2F6BC5', values: iss }], height: 220, title: 'Stock movement', fmt: (v) => Kit.num(v) })}</div></div>
+      <div class="card"><div class="card-head"><h3>${icon('warehouse')} Stock value by store</h3><div class="actions"><a class="btn sm" href="${R('material/stock.html?view=valuation')}">Valuation ${icon('arrow-right')}</a></div></div><div class="card-pad">
+        ${byStore.length ? `<div class="grid" style="align-items:center;gap:20px 24px;grid-template-columns:repeat(auto-fit,minmax(280px,1fr))">
+          ${Kit.donut(byStore.map((r, i) => [r[0], Math.round(r[1]), Kit.PALETTE[i % 7]]), { center: Kit.num(Kit.sumBy(byStore, r => r[1]) / 1000, 1) + 'k', centerLabel: 'KWD', fmt: (v) => Kit.num(v) })}
+          <div><div class="section-t" style="margin:0 0 10px">Top categories (KWD)</div>${Kit.barList(byCat, { fmt: (v) => Kit.num(v) })}</div></div>` : `<div class="empty">${icon('warehouse')}<b>No stock in your stores</b></div>`}</div></div>
+    </div>
+    <div class="grid g2" style="margin-bottom:16px">
+      <div class="card"><div class="card-head"><h3>${icon('hourglass')} Waiting for approval</h3><div class="actions"><span class="small muted">${pend.filter(p => p.ok).length} you can act on</span></div></div>
+        ${pend.length ? `<div class="list-rows pad">${pend.slice(0, 7).map(p => `<div class="click" data-href="${R(p.href)}" style="cursor:pointer"><div class="grow"><div class="row" style="gap:8px"><span class="tag">${esc(p.kind)}</span><span class="mono b">${esc(p.no)}</span>${p.urgent ? '<span class="badge b-warn">Urgent</span>' : ''}</div><div class="small muted">${esc(p.what)} · ${esc(p.who)}${p.amt != null ? ' · ' + Kit.money(p.amt) : ''}</div></div>${p.ok ? '<span class="badge b-info nodot">Your action</span>' : '<span class="small muted">Other approver</span>'}${icon('chevron-right', 'mute')}</div>`).join('')}</div>`
+        : `<div class="empty">${icon('circle-check')}<b>Nothing waiting</b></div>`}</div>
+      <div class="card"><div class="card-head"><h3>${icon('bell-ring')} Reorder alerts</h3><div class="actions"><a class="btn sm" href="${R('material/stock.html?view=alerts')}">All alerts ${icon('arrow-right')}</a></div></div>
+        ${alerts.length ? `<div class="table-wrap"><table class="tbl compact"><thead><tr><th>Item</th><th class="num">On hand / min</th><th class="num">Suggest</th><th></th></tr></thead><tbody>
+          ${alerts.sort((a, b) => a.onHand / a.min - b.onHand / b.min).slice(0, 6).map(a => `<tr><td>${M.itemCell(a.itemId, esc(M.whName(a.whId)))}</td><td class="num"><span class="mm-var-neg">${Kit.num(a.onHand)}</span><div class="xs muted">min ${Kit.num(a.min)}</div></td><td class="num b">${Kit.num(a.suggest)}</td><td class="actions">${a.suggest > 0 && can('material.pr', 'add') ? `<a class="btn xs" href="${R(`material/pr.html?new=1&wh=${a.whId}&items=${a.itemId}:${a.suggest}`)}">${icon('file-plus-2')} PR</a>` : a.suggest > 0 ? '' : '<span class="xs muted">On order</span>'}</td></tr>`).join('')}</tbody></table></div>`
+        : `<div class="empty">${icon('circle-check')}<b>No items below minimum</b></div>`}</div>
+    </div>
+    ${!procView ? `<div class="grid g2">
+      <div class="card"><div class="card-head"><h3>${icon('hand-helping')} Recent material requests</h3><div class="actions"><a class="btn sm" href="${R('material/requests.html?tab=all')}">All requests ${icon('arrow-right')}</a></div></div>
+        ${myReq.length ? `<div class="list-rows pad">${myReq.slice().sort((a, b) => b.no.localeCompare(a.no)).slice(0, 5).map(r => `<div class="click" data-href="${R('material/requests.html?id=' + r.id)}" style="cursor:pointer"><div class="grow"><span class="mono b">${esc(r.no)}</span> ${M.st(r.status)}<div class="small muted">${esc(r.wardId ? M.wardName(r.wardId) : M.deptName(r.deptId))} · ${r.lines.length} line(s) · ${esc(r.requestedBy)}</div></div><span class="small muted nw">${Kit.when(r.at)}</span></div>`).join('')}</div>` : `<div class="empty">${icon('hand-helping')}<b>No requests for your stores</b></div>`}</div>
+      <div class="card"><div class="card-head"><h3>${icon('calendar-x')} Expired or expiring in 90 days</h3></div>
+        ${expiring.length ? `<div class="table-wrap"><table class="tbl compact"><thead><tr><th>Item</th><th>Batch</th><th>Expiry</th><th class="num">Qty</th></tr></thead><tbody>${expiring.slice(0, 6).map(s => `<tr><td>${M.itemCell(s.itemId)}</td><td class="mono nw">${esc(s.batch)}</td><td class="nw">${fmtDate(s.expiry)} ${M.st(M.expTone(s.expiry))}</td><td class="num">${Kit.num(s.qty)}</td></tr>`).join('')}</tbody></table></div>` : `<div class="empty">${icon('circle-check')}<b>No expiry risk in your stores</b></div>`}</div>
+    </div>` : ''}
+    <div class="grid g2 ${procView ? '' : 'hidden'}">
+      <div class="card"><div class="card-head"><h3>${icon('truck')} Expected deliveries</h3><div class="actions"><a class="btn sm" href="${R('material/grn.html')}">Goods receipt ${icon('arrow-right')}</a></div></div>
+        ${(() => { const aw = db.materialPOs.filter(p => /Approved|Partially received/.test(p.status)).sort((a, b) => a.deliveryDate.localeCompare(b.deliveryDate)); return aw.length ? `<div class="list-rows pad">${aw.slice(0, 5).map(p => `<div><div class="grow"><span class="mono b">${esc(p.no)}</span> ${M.st(p.status)}<div class="small muted">${esc(M.vendorName(p.vendorId))} · ${Kit.num(Kit.sumBy(p.lines, l => l.qty - (l.received || 0)))} units open</div></div><span class="small nw" style="${p.deliveryDate < T ? 'color:var(--error);font-weight:700' : ''}">${p.deliveryDate < T ? 'Late, due ' : 'Due '}${fmtDate(p.deliveryDate)}</span></div>`).join('')}</div>` : `<div class="empty">${icon('truck')}<b>No deliveries expected</b></div>`; })()}</div>
+      <div class="card"><div class="card-head"><h3>${icon('shopping-bag')} Open commitments by vendor</h3><div class="actions"><span class="small muted">Undelivered PO value</span></div></div><div class="card-pad">
+        ${byVendor.length ? Kit.barList(byVendor, { fmt: (v) => Kit.money(v, false) }) : '<div class="empty">No open commitments</div>'}</div></div>
+    </div>`;
+  UI.$$('[data-href]').forEach(r => r.addEventListener('click', () => { location.href = r.dataset.href; }));
+})();
+</script>
+</body>
+</html>

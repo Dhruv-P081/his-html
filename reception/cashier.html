@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cashier and shift · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-reception.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/reception.js"></script>
+<style>.denom { width: 100%; border-collapse: collapse; } .denom td, .denom th { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: start; font-size: 13px; } .denom input { width: 90px; } .denom td.r, .denom th.r { text-align: end; }</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, fmtDate, confirm, field } = UI;
+  const Rc = window.Reception;
+  const OPT = 'reception.cashier';
+  if (!UI.page({ opt: OPT, title: 'Cashier and shift', subtitle: 'Open a shift with a float, collect against invoices, raise refunds and close the shift with a cash count.', actions: `<span id="hAct"></span>` })) return;
+  const T = db.TODAY;
+  const L = (k) => (db[k] = db[k] || []);
+  const COUNTERS = ['Main reception, counter 1', 'Main reception, counter 2', 'Emergency reception', 'Inpatient admissions desk', 'Outpatient pharmacy counter'];
+  const DEN = [[20, 'note'], [10, 'note'], [5, 'note'], [1, 'note'], [0.5, 'note'], [0.25, 'note'], [0.1, 'coin'], [0.05, 'coin'], [0.02, 'coin'], [0.01, 'coin'], [0.005, 'coin']];
+  let tab = 'inv';
+  $('#page').innerHTML = `<div class="banner info" style="margin-bottom:14px">${icon('info')}<span>Scope to be confirmed: cashier ownership between Module 1 (Reception) and Module 11 (Financial ERP, cash receipts). The SOW V4 text refers to Modules 1 and 8.</span></div>
+    <div id="shift" style="margin-bottom:16px"></div><div class="card"><div id="tabs"></div><div id="tb"></div></div>`;
+  const refundedOf = (pay) => Kit.sumBy(L('receptionRefunds').filter(r => r.paymentId === pay.id && r.status !== 'Rejected'), r => r.amount);
+  function draw() {
+    const sh = Rc.myShift();
+    const tot = sh ? Rc.shiftTotals(sh) : null;
+    $('#hAct').innerHTML = sh ? `<button class="btn" id="hRep" ${Rc.gate(OPT, 'print')}>${icon('printer')} Shift report</button><button class="btn danger" id="hClose">${icon('lock')} Close shift</button>` : `<button class="btn primary" id="sOpen" ${Rc.gate(OPT, 'add')}>${icon('lock-open')} Open shift</button>`;
+    $('#shift').innerHTML = sh ? `<div class="grid g5">
+        <div class="card kpi" style="border-top:3px solid #0E9F6E"><div class="k-label">${icon('circle-dot')} Shift ${esc(sh.no)}</div><div class="k-value" style="font-size:17px">${esc(sh.counter)}</div><div class="k-foot">Open since ${esc(Kit.time(sh.openedAt))} · float ${Kit.money(sh.float)}</div></div>
+        ${Kit.kpi('Collected', Kit.money(tot.total), { icon: 'banknote', foot: tot.pays.length + ' receipts' })}
+        ${Kit.kpi('Cash', Kit.money(tot.cash), { icon: 'coins', foot: 'Expected in drawer ' + Kit.money(tot.expected) })}
+        ${Kit.kpi('KNET and cards', Kit.money((tot.by['KNET debit card'] || 0) + (tot.by['Credit card (Visa, Mastercard)'] || 0) + (tot.by['KNET payment link'] || 0)), { icon: 'credit-card', foot: 'Settles with the bank batch' })}
+        ${Kit.kpi('Credit and refunds', Kit.money(tot.by['Credit (corporate or guarantor)'] || 0), { icon: 'building-2', foot: 'Refunds paid ' + Kit.money(tot.refunds) })}</div>`
+      : `<div class="card card-pad row wrap" style="gap:16px"><span class="avatar lg" style="background:var(--soft);color:var(--sub)">${icon('lock')}</span><div class="grow"><b style="font-size:15px">No open shift</b><div class="muted small">Open a shift with the cash float from the safe before you collect payments. ${((n) => n ? n + (n === 1 ? ' other shift is' : ' other shifts are') + ' open now.' : '')(L('receptionShifts').filter(s => s.status === 'Open').length)} Use <b>Open shift</b> at the top of the page.</div></div></div>`;
+    const on = (id, f) => { const b = $('#' + id); if (b) b.addEventListener('click', f); };
+    on('sOpen', openShift); on('hClose', closeShift); on('hRep', () => report(sh));
+    const due = db.invoices.filter(i => Rc.balance(i) > 0 && i.status !== 'Cancelled');
+    const pend = L('receptionRefunds').filter(r => r.status === 'Pending approval');
+    Kit.tabs($('#tabs'), [{ id: 'inv', label: 'Invoices to collect', count: due.length, icon: 'receipt' }, { id: 'pay', label: 'My payments', count: sh ? tot.pays.length : 0, icon: 'banknote' }, { id: 'ref', label: 'Refunds', count: pend.length, icon: 'undo-2' }, { id: 'sh', label: 'Shifts', count: L('receptionShifts').length, icon: 'clock' }], tab, (v) => { tab = v; body(); });
+    function body() {
+      const host = $('#tb');
+      if (tab === 'inv') UI.table(host, { columns: [
+          { label: 'Invoice', sort: (i) => i.date, render: (i) => `<b class="mono">${esc(i.no)}</b><div class="small muted">${esc(Kit.day(i.date))} · ${esc(i.type)}</div>` },
+          { label: 'Patient', sort: (i) => Kit.ptName(i.patientId), render: (i) => Kit.patientCell(Kit.pt(i.patientId)) },
+          { label: 'Payer', render: (i) => `<span class="small" style="display:block;min-width:120px">${esc(i.payerId ? (Kit.payer(i.payerId) || {}).name : 'Cash (self-pay)')}</span>` },
+          { label: 'Total', cls: 'num', render: (i) => `${Kit.money(i.total)}${i.payerId ? `<div class="xs muted">Patient ${Kit.money(i.patientAmount)}</div>` : ''}` },
+          { label: 'Paid', cls: 'num', render: (i) => `<span class="num">${Kit.money(i.paid)}</span>` },
+          { label: 'Balance', cls: 'num', sort: (i) => Rc.balance(i), render: (i) => `<b style="white-space:nowrap">${Kit.money(Rc.balance(i))}</b><div style="margin-top:3px">${Kit.status(i.status)}</div>` },
+          { label: '', cls: 'actions', render: (i) => `<button class="btn xs primary" data-pay="${i.id}" ${Rc.gate(OPT, 'add')}>${icon('banknote')} Collect</button>` }],
+        rows: () => db.invoices.filter(i => Rc.balance(i) > 0 && i.status !== 'Cancelled').sort((a, b) => b.date.localeCompare(a.date)),
+        search: (i) => { const p = Kit.pt(i.patientId) || {}; return [i.no, p.name, p.mrn, p.civilId, p.mobile].join(' '); }, searchPlaceholder: 'Invoice, patient, MRN or Civil ID',
+        filters: [{ label: 'Type', options: [['OPD', 'OPD'], ['ER', 'ER'], ['IPD', 'IPD']], test: (i, v) => i.type === v }, { label: 'Status', options: [['Unpaid', 'Unpaid'], ['Partially paid', 'Partially paid'], ['Interim', 'Interim (deposit)']], test: (i, v) => i.status === v }],
+        empty: 'Nothing to collect', emptyIcon: 'receipt',
+        afterDraw: (tb) => $$('[data-pay]', tb).forEach(b => b.addEventListener('click', () => Rc.collect(db.invoices.find(x => x.id === b.dataset.pay), draw))) });
+      if (tab === 'pay') {
+        if (!sh) { host.innerHTML = `<div class="empty">${icon('lock')}<b>No open shift</b><span>Payments appear here after you open a shift.</span></div>`; return; }
+        UI.table(host, { columns: [
+          { label: 'Receipt', sort: (p) => p.at, render: (p) => `<b class="mono">${esc(p.no)}</b><div class="small muted">${esc(Kit.time(p.at))}</div>` },
+          { label: 'Patient', render: (p) => Kit.patientCell(Kit.pt(p.patientId)) },
+          { label: 'Invoice', render: (p) => `<span class="mono">${esc((db.invoices.find(i => i.id === p.invoiceId) || {}).no || '')}</span>` },
+          { label: 'Mode', sort: (p) => p.mode, render: (p) => `${esc(p.mode)}${p.ref ? `<div class="small muted mono">${esc(p.ref)}</div>` : ''}` },
+          { label: 'Amount', cls: 'num', sort: (p) => p.amount, render: (p) => `<b class="num">${Kit.money(p.amount)}</b>${refundedOf(p) ? `<div class="small" style="color:var(--error)">Refund ${Kit.money(refundedOf(p))}</div>` : ''}` },
+          { label: '', cls: 'actions', render: (p) => `<button class="btn xs" data-rc="${p.id}" ${Rc.gate(OPT, 'print')}>${icon('printer')} Receipt</button> <button class="btn xs danger" data-rf="${p.id}" ${Rc.gate(OPT, 'cancel')} ${refundedOf(p) >= p.amount ? 'disabled title="Fully refunded"' : ''}>${icon('undo-2')} Refund</button>` }],
+          rows: () => Rc.shiftTotals(sh).pays.slice().reverse(), search: (p) => [p.no, Kit.ptName(p.patientId), p.mode, p.ref].join(' '), searchPlaceholder: 'Receipt, patient or reference',
+          filters: [{ label: 'Mode', options: Rc.payModes().map(m => [m.name, m.name]), test: (p, v) => p.mode === v }], empty: 'No payments in this shift yet', emptyIcon: 'banknote',
+          afterDraw: (tb) => { $$('[data-rc]', tb).forEach(b => b.addEventListener('click', () => Rc.printReceipt(L('receptionPayments').find(x => x.id === b.dataset.rc)))); $$('[data-rf]', tb).forEach(b => b.addEventListener('click', () => refund(L('receptionPayments').find(x => x.id === b.dataset.rf)))); } });
+      }
+      if (tab === 'ref') UI.table(host, { columns: [
+          { label: 'Refund', sort: (r) => r.requestedAt, render: (r) => `<b class="mono">${esc(r.no)}</b><div class="small muted">${esc(fmtDate(r.requestedAt))} · ${esc(r.requestedBy)}</div>` },
+          { label: 'Patient', render: (r) => Kit.patientCell(Kit.pt(r.patientId)) },
+          { label: 'Against', render: (r) => { const p = L('receptionPayments').find(x => x.id === r.paymentId); return p ? `<span class="mono">${esc(p.no)}</span><div class="small muted">${esc(p.mode)} ${Kit.money(p.amount)}</div>` : '<span class="mute">-</span>'; } },
+          { label: 'Amount', cls: 'num', sort: (r) => r.amount, render: (r) => `<b class="num">${Kit.money(r.amount)}</b><div class="small muted">${esc(r.mode)}</div>` },
+          { label: 'Reason', render: (r) => `<span class="small">${esc(r.reason)}</span>` },
+          { label: 'Decision', render: (r) => r.decidedBy ? `<span class="small">${esc(r.decidedBy)}<div class="muted">${esc(fmtDate(r.decidedAt))}</div></span>` : '<span class="mute small">Waiting</span>' },
+          { label: 'Status', render: (r) => Kit.status(r.status) },
+          { label: '', cls: 'actions', render: (r) => r.status === 'Pending approval' ? (() => { const mine = r.requestedBy === Rc.myName(); const ok = can(OPT, 'approve') && !mine; const t = !can(OPT, 'approve') ? 'Needs Approve permission' : 'You raised this refund. Another user must approve it.'; return `<button class="btn xs success" data-ap="${r.id}" ${ok ? '' : `disabled title="${t}"`}>Approve</button> <button class="btn xs danger" data-rj="${r.id}" ${can(OPT, 'approve') ? '' : 'disabled title="Needs Approve permission"'}>Reject</button>`; })() : '' }],
+        rows: () => L('receptionRefunds').slice().sort((a, b) => b.requestedAt.localeCompare(a.requestedAt)), search: (r) => [r.no, Kit.ptName(r.patientId), r.reason].join(' '), searchPlaceholder: 'Search refunds',
+        filters: [{ label: 'Status', options: [['Pending approval', 'Pending approval'], ['Approved', 'Approved'], ['Rejected', 'Rejected']], test: (r, v) => r.status === v }], empty: 'No refunds', emptyIcon: 'undo-2',
+        afterDraw: (tb) => { $$('[data-ap]', tb).forEach(b => b.addEventListener('click', () => decide(L('receptionRefunds').find(x => x.id === b.dataset.ap), true))); $$('[data-rj]', tb).forEach(b => b.addEventListener('click', () => decide(L('receptionRefunds').find(x => x.id === b.dataset.rj), false))); } });
+      if (tab === 'sh') UI.table(host, { columns: [
+          { label: 'Shift', sort: (s) => s.openedAt, render: (s) => `<b class="mono">${esc(s.no)}</b><div class="small muted">${esc(s.counter)}</div>` },
+          { label: 'Cashier', render: (s) => esc(s.user) },
+          { label: 'Opened', sort: (s) => s.openedAt, render: (s) => esc(fmtDate(s.openedAt)) },
+          { label: 'Closed', render: (s) => s.closedAt ? esc(fmtDate(s.closedAt)) : '<span class="mute">-</span>' },
+          { label: 'Float', cls: 'num', render: (s) => `<span class="num">${Kit.money(s.float)}</span>` },
+          { label: 'Collected', cls: 'num', render: (s) => `<span class="num">${Kit.money(s.status === 'Open' ? Rc.shiftTotals(s).total : Object.values(s.totals || {}).reduce((a, b) => a + b, 0))}</span>` },
+          { label: 'Variance', cls: 'num', render: (s) => s.status === 'Closed' ? `<b class="num" style="color:${s.variance ? 'var(--error)' : 'var(--success)'}">${Kit.money(s.variance)}</b>` : '<span class="mute">-</span>' },
+          { label: 'Status', render: (s) => Kit.status(s.status === 'Open' ? 'Open' : 'Closed') },
+          { label: '', cls: 'actions', render: (s) => `<button class="btn xs" data-rp="${s.id}" ${Rc.gate(OPT, 'print')}>${icon('printer')} Report</button>` }],
+        rows: () => L('receptionShifts').slice().sort((a, b) => b.openedAt.localeCompare(a.openedAt)), search: (s) => [s.no, s.user, s.counter].join(' '), searchPlaceholder: 'Shift, cashier or counter',
+        filters: [{ label: 'Status', options: [['Open', 'Open'], ['Closed', 'Closed']], test: (s, v) => s.status === v }], empty: 'No shifts',
+        afterDraw: (tb) => $$('[data-rp]', tb).forEach(b => b.addEventListener('click', () => report(L('receptionShifts').find(x => x.id === b.dataset.rp)))) });
+    }
+    body();
+  }
+  function openShift() {
+    if (!can(OPT, 'add')) { toast('You need Add permission on Cashier and Shift.', 'err'); return; }
+    if (Rc.myShift()) { toast('You already have an open shift.', 'err'); return; }
+    const used = L('receptionShifts').filter(s => s.status === 'Open').map(s => s.counter);
+    UI.drawer({ title: 'Open cashier shift', sub: 'Count the float from the safe before you start.',
+      body: `<div class="form-grid">${field({ id: 'oC', label: 'Counter', type: 'select', req: true, full: true, options: COUNTERS.map(c => [c, c + (used.includes(c) ? ' (in use)' : ''), used.includes(c)]) })}
+        ${field({ id: 'oF', label: 'Opening float (KWD)', type: 'number', value: '100.000', req: true, attrs: 'step="0.001" min="0" max="1000"', hint: 'Standard float is KWD 100.000' })}
+        ${field({ id: 'oN', label: 'Note', max: 100 })}</div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="oGo" disabled>${icon('lock-open')} Open shift</button>`,
+      onMount: (el, close) => {
+        const chk = () => { const f = Number($('#oF', el).value); $('#oGo', el).disabled = !($('#oC', el).value && f >= 0 && f <= 1000 && $('#oF', el).value !== ''); };
+        $$('input,select', el).forEach(i => { i.addEventListener('input', chk); i.addEventListener('change', chk); });
+        $('#oGo', el).addEventListener('click', () => {
+          const s = { id: UI.uid('sh'), no: Kit.nextNo('SH-26-', L('receptionShifts')), userId: Rc.myId(), user: Rc.myName(), counter: $('#oC', el).value, openedAt: Rc.now(), float: +Number($('#oF', el).value).toFixed(3), status: 'Open', closedAt: '', expected: 0, counted: 0, variance: 0, varianceReason: '', note: $('#oN', el).value.trim(), totals: null, refunds: 0 };
+          L('receptionShifts').push(s); save(); audit('Opened cashier shift', 'Cashier shift', { id: s.id, label: s.no }, [['Float', '', Kit.money(s.float)], ['Counter', '', s.counter]]);
+          close(); toast('Shift ' + s.no + ' opened'); draw();
+        }); chk();
+      } });
+  }
+  function closeShift() {
+    const sh = Rc.myShift(); if (!sh) return; const tot = Rc.shiftTotals(sh);
+    const pendMine = L('receptionRefunds').filter(r => r.shiftId === sh.id && r.status === 'Pending approval');
+    UI.drawer({ title: 'Close shift ' + sh.no, wide: true, sub: esc(sh.counter) + ' · opened ' + esc(fmtDate(sh.openedAt)),
+      body: `${pendMine.length ? `<div class="banner warn" style="margin-bottom:12px">${icon('hourglass')}<span>${pendMine.length === 1 ? '1 refund' : pendMine.length + ' refunds'} of this shift ${pendMine.length === 1 ? 'is' : 'are'} still waiting for approval. They are not in the expected cash.</span></div>` : ''}
+        <div class="grid g2" style="align-items:start"><div class="card"><div class="card-head"><h3>${icon('coins')} Cash count by denomination</h3></div><div class="card-pad"><table class="denom"><thead><tr><th>Denomination</th><th>Count</th><th class="r">Amount</th></tr></thead><tbody>
+          ${DEN.map(([v, k], i) => `<tr><td>KWD ${v >= 1 ? v : v.toFixed(3)} <span class="xs muted">${k}</span></td><td><input class="input" type="number" min="0" step="1" data-d="${i}" aria-label="Count of KWD ${v}"></td><td class="r num" data-a="${i}">${Kit.money(0)}</td></tr>`).join('')}</tbody></table></div></div>
+        <div class="stack"><div class="card card-pad"><dl class="kv"><dt>Opening float</dt><dd class="num">${Kit.money(sh.float)}</dd><dt>Cash collected</dt><dd class="num">${Kit.money(tot.cash)}</dd><dt>Cash refunds paid</dt><dd class="num">- ${Kit.money(tot.cashRef)}</dd><dt><b>Expected cash</b></dt><dd class="num"><b>${Kit.money(tot.expected)}</b></dd><dt><b>Counted cash</b></dt><dd class="num"><b id="cnt">${Kit.money(0)}</b></dd><dt><b>Variance</b></dt><dd class="num"><b id="var">${Kit.money(-tot.expected)}</b></dd></dl></div>
+          <div class="card card-pad"><div class="section-t" style="margin-bottom:8px">Non-cash, settled with the bank batch</div><dl class="kv tight">${Object.entries(tot.by).filter(([m]) => m !== 'Cash').map(([m, v]) => `<dt>${esc(m)}</dt><dd class="num">${Kit.money(v)}</dd>`).join('') || '<dt>None</dt><dd></dd>'}</dl>
+            <label class="check small" style="margin-top:10px"><input type="checkbox" id="batch"> KNET and card terminal batch printed and matched</label></div>
+          <div class="field"><label for="vR">Variance reason <span class="req hidden" id="vReq">*</span></label><textarea class="input" id="vR" maxlength="300" placeholder="Required when the count does not match"></textarea></div></div></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="cGo" disabled>${icon('lock')} Close shift and print report</button>`,
+      onMount: (el, close) => {
+        let counted = 0;
+        const calc = () => {
+          counted = 0; $$('[data-d]', el).forEach(i => { const v = DEN[+i.dataset.d][0] * (Number(i.value) || 0); counted += v; $(`[data-a="${i.dataset.d}"]`, el).textContent = Kit.money(v); });
+          counted = +counted.toFixed(3); const vr = +(counted - tot.expected).toFixed(3);
+          $('#cnt', el).textContent = Kit.money(counted); $('#var', el).textContent = Kit.money(vr); $('#var', el).style.color = Math.abs(vr) < 0.0005 ? 'var(--success)' : 'var(--error)';
+          $('#vReq', el).classList.toggle('hidden', Math.abs(vr) < 0.0005);
+          const nonCash = Object.keys(tot.by).some(m => m !== 'Cash');
+          $('#cGo', el).disabled = !(counted > 0 && (Math.abs(vr) < 0.0005 || $('#vR', el).value.trim().length >= 5) && (!nonCash || $('#batch', el).checked));
+        };
+        $$('input,textarea', el).forEach(i => { i.addEventListener('input', calc); i.addEventListener('change', calc); });
+        $('#cGo', el).addEventListener('click', () => {
+          const vr = +(counted - tot.expected).toFixed(3);
+          confirm({ title: 'Close shift ' + sh.no + '?', tone: Math.abs(vr) < 0.0005 ? 'primary' : 'warn', confirm: 'Close shift', icon: 'lock', body: `Counted ${Kit.money(counted)} against expected ${Kit.money(tot.expected)}. Variance ${Kit.money(vr)}. You cannot collect more payments on this shift.`,
+            onConfirm: () => {
+              const denoms = {}; $$('[data-d]', el).forEach(i => { if (Number(i.value)) denoms[DEN[+i.dataset.d][0]] = Number(i.value); });
+              Object.assign(sh, { status: 'Closed', closedAt: Rc.now(), expected: tot.expected, counted, variance: vr, varianceReason: $('#vR', el).value.trim(), denoms, totals: tot.by, refunds: tot.refunds });
+              save(); audit('Closed cashier shift', 'Cashier shift', { id: sh.id, label: sh.no }, [['Expected', '', Kit.money(tot.expected)], ['Counted', '', Kit.money(counted)], ['Variance', '', Kit.money(vr)]], sh.varianceReason ? { reason: sh.varianceReason } : undefined);
+              close(); toast('Shift closed'); draw(); report(sh);
+            } });
+        });
+        calc();
+      } });
+  }
+  function report(sh) {
+    if (!sh) return; const open = sh.status === 'Open'; const tot = Rc.shiftTotals(sh); const by = open || !sh.totals ? tot.by : sh.totals;
+    const refunds = L('receptionRefunds').filter(r => r.shiftId === sh.id);
+    Kit.printDoc({ title: 'Cashier shift report ' + sh.no, sub: 'Shift report' + (open ? ' (interim, shift still open)' : ''), html: `
+      <table><tr><td><b>Cashier</b></td><td>${esc(sh.user)}</td><td><b>Counter</b></td><td>${esc(sh.counter)}</td></tr><tr><td><b>Opened</b></td><td>${esc(fmtDate(sh.openedAt))}</td><td><b>Closed</b></td><td>${esc(sh.closedAt ? fmtDate(sh.closedAt) : 'Open')}</td></tr></table>
+      <h3 style="margin:14px 0 6px">Collections by payment mode</h3><table><thead><tr><th>Mode</th><th style="text-align:end">Amount</th></tr></thead><tbody>${Object.entries(by).map(([m, v]) => `<tr><td>${esc(m)}</td><td style="text-align:end">${Kit.money(v)}</td></tr>`).join('')}<tr><td><b>Total</b></td><td style="text-align:end"><b>${Kit.money(Object.values(by).reduce((a, b) => a + b, 0))}</b></td></tr></tbody></table>
+      <h3 style="margin:14px 0 6px">Cash reconciliation</h3><table><tr><td>Opening float</td><td style="text-align:end">${Kit.money(sh.float)}</td></tr><tr><td>Expected cash</td><td style="text-align:end">${Kit.money(open ? tot.expected : sh.expected)}</td></tr><tr><td>Counted cash</td><td style="text-align:end">${open ? '-' : Kit.money(sh.counted)}</td></tr><tr><td><b>Variance</b></td><td style="text-align:end"><b>${open ? '-' : Kit.money(sh.variance)}</b></td></tr>${sh.varianceReason ? `<tr><td colspan="2">Reason: ${esc(sh.varianceReason)}</td></tr>` : ''}</table>
+      ${sh.denoms ? `<h3 style="margin:14px 0 6px">Denominations</h3><table>${Object.entries(sh.denoms).map(([d, n]) => `<tr><td>KWD ${esc(d)} x ${n}</td><td style="text-align:end">${Kit.money(d * n)}</td></tr>`).join('')}</table>` : ''}
+      ${tot.pays.length ? `<h3 style="margin:14px 0 6px">Receipts (${tot.pays.length})</h3><table><thead><tr><th>Receipt</th><th>Time</th><th>Patient</th><th>Mode</th><th style="text-align:end">Amount</th></tr></thead><tbody>${tot.pays.map(p => `<tr><td>${esc(p.no)}</td><td>${esc(Kit.time(p.at))}</td><td>${esc(Kit.ptName(p.patientId))}</td><td>${esc(p.mode)}</td><td style="text-align:end">${Kit.money(p.amount)}</td></tr>`).join('')}</tbody></table>` : ''}
+      ${refunds.length ? `<h3 style="margin:14px 0 6px">Refunds</h3><table>${refunds.map(r => `<tr><td>${esc(r.no)}</td><td>${esc(r.status)}</td><td>${esc(r.reason)}</td><td style="text-align:end">${Kit.money(r.amount)}</td></tr>`).join('')}</table>` : ''}
+      <table style="margin-top:24px"><tr><td style="height:40px;vertical-align:bottom">Cashier signature</td><td style="vertical-align:bottom">Supervisor signature</td></tr></table>` });
+  }
+  function refund(pay) {
+    const sh = Rc.myShift(); const left = +(pay.amount - refundedOf(pay)).toFixed(3);
+    UI.drawer({ title: 'Request refund', sub: 'Against receipt ' + esc(pay.no) + ' · a second user approves',
+      body: `${Kit.patientBanner(Kit.pt(pay.patientId))}<div class="err-summary hidden"></div><div class="form-grid">
+        ${field({ id: 'fA', label: 'Refund amount (KWD)', type: 'number', value: left.toFixed(3), req: true, attrs: `step="0.001" min="0" max="${left}"`, hint: 'Up to ' + Kit.money(left) })}
+        ${field({ id: 'fM', label: 'Refund mode', type: 'select', options: Rc.payModes().filter(m => m.refundable).map(m => [m.name, m.name]), value: pay.mode, placeholder: false })}
+        ${field({ id: 'fR', label: 'Reason', type: 'textarea', req: true, full: true, max: 300 })}</div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="fGo" disabled>${icon('send')} Send for approval</button>`,
+      onMount: (el, close) => {
+        const chk = () => { const a = Number($('#fA', el).value); $('#fGo', el).disabled = !(a > 0 && a <= left + 0.0005 && $('#fR', el).value.trim().length >= 5); };
+        $$('input,select,textarea', el).forEach(i => { i.addEventListener('input', chk); i.addEventListener('change', chk); });
+        $('#fGo', el).addEventListener('click', () => {
+          const r = { id: UI.uid('rf'), no: Kit.nextNo('RFD-26-', L('receptionRefunds')), invoiceId: pay.invoiceId, paymentId: pay.id, patientId: pay.patientId, amount: +Number($('#fA', el).value).toFixed(3), mode: $('#fM', el).value, reason: $('#fR', el).value.trim(), status: 'Pending approval', requestedBy: Rc.myName(), requestedAt: Rc.now(), decidedBy: '', decidedAt: '', shiftId: sh ? sh.id : pay.shiftId };
+          L('receptionRefunds').push(r); save(); audit('Requested refund', 'Refund', { id: r.id, label: r.no }, [['Amount', '', Kit.money(r.amount)]], { reason: r.reason });
+          close(); toast('Refund ' + r.no + ' sent for approval'); tab = 'ref'; draw();
+        }); chk();
+      } });
+  }
+  function decide(r, approve) {
+    if (approve && r.requestedBy === Rc.myName()) { toast('You cannot approve your own refund.', 'err'); return; }
+    confirm({ title: (approve ? 'Approve' : 'Reject') + ' refund ' + r.no + '?', tone: approve ? 'primary' : 'danger', confirm: approve ? 'Approve refund' : 'Reject refund', reason: !approve,
+      body: `${Kit.money(r.amount)} to ${esc(Kit.ptName(r.patientId))} by ${esc(r.mode)}. ${esc(r.reason)}`,
+      impact: approve ? ['The invoice paid amount is reduced by ' + Kit.money(r.amount), r.mode === 'Cash' ? 'Cash leaves the drawer of shift ' + esc((L('receptionShifts').find(s => s.id === r.shiftId) || {}).no || '') : 'Refund is sent back to the card or KNET account'] : null,
+      onConfirm: (reason) => {
+        Object.assign(r, { status: approve ? 'Approved' : 'Rejected', decidedBy: Rc.myName(), decidedAt: Rc.now(), decisionNote: reason || '' });
+        if (approve) { const iv = db.invoices.find(i => i.id === r.invoiceId); if (iv) { const bf = iv.status; iv.paid = Math.max(0, +(iv.paid - r.amount).toFixed(3)); iv.refunded = +((iv.refunded || 0) + r.amount).toFixed(3); iv.patientAmount = Math.max(0, +(iv.patientAmount - r.amount).toFixed(3)); iv.total = Math.max(0, +(iv.total - r.amount).toFixed(3)); Rc.setInvStatus(iv); audit('Refund applied to invoice', 'Invoice', { id: iv.id, label: iv.no }, [['Status', bf, iv.status], ['Refunded', '', Kit.money(iv.refunded)]]); } }
+        save(); audit(approve ? 'Approved refund' : 'Rejected refund', 'Refund', { id: r.id, label: r.no }, [['Status', 'Pending approval', r.status]], reason ? { reason } : undefined);
+        toast('Refund ' + (approve ? 'approved' : 'rejected')); draw();
+      } });
+  }
+  draw();
+  if (UI.param('open') === '1' && !Rc.myShift()) openShift();
+})();
+</script>
+</body>
+</html>

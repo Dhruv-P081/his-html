@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Accounts payable · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<style>.nw{white-space:nowrap}</style>
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-material.js"></script><script src="../assets/data-finance.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/finance.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, drawer, confirm, field, showErrors, uid, nowStamp } = UI;
+  const OPT = 'finance.ap';
+  if (!UI.page({ opt: OPT, title: 'Accounts payable', subtitle: 'Vendor bills linked to Material Management GRNs and matched invoices, payment runs (select due bills, approve, pay) and AP ageing.',
+    actions: Fin.btn({ attrs: 'id="newRun"', icon: 'send', label: 'New payment run', gate: Fin.gate(OPT, 'add') }) + Fin.btn({ cls: 'primary', attrs: 'id="newBill"', icon: 'plus', label: 'New vendor bill', gate: Fin.gate(OPT, 'add') }) })) return;
+  const T = Fin.T, me = Fin.meName();
+  const BL = () => db.financeBills, RN = () => db.financePayRuns;
+  const vName = (id) => (Kit.vendor(id) || {}).name || id;
+  const matInv = () => db.materialInvoices || [];
+  const grns = () => db.materialGRNs || [];
+  const matTotal = (m) => Fin.r3((m.lines || []).reduce((s, l) => s + l.qty * l.price, 0));
+  let tab = UI.param('run') ? 'runs' : (UI.param('tab') || 'bills');
+  $('#page').innerHTML = `<div class="grid g4" id="kp" style="margin-bottom:16px"></div><div id="tabs" style="margin-bottom:12px"></div><div id="body"></div>`;
+  function kpis() {
+    const open = BL().filter(b => Fin.billOut(b) > 0);
+    const od = open.filter(b => b.dueDate < T);
+    $('#kp').innerHTML = Kit.kpi('Open payables', Fin.money(Kit.sumBy(open, Fin.billOut)), { icon: 'file-text', foot: open.length + ' approved bills' })
+      + Kit.kpi('Overdue', Fin.money(Kit.sumBy(od, Fin.billOut)), { icon: 'triangle-alert', foot: od.length + ' bills past due date' })
+      + Kit.kpi('Due in 14 days', Fin.money(Kit.sumBy(open.filter(b => b.dueDate >= T && b.dueDate <= Kit.addDays(T, 14)), Fin.billOut)), { icon: 'calendar-clock', foot: 'Plan the next payment run' })
+      + Kit.kpi('Waiting for approval', BL().filter(b => b.status === 'Pending approval').length + RN().filter(r => r.status === 'Pending approval').length, { icon: 'stamp', foot: ((nb, nr) => `${nb} bill${nb === 1 ? '' : 's'}, ${nr} payment run${nr === 1 ? '' : 's'}`)(BL().filter(b => b.status === 'Pending approval').length, RN().filter(r => r.status === 'Pending approval').length) });
+  }
+  function drawTabs() {
+    Kit.tabs($('#tabs'), [{ id: 'bills', label: 'Vendor bills', icon: 'file-text', count: BL().length }, { id: 'runs', label: 'Payment runs', icon: 'send', count: RN().length }, { id: 'age', label: 'AP ageing', icon: 'hourglass' }], tab, (x) => { tab = x; draw(); });
+  }
+  function refresh() { kpis(); drawTabs(); draw(); }
+  function draw() { if (tab === 'bills') bills(); else if (tab === 'runs') runs(); else ageing(); }
+
+  /* ---------- Bills ---------- */
+  function bills() {
+    UI.table($('#body'), {
+      columns: [
+        { label: 'Bill', sort: b => b.date + b.no, render: b => `<div class="cell-main"><b class="mono nw">${esc(b.no)}</b><span>${esc(Kit.day(b.date))}</span></div>` },
+        { label: 'Vendor', sort: b => vName(b.vendorId), render: b => `<b>${esc(vName(b.vendorId))}</b><div class="xs muted mono">${esc(b.vendorInvNo)}</div>` },
+        { label: 'GRN / PO', render: b => `<span class="mono small">${esc(b.grnRef || '-')}</span><div class="xs muted mono">${esc(b.poRef || '')}</div>` },
+        { label: 'Match', render: b => `<span class="small">${esc(b.match)}</span>` },
+        { label: 'Due', sort: b => b.dueDate, render: b => { const o = Fin.billOut(b) > 0 && b.dueDate < T; return `<span class="nw ${o ? 'b' : ''}" style="${o ? 'color:var(--error)' : ''}">${esc(Kit.day(b.dueDate))}</span>${o ? `<div class="xs" style="color:var(--error)">${Fin.days(b.dueDate)} days overdue</div>` : ''}`; } },
+        { label: 'Amount', cls: 'num', sort: b => b.amount, render: b => Fin.amt(b.amount) },
+        { label: 'Balance', cls: 'num', sort: Fin.billOut, render: b => Fin.billOut(b) ? `<b>${Fin.amt(Fin.billOut(b))}</b>` : ['Pending approval', 'Draft', 'Rejected', 'Cancelled'].includes(b.status) ? '<span class="muted">-</span>' : '<span class="muted">0.000</span>' },
+        { label: 'Status', sort: b => b.status, render: b => Kit.status(b.status) },
+      ],
+      rows: () => BL().slice().sort((a, b) => (b.date + b.no).localeCompare(a.date + a.no)),
+      search: b => [b.no, vName(b.vendorId), b.vendorInvNo, b.grnRef, b.poRef].join(' '), searchPlaceholder: 'Bill, vendor, invoice, GRN or PO',
+      filters: [{ label: 'Vendor', options: db.vendors.map(v => [v.id, v.name]), test: (b, v) => b.vendorId === v },
+        { label: 'Status', options: ['Pending approval', 'Approved', 'Partially paid', 'Paid', 'Rejected', 'Cancelled'].map(x => [x, x]), test: (b, v) => b.status === v },
+        { label: 'Due', options: [['over', 'Overdue'], ['14', 'Due in 14 days']], test: (b, v) => Fin.billOut(b) > 0 && (v === 'over' ? b.dueDate < T : b.dueDate >= T && b.dueDate <= Kit.addDays(T, 14)) }],
+      onRow: b => openBill(b), empty: 'No vendor bills', pageSize: 12,
+    });
+  }
+  function openBill(b) {
+    const d = drawer({ title: 'Vendor bill ' + b.no, sub: esc(vName(b.vendorId) + ' · ' + b.vendorInvNo), body: '<div id="vb"></div>', foot: '<div id="vf" class="row grow" style="gap:8px"></div>' });
+    const el = d.el;
+    const render = () => {
+      const mi = matInv().find(m => m.id === b.matInvId) || matInv().find(m => m.vendorInvNo === b.vendorInvNo);
+      const g = grns().find(x => x.no === b.grnRef);
+      const run = RN().find(r => r.billIds.includes(b.id) && r.status !== 'Cancelled');
+      $('#vb', el).innerHTML = `<div class="row" style="margin-bottom:12px">${Kit.status(b.status)}<span class="grow"></span><b style="font-size:20px">${Fin.money(b.amount)}</b></div>
+        ${b.status === 'Rejected' || b.status === 'Cancelled' ? `<div class="banner err" style="margin-bottom:12px">${icon('x')}<span>${esc(b.status)}: ${esc(b.cancelReason || b.rejectReason || '')}</span></div>` : ''}
+        <dl class="kv"><dt>Vendor</dt><dd>${esc(vName(b.vendorId))} · ${(Kit.vendor(b.vendorId) || {}).paymentTerms || 30} days terms</dd><dt>Vendor invoice</dt><dd class="mono">${esc(b.vendorInvNo)}</dd><dt>Bill date</dt><dd>${esc(Kit.day(b.date))}</dd><dt>Due date</dt><dd>${esc(Kit.day(b.dueDate))}</dd>
+        <dt>Purchase order</dt><dd class="mono">${esc(b.poRef || '-')}</dd><dt>Goods receipt</dt><dd><span class="mono">${esc(b.grnRef || 'None (service bill)')}</span>${g ? ` · ${esc(Kit.day(g.date))} · ${Kit.status(g.status)}` : ''}</dd>
+        <dt>Three-way match</dt><dd>${esc(b.match)}</dd><dt>Posting</dt><dd>Dr ${esc(Fin.aLabel(b.accountId))}${b.ccId ? ' (' + esc(Fin.ccName(b.ccId)) + ')' : ''}, Cr 2010 Trade payables</dd>
+        <dt>Paid</dt><dd>${Fin.money(b.paid || 0)}${run ? ` in <a href="#" id="toRun">${esc(run.no)}</a>` : ''}</dd><dt>Balance</dt><dd><b>${Fin.money(Fin.billOut(b) || (b.status === 'Pending approval' ? b.amount : 0))}</b></dd>
+        <dt>Entered by</dt><dd>${esc(b.by)} · ${esc(Kit.when(b.at))}</dd><dt>Approved by</dt><dd>${esc(b.approvedBy || '-')}</dd>${b.journalId ? `<dt>Journal</dt><dd><a href="${R('finance/journals.html?id=' + b.journalId)}">${esc((Fin.J(b.journalId) || {}).no || '')}</a></dd>` : ''}</dl>
+        ${mi ? `<div class="section-t" style="margin-top:16px">Matched vendor invoice (Material Management)</div><div class="card"><div class="table-wrap"><table class="tbl compact"><thead><tr><th>Item</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Amount</th></tr></thead><tbody>${mi.lines.map(l => `<tr><td>${esc((Kit.item(l.itemId) || {}).name || l.itemId)}</td><td class="num">${l.qty}</td><td class="num">${Fin.amt(l.price)}</td><td class="num">${Fin.amt(l.qty * l.price)}</td></tr>`).join('')}</tbody></table></div></div>` : ''}
+        ${b.status === 'Pending approval' ? Fin.selfNote(b) : ''}`;
+      $('#vf', el).innerHTML = (['Pending approval', 'Approved'].includes(b.status) && !(b.paid > 0) && !run ? Fin.btn({ cls: 'danger', attrs: 'id="bCx"', icon: 'ban', label: 'Cancel bill', gate: Fin.gate(OPT, 'approve') }) : '') + '<span class="grow"></span>'
+        + (b.status === 'Pending approval' ? Fin.btn({ cls: 'danger', attrs: 'id="bRj"', icon: 'x', label: 'Reject', gate: Fin.gate(OPT, 'approve', b) }) + Fin.btn({ cls: 'success', attrs: 'id="bAp"', icon: 'check', label: 'Approve and post', gate: Fin.lockMsg(T) ? { ok: false, why: Fin.lockMsg(T) } : Fin.gate(OPT, 'approve', b) }) : '');
+      const on = (q, f) => { const x = $(q, el); if (x) x.addEventListener('click', f); };
+      on('#toRun', (e) => { e.preventDefault(); d.close(); tab = 'runs'; refresh(); openRun(run); });
+      on('#bAp', () => confirm({ title: 'Approve bill ' + b.no + '?', tone: 'primary', icon: 'stamp', body: `${Fin.money(b.amount)} to ${esc(vName(b.vendorId))}. Due ${esc(Kit.day(b.dueDate))}.`, impact: [`Posts Dr ${esc(Fin.aLabel(b.accountId))}, Cr 2010 Trade payables`, 'The bill becomes available for payment runs'], confirm: 'Approve and post', onConfirm: () => {
+        const j = Fin.autoJournal('AP', T, b.branchId, `Vendor bill ${b.no} ${vName(b.vendorId)} ${b.vendorInvNo}`, [Fin.L(Fin.A(b.accountId).code, b.amount, 0, b.ccId, b.grnRef || b.narration), Fin.L('2010', 0, b.amount, '', vName(b.vendorId))], b.no);
+        Object.assign(b, { status: 'Approved', approvedBy: me, approvedAt: nowStamp(), journalId: j.id }); save();
+        audit('Vendor bill approved', 'Vendor bill', { id: b.id, label: b.no }, [['Status', 'Pending approval', 'Approved'], ['Journal', '', j.no]]); toast('Approved and posted ' + j.no); render(); refresh();
+      } }));
+      on('#bRj', () => confirm({ title: 'Reject ' + b.no + '?', reason: true, confirm: 'Reject', onConfirm: (reason) => { Object.assign(b, { status: 'Rejected', approvedBy: me, rejectReason: reason }); save(); audit('Vendor bill rejected', 'Vendor bill', { id: b.id, label: b.no }, [['Status', 'Pending approval', 'Rejected']], { reason }); toast('Rejected'); render(); refresh(); } }));
+      on('#bCx', () => confirm({ title: 'Cancel ' + b.no + '?', body: b.status === 'Approved' ? 'The bill was posted. A reversing journal is posted.' : 'The bill is removed from payables.', reason: true, confirm: 'Cancel bill', onConfirm: (reason) => {
+        if (b.status === 'Approved') Fin.autoJournal('AP', T, b.branchId, `Cancellation of vendor bill ${b.no}: ${reason}`, [Fin.L('2010', b.amount, 0, '', vName(b.vendorId)), Fin.L(Fin.A(b.accountId).code, 0, b.amount, b.ccId, 'Reversal')], b.no);
+        const before = b.status; Object.assign(b, { status: 'Cancelled', cancelReason: reason }); save(); audit('Vendor bill cancelled', 'Vendor bill', { id: b.id, label: b.no }, [['Status', before, 'Cancelled']], { reason }); toast('Cancelled'); render(); refresh();
+      } }));
+    };
+    render();
+  }
+  function newBill() {
+    const avail = matInv().filter(m => ['Approved', 'Matched'].includes(m.status) && !BL().some(b => b.matInvId === m.id || b.vendorInvNo === m.vendorInvNo));
+    drawer({ title: 'New vendor bill', sub: esc(Fin.nextNo('PB', BL())) + ' · needs approval before it can be paid',
+      body: `<div class="err-summary hidden"></div>
+        <div id="srcSeg" style="margin-bottom:14px"></div>
+        <div id="fromMat" class="form-grid"></div>
+        <div class="form-grid" style="margin-top:14px">
+          ${field({ id: 'bVen', label: 'Vendor', type: 'select', options: db.vendors.map(v => [v.id, v.name + (v.status !== 'Active' ? ' (' + v.status + ')' : '')]), req: true })}
+          ${field({ id: 'bInv', label: 'Vendor invoice number', req: true })}
+          ${field({ id: 'bDate', label: 'Invoice date', type: 'date', value: T, req: true })}
+          ${field({ id: 'bDue', label: 'Due date', type: 'date', req: true, hint: 'From the vendor payment terms' })}
+          ${field({ id: 'bGrn', label: 'Goods receipt (GRN)', type: 'select', options: [], placeholder: 'No GRN (service bill)' })}
+          ${field({ id: 'bPo', label: 'Purchase order', placeholder: 'PO-26-...' })}
+          ${field({ id: 'bAmt', label: 'Amount (KWD)', type: 'number', req: true, attrs: 'step="0.001" min="0.001"' })}
+          ${field({ id: 'bAcc', label: 'Debit account', type: 'select', options: Fin.acctOpts('br_01'), value: Fin.AC('2020').id, req: true, placeholder: false, hint: '2020 clears the GRN accrual. Use an expense account for service bills.' })}
+          ${field({ id: 'bCc', label: 'Cost center', type: 'select', options: Fin.ccOpts('br_01') })}
+          ${field({ id: 'bNote', label: 'Narration', full: true })}
+        </div><div id="bWarn" style="margin-top:12px"></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="bGo" disabled>Submit for approval</button>`,
+      onMount: (el, close) => {
+        let src = avail.length ? 'mat' : 'manual', mi = null;
+        const segDraw = () => Kit.seg($('#srcSeg', el), [['mat', `From matched invoice (${avail.length})`, 'scale'], ['manual', 'Manual entry', 'pencil']], src, (v) => { src = v; mi = null; matDraw(); check(); });
+        const matDraw = () => {
+          $('#fromMat', el).innerHTML = src === 'mat' ? (avail.length ? field({ id: 'bMat', label: 'Matched vendor invoice (Material Management)', type: 'select', full: true, options: avail.map(m => [m.id, `${m.no} · ${vName(m.vendorId)} · ${m.vendorInvNo} · ${Fin.amt(matTotal(m))}`]) }) : `<div class="full banner info">${icon('info')}<span>No approved vendor invoices are waiting in Material Management. Use manual entry.</span></div>`) : '';
+          const s = $('#bMat', el); if (s) s.addEventListener('change', () => { mi = avail.find(m => m.id === s.value); if (mi) { $('#bVen', el).value = mi.vendorId; venChange(); $('#bInv', el).value = mi.vendorInvNo; $('#bDate', el).value = mi.date; $('#bDue', el).value = mi.dueDate; const g = grns().find(x => (mi.grnIds || []).includes(x.id)); if (g) $('#bGrn', el).value = g.no; const po = (db.materialPOs || []).find(p => p.id === mi.poId); $('#bPo', el).value = po ? po.no : ''; $('#bAmt', el).value = matTotal(mi).toFixed(3); } check(); });
+        };
+        const venChange = () => {
+          const v = Kit.vendor($('#bVen', el).value);
+          const gl = grns().filter(g => g.vendorId === (v || {}).id && g.status === 'Posted');
+          $('#bGrn', el).innerHTML = '<option value="">No GRN (service bill)</option>' + gl.map(g => `<option value="${esc(g.no)}">${esc(g.no)} · ${esc(Kit.day(g.date))} · ${Fin.amt((g.lines || []).reduce((s, l) => s + l.qty * l.cost, 0))}</option>`).join('');
+          if (v && $('#bDate', el).value) $('#bDue', el).value = Kit.addDays($('#bDate', el).value, v.paymentTerms || 30);
+        };
+        const check = () => {
+          const errs = {}, v = Kit.vendor($('#bVen', el).value), inv = $('#bInv', el).value.trim();
+          if (inv && v && BL().some(b => b.vendorId === v.id && b.vendorInvNo.toUpperCase() === inv.toUpperCase() && b.status !== 'Cancelled')) errs.bInv = 'This vendor invoice is already billed (duplicate check).';
+          if ($('#bDue', el).value && $('#bDate', el).value && $('#bDue', el).value < $('#bDate', el).value) errs.bDue = 'Due date is before the invoice date.';
+          if (Fin.isPL($('#bAcc', el).value) && !$('#bCc', el).value) errs.bCc = 'Cost center is required for expense accounts.';
+          showErrors(el, errs);
+          $('#bWarn', el).innerHTML = v && v.status !== 'Active' ? `<div class="banner warn">${icon('triangle-alert')}<span>${esc(v.name)} is ${esc(v.status.toLowerCase())}. The bill can be recorded but payment runs will skip it until the vendor is active.</span></div>` : '';
+          $('#bGo', el).disabled = !(v && inv && $('#bDate', el).value && $('#bDue', el).value && +$('#bAmt', el).value > 0 && $('#bAcc', el).value && !Object.keys(errs).length);
+        };
+        $('#bVen', el).addEventListener('change', () => { venChange(); check(); });
+        $('#bDate', el).addEventListener('change', () => { venChange(); check(); });
+        $$('input,select', el).forEach(i => { i.addEventListener('input', check); i.addEventListener('change', check); });
+        segDraw(); matDraw(); check();
+        $('#bGo', el).addEventListener('click', () => {
+          const grn = $('#bGrn', el).value;
+          const b = { id: uid('bl'), no: Fin.nextNo('PB', BL()), vendorId: $('#bVen', el).value, vendorInvNo: $('#bInv', el).value.trim(), date: $('#bDate', el).value, dueDate: $('#bDue', el).value, amount: Fin.r3(+$('#bAmt', el).value), paid: 0, status: 'Pending approval', grnRef: grn, poRef: $('#bPo', el).value.trim(), match: mi ? '3-way matched (MMIS)' : grn ? 'GRN linked, not matched' : 'Service bill (no GRN)', accountId: $('#bAcc', el).value, ccId: $('#bCc', el).value, branchId: 'br_01', runNo: '', matInvId: mi ? mi.id : '', by: me, at: nowStamp(), approvedBy: '', approvedAt: '', narration: $('#bNote', el).value.trim() };
+          BL().push(b); save(); audit('Vendor bill created', 'Vendor bill', { id: b.id, label: b.no }, [['Vendor', '', vName(b.vendorId)], ['Amount', '', Fin.amt(b.amount)]]);
+          close(); toast(b.no + ' submitted for approval'); tab = 'bills'; refresh(); openBill(b);
+        });
+      } });
+  }
+
+  /* ---------- Payment runs ---------- */
+  function runs() {
+    UI.table($('#body'), {
+      columns: [
+        { label: 'Run', sort: r => r.date + r.no, render: r => `<div class="cell-main"><b class="mono nw">${esc(r.no)}</b><span>Pay date ${esc(Kit.day(r.date))}</span></div>` },
+        { label: 'Bills', render: r => `${r.billIds.length} bills<div class="xs muted">${esc(Array.from(new Set(r.billIds.map(id => vName((BL().find(b => b.id === id) || {}).vendorId)))).join(', '))}</div>` },
+        { label: 'Bank', render: r => esc((db.financeBanks.find(b => b.id === r.bankId) || {}).name || '') },
+        { label: 'Amount', cls: 'num', sort: r => r.amount, render: r => `<b>${Fin.amt(r.amount)}</b>` },
+        { label: 'Prepared by', render: r => `<span class="small">${esc(r.by)}${r.by === me ? ' <span class="badge b-warn nodot">You</span>' : ''}</span>` },
+        { label: 'Status', render: r => Kit.status(r.status) },
+      ],
+      rows: () => RN().slice().sort((a, b) => b.date.localeCompare(a.date)), search: r => r.no + ' ' + r.note, searchPlaceholder: 'Run number',
+      filters: [{ label: 'Status', options: ['Pending approval', 'Approved', 'Paid', 'Cancelled'].map(x => [x, x]), test: (r, v) => r.status === v }],
+      onRow: r => openRun(r), empty: 'No payment runs',
+    });
+  }
+  function openRun(r) {
+    const d = drawer({ title: 'Payment run ' + r.no, sub: esc('Pay date ' + Kit.day(r.date) + ' · ' + ((db.financeBanks.find(b => b.id === r.bankId) || {}).name || '')), wide: true, body: '<div id="rb"></div>', foot: '<div id="rf" class="row grow" style="gap:8px"></div>' });
+    const el = d.el;
+    const steps = ['Prepared', 'Approved', 'Paid'];
+    const render = () => {
+      const st = r.status === 'Paid' ? 3 : r.status === 'Approved' ? 2 : 1;
+      const bl = r.billIds.map(id => BL().find(b => b.id === id)).filter(Boolean);
+      $('#rb', el).innerHTML = `<div class="row" style="gap:10px;margin-bottom:14px">${steps.map((s, i) => `<span class="badge ${r.status === 'Cancelled' ? 'b-neutral' : i < st ? 'b-ok' : 'b-neutral'}">${i + 1}. ${s}</span>`).join(icon('chevron-right', 'mute'))}<span class="grow"></span>${Kit.status(r.status)}</div>
+        ${r.cancelReason ? `<div class="banner err" style="margin-bottom:12px">${icon('ban')}<span>${esc(r.cancelReason)}</span></div>` : ''}
+        <div class="card"><div class="table-wrap"><table class="tbl compact"><thead><tr><th>Bill</th><th>Vendor</th><th>Due</th><th class="num">Bill amount</th><th class="num">Paid in this run</th></tr></thead><tbody>
+        ${bl.map(b => `<tr><td class="mono small">${esc(b.no)}</td><td>${esc(vName(b.vendorId))}<div class="xs muted mono">${esc(b.vendorInvNo)}</div></td><td class="nw">${esc(Kit.day(b.dueDate))}</td><td class="num">${Fin.amt(b.amount)}</td><td class="num"><b>${Fin.amt((r.pay || {})[b.id] != null ? r.pay[b.id] : r.status === 'Paid' ? b.paid : Fin.billOut(b))}</b></td></tr>`).join('')}
+        </tbody><tfoot><tr><td colspan="4">Total</td><td class="num">${Fin.amt(r.amount)}</td></tr></tfoot></table></div></div>
+        <dl class="kv" style="margin-top:14px"><dt>Prepared by</dt><dd>${esc(r.by)} · ${esc(Kit.when(r.at))}</dd><dt>Approved by</dt><dd>${esc(r.approvedBy || '-')}${r.approvedAt ? ' · ' + esc(Kit.when(r.approvedAt)) : ''}</dd><dt>Paid</dt><dd>${esc(r.paidAt ? Kit.when(r.paidAt) : '-')}</dd>${r.note ? `<dt>Note</dt><dd>${esc(r.note)}</dd>` : ''}${r.journalId ? `<dt>Journal</dt><dd><a href="${R('finance/journals.html?id=' + r.journalId)}">${esc((Fin.J(r.journalId) || {}).no || '')}</a></dd>` : ''}</dl>
+        ${r.status === 'Pending approval' ? Fin.selfNote(r) : ''}`;
+      $('#rf', el).innerHTML = Fin.btn({ attrs: 'id="rPr"', icon: 'printer', label: 'Remittance advice', gate: Fin.gate(OPT, 'print') })
+        + (['Pending approval', 'Approved'].includes(r.status) ? Fin.btn({ cls: 'danger', attrs: 'id="rCx"', icon: 'ban', label: 'Cancel run', gate: Fin.gate(OPT, 'approve') }) : '') + '<span class="grow"></span>'
+        + (r.status === 'Pending approval' ? Fin.btn({ cls: 'success', attrs: 'id="rAp"', icon: 'check', label: 'Approve run', gate: Fin.gate(OPT, 'approve', r) }) : '')
+        + (r.status === 'Approved' ? Fin.btn({ cls: 'primary', attrs: 'id="rPay"', icon: 'send', label: 'Release payment', gate: Fin.lockMsg(T) ? { ok: false, why: Fin.lockMsg(T) } : Fin.gate(OPT, 'add') }) : '');
+      const on = (q, f) => { const x = $(q, el); if (x) x.addEventListener('click', f); };
+      on('#rPr', () => Kit.printDoc({ title: 'Remittance advice ' + r.no, sub: 'Payment run', html: `<h3 style="margin:0 0 8px">Remittance advice ${esc(r.no)}</h3>${Fin.kvSheet([['Pay date', Kit.day(r.date)], ['Paid from', (db.financeBanks.find(b => b.id === r.bankId) || {}).name || ''], ['Status', r.status]])}${Fin.sheetTable(['Bill', 'Vendor', 'Vendor invoice', 'Amount'], bl.map(b => [b.no, vName(b.vendorId), b.vendorInvNo, b.paid || Fin.billOut(b)]), ['Total', '', '', r.amount])}${Fin.signBlock('Prepared by ' + r.by, 'Approved by ' + (r.approvedBy || ''))}` }));
+      on('#rAp', () => confirm({ title: 'Approve ' + r.no + '?', tone: 'primary', icon: 'stamp', body: `${bl.length} bills, ${Fin.money(r.amount)} from ${esc((db.financeBanks.find(b => b.id === r.bankId) || {}).name || '')}.`, confirm: 'Approve run', onConfirm: () => { Object.assign(r, { status: 'Approved', approvedBy: me, approvedAt: nowStamp() }); save(); audit('Payment run approved', 'Payment run', { id: r.id, label: r.no }, [['Status', 'Pending approval', 'Approved']]); toast('Run approved'); render(); refresh(); } }));
+      on('#rCx', () => confirm({ title: 'Cancel ' + r.no + '?', body: 'The bills go back to the open list.', reason: true, confirm: 'Cancel run', onConfirm: (reason) => { const b = r.status; Object.assign(r, { status: 'Cancelled', cancelReason: reason }); save(); audit('Payment run cancelled', 'Payment run', { id: r.id, label: r.no }, [['Status', b, 'Cancelled']], { reason }); toast('Run cancelled'); render(); refresh(); } }));
+      on('#rPay', () => confirm({ title: 'Release ' + Fin.money(r.amount) + '?', tone: 'primary', icon: 'send', body: 'Bank transfers are released, payment vouchers are created and the payment is posted to the ledger.', impact: bl.map(b => `${esc(b.no)} ${esc(vName(b.vendorId))}: ${Fin.amt(Fin.billOut(b))}`), confirm: 'Release payment', onConfirm: () => {
+        const bank = db.financeBanks.find(b => b.id === r.bankId) || { accountCode: '1110', name: 'Bank' };
+        const pay = {}; let tot = 0;
+        bl.forEach(b => { const a = Fin.billOut(b); pay[b.id] = a; tot += a; b.paid = Fin.r3((b.paid || 0) + a); b.status = 'Paid'; b.runNo = r.no; });
+        const byV = Kit.groupBy(bl, b => b.vendorId);
+        Object.entries(byV).forEach(([vid, list]) => db.financePayments.push({ id: uid('pv'), no: Fin.nextNo('PV', db.financePayments), date: T, payee: vName(vid), vendorId: vid, kind: 'Payment run', runId: r.id, amount: Fin.r3(Kit.sumBy(list, b => pay[b.id])), mode: 'Bank transfer', bankId: r.bankId, ref: 'TT-' + r.no.slice(-4) + '-' + vid.slice(-2), accountId: Fin.AC('2010').id, ccId: '', narration: list.map(b => b.no).join(', '), status: 'Paid', by: r.by, approvedBy: r.approvedBy, branchId: 'br_01' }));
+        const j = Fin.autoJournal('AP', T, 'br_01', `Payment run ${r.no} (${bl.length} vendor bills)`, [Fin.L('2010', tot, 0, '', 'Vendor bills paid'), Fin.L(bank.accountCode, 0, tot, '', bank.name)], r.no);
+        Object.assign(r, { status: 'Paid', paidAt: nowStamp(), pay, amount: Fin.r3(tot), journalId: j.id }); save();
+        audit('Payment run paid', 'Payment run', { id: r.id, label: r.no }, [['Status', 'Approved', 'Paid'], ['Journal', '', j.no]]); toast('Payment released, ' + j.no + ' posted'); render(); refresh();
+      } }));
+    };
+    render();
+  }
+  function newRun() {
+    drawer({ title: 'New payment run', sub: esc(Fin.nextNo('PR', RN())) + ' · select due bills, then send for approval', wide: true,
+      body: `<div class="form-grid c4">${field({ id: 'nDate', label: 'Pay date', type: 'date', value: Kit.addDays(T, 1), req: true })}${field({ id: 'nUpto', label: 'Include bills due by', type: 'date', value: Kit.addDays(T, 7), req: true })}${field({ id: 'nBank', label: 'Pay from', type: 'select', options: db.financeBanks.filter(b => b.kind === 'Bank account' && b.status === 'Active').map(b => [b.id, b.name]), value: 'bk_nbk', placeholder: false })}${field({ id: 'nNote', label: 'Note' })}</div>
+        <div class="card" style="margin-top:14px"><div class="card-head"><h3>${icon('list-checks')} Approved bills due</h3><div class="actions"><button class="btn xs" id="nAll">Select all</button></div></div><div id="nList"></div></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><span class="grow"></span><b id="nTot" style="margin-inline-end:12px"></b><button class="btn primary" id="nGo" disabled>Send for approval</button>`,
+      onMount: (el, close) => {
+        const inRun = (id) => RN().some(r => ['Pending approval', 'Approved'].includes(r.status) && r.billIds.includes(id));
+        const draw = () => {
+          const upto = $('#nUpto', el).value;
+          const list = BL().filter(b => Fin.billOut(b) > 0 && b.dueDate <= upto).sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+          $('#nList', el).innerHTML = list.length ? `<div class="table-wrap"><table class="tbl compact"><thead><tr><th></th><th>Bill</th><th>Vendor</th><th>Due</th><th class="num">Balance</th></tr></thead><tbody>${list.map(b => { const v = Kit.vendor(b.vendorId) || {}; const blk = inRun(b.id) ? 'In another run' : v.status !== 'Active' ? 'Vendor ' + String(v.status).toLowerCase() : ''; return `<tr><td><input type="checkbox" value="${b.id}" ${blk ? 'disabled' : b.dueDate <= $('#nDate', el).value ? 'checked' : ''} aria-label="Select ${esc(b.no)}"></td><td class="mono small">${esc(b.no)}${blk ? ` <span class="badge b-warn nodot">${esc(blk)}</span>` : ''}</td><td>${esc(v.name)}</td><td class="nw" style="${b.dueDate < T ? 'color:var(--error);font-weight:700' : ''}">${esc(Kit.day(b.dueDate))}</td><td class="num">${Fin.amt(Fin.billOut(b))}</td></tr>`; }).join('')}</tbody></table></div>` : `<div class="empty">${icon('circle-check')}<b>No approved bills due by this date</b></div>`;
+          $$('#nList input', el).forEach(i => i.addEventListener('change', sum)); sum();
+        };
+        const picked = () => $$('#nList input:checked', el).map(i => BL().find(b => b.id === i.value));
+        const sum = () => { const p = picked(); $('#nTot', el).textContent = p.length ? `${p.length} bills · ${Fin.money(Kit.sumBy(p, Fin.billOut))}` : ''; $('#nGo', el).disabled = !p.length || !$('#nDate', el).value; };
+        ['nUpto', 'nDate'].forEach(i => $('#' + i, el).addEventListener('change', draw));
+        $('#nAll', el).addEventListener('click', () => { $$('#nList input:not(:disabled)', el).forEach(i => { i.checked = true; }); sum(); });
+        draw();
+        $('#nGo', el).addEventListener('click', () => {
+          const p = picked();
+          const r = { id: uid('prn'), no: Fin.nextNo('PR', RN()), date: $('#nDate', el).value, billIds: p.map(b => b.id), amount: Fin.r3(Kit.sumBy(p, Fin.billOut)), bankId: $('#nBank', el).value, status: 'Pending approval', by: me, at: nowStamp(), approvedBy: '', approvedAt: '', paidAt: '', note: $('#nNote', el).value.trim() };
+          RN().push(r); save(); audit('Payment run created', 'Payment run', { id: r.id, label: r.no }, [['Bills', '', String(p.length)], ['Amount', '', Fin.amt(r.amount)]]);
+          close(); toast(r.no + ' sent for approval'); tab = 'runs'; refresh(); openRun(r);
+        });
+      } });
+  }
+
+  /* ---------- AP ageing ---------- */
+  function ageing() {
+    const m = {};
+    BL().filter(b => Fin.billOut(b) > 0).forEach(b => { const r = m[b.vendorId] || (m[b.vendorId] = { vendorId: b.vendorId, b: [0, 0, 0, 0, 0], total: 0, n: 0 }); const k = Fin.apBucket(b); r.b[k] += Fin.billOut(b); r.total += Fin.billOut(b); r.n++; });
+    const rows = Object.values(m).sort((a, b) => b.total - a.total);
+    const tot = [0, 0, 0, 0, 0]; rows.forEach(r => r.b.forEach((v, i) => { tot[i] += v; }));
+    $('#body').innerHTML = `<div class="grid g-side"><div class="card" id="apCard"><div class="card-head"><h3>${icon('hourglass')} AP ageing by vendor (days past due) · ${esc(Kit.day(T))}</h3><div class="actions">${Fin.btn({ cls: 'sm', attrs: 'id="apPr"', icon: 'printer', label: 'Print', gate: Fin.gate(OPT, 'print') })}</div></div>
+      <div class="table-wrap"><table class="tbl compact"><thead><tr><th>Vendor</th>${Fin.AP_BUCKETS.map(b => `<th class="num">${b}</th>`).join('')}<th class="num">Total</th></tr></thead><tbody>
+      ${rows.map(r => `<tr><td><b>${esc(vName(r.vendorId))}</b><div class="xs muted">${r.n} bills · ${(Kit.vendor(r.vendorId) || {}).paymentTerms || 30} days terms</div></td>${r.b.map((v, i) => `<td class="num" style="${i >= 2 && v ? 'color:var(--error);font-weight:700' : ''}">${v ? Fin.amt(v) : '<span class="muted">-</span>'}</td>`).join('')}<td class="num"><b>${Fin.amt(r.total)}</b></td></tr>`).join('') || `<tr><td colspan="7"><div class="empty">${icon('circle-check')}<b>No open payables</b></div></td></tr>`}
+      </tbody><tfoot><tr><td>Total</td>${tot.map(v => `<td class="num">${Fin.amt(v)}</td>`).join('')}<td class="num">${Fin.amt(tot.reduce((s, x) => s + x, 0))}</td></tr></tfoot></table></div></div>
+      <div class="card"><div class="card-head"><h3>${icon('chart-bar')} By bucket</h3></div><div class="card-pad">${Kit.barList(Fin.AP_BUCKETS.map((b, i) => [b, Math.round(tot[i]), i === 0 ? 'ok' : i === 1 ? 'warn' : 'err']), { fmt: (v) => Kit.num(v) })}
+        <div class="banner info" style="margin-top:14px">${icon('info')}<span>GL control: 2010 Trade payables ${Fin.money(-Fin.netOf(Fin.balances({ to: T })[Fin.AC('2010').id]))}. The difference is bills summarised in monthly AP postings before go-live of the bill register.</span></div></div></div></div>`;
+    $('#apPr').addEventListener('click', () => Kit.printDoc({ title: 'AP ageing', sub: 'Accounts payable ageing by vendor', html: $('#apCard .table-wrap').innerHTML }));
+  }
+
+  $('#newBill') && $('#newBill').addEventListener('click', newBill);
+  $('#newRun') && $('#newRun').addEventListener('click', newRun);
+  kpis(); drawTabs(); draw();
+  const qb = UI.param('bill'); if (qb) { const b = BL().find(x => x.id === qb); if (b) openBill(b); }
+  const qr = UI.param('run'); if (qr) { const r = RN().find(x => x.id === qr); if (r) openRun(r); }
+})();
+</script>
+</body>
+</html>

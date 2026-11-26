@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Leave and Overtime · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-hr.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/hr.js"></script>
+<style>.nw{white-space:nowrap}.bal{font-variant-numeric:tabular-nums;white-space:nowrap}</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, field, showErrors, drawer, confirm } = UI;
+  const OPT = 'hr.emp.leave';
+  if (!UI.page({ opt: OPT, title: 'Leave and Overtime', subtitle: 'Leave requests, balances by leave type and overtime approval. Approved overtime feeds the payroll run.',
+    actions: `${HR.btn(OPT, 'add', 'Overtime request', 'id="newOt"', '', 'timer')}${HR.btn(OPT, 'add', 'Leave request', 'id="newLv"', 'primary', 'plus')}` })) return;
+  const T = db.TODAY, ME = UI.me();
+  const empQ = UI.param('emp');
+  let tab = UI.param('tab') || 'req', lvView = 'Pending approval', otView = 'Pending approval';
+  $('#page').innerHTML = `<div id="tabs" style="margin-bottom:14px"></div><div id="body"></div>`;
+  const pendLv = () => db.hrLeaves.filter(l => l.status === 'Pending approval').length;
+  const pendOt = () => db.hrOvertime.filter(o => o.status === 'Pending approval').length;
+  const drawTabs = () => Kit.tabs($('#tabs'), [{ id: 'req', label: 'Leave requests', icon: 'plane', count: pendLv() }, { id: 'bal', label: 'Leave balances', icon: 'scale' }, { id: 'ot', label: 'Overtime', icon: 'timer', count: pendOt() }], tab, (t) => { tab = t; show(); });
+  const show = () => ({ req, bal, ot })[tab]();
+  const otRate = (o) => HR.SET.otRates[o.type] || 1.25;
+  const otAmount = (o) => { const v = HR.get(o.empId); return v ? HR.r3(o.hours * HR.hourly(v) * otRate(o)) : 0; };
+  const approveBtn = (rec, act, attr) => { const blk = HR.selfBlock(rec.requestedBy, rec.empId); if (!can(OPT, 'approve')) return `<button class="btn xs" disabled title="Needs Approve permission">${icon('check')} ${act}</button>`; if (blk) return `<button class="btn xs" disabled title="${esc(blk)}">${icon('check')} ${act}</button>`; return `<button class="btn xs success" ${attr} title="${act}">${icon('check')} ${act}</button>`; };
+
+  /* ---------- Leave requests ---------- */
+  function req() {
+    const b = $('#body');
+    b.innerHTML = `${empQ ? `<div class="banner info" style="margin-bottom:12px">${icon('funnel')}<span>Showing leave of <b>${esc(HR.name(empQ))}</b>. <a href="${R('hr/leave.html')}">Show all staff</a></span></div>` : ''}<div class="row" style="margin-bottom:12px"><div id="seg"></div></div><div id="t"></div>`;
+    const sts = ['Pending approval', 'Approved', 'Rejected', 'Cancelled', 'All'];
+    const cnt = (s) => db.hrLeaves.filter(l => (s === 'All' || l.status === s) && (!empQ || l.empId === empQ)).length;
+    Kit.seg($('#seg'), sts.map(s => [s, `${s === 'Pending approval' ? 'Pending' : s} (${cnt(s)})`]), lvView, (v) => { lvView = v; t.redraw(); });
+    const t = UI.table($('#t'), {
+      rows: () => db.hrLeaves.filter(l => (lvView === 'All' || l.status === lvView) && (!empQ || l.empId === empQ)).sort((a, c) => c.requestedAt.localeCompare(a.requestedAt)),
+      search: (l) => [l.no, HR.name(l.empId), HR.leaveType(l.type).name, l.reason].join(' '), searchPlaceholder: 'Request, employee or leave type',
+      filters: [{ label: 'Leave type', options: db.hrLeaveTypes.map(x => [x.code, x.name]), test: (l, x) => l.type === x }, { label: 'Department', options: HR.deptsInUse(), test: (l, x) => HR.prof(l.empId).deptId === x }],
+      columns: [
+        { label: 'Request', sort: (l) => l.requestedAt, render: (l) => `<span class="mono">${esc(l.no)}</span><div class="xs muted nw">${esc(Kit.when(l.requestedAt))}</div>` },
+        { label: 'Employee', sort: (l) => HR.name(l.empId), render: (l) => HR.empCell(HR.get(l.empId), HR.dept(HR.prof(l.empId).deptId)) },
+        { label: 'Leave', sort: (l) => l.type, render: (l) => `<b class="nw">${esc(HR.leaveType(l.type).name)}</b>${HR.leaveType(l.type).paid ? '' : ' <span class="tag">Unpaid</span>'}` },
+        { label: 'Dates', sort: (l) => l.from, render: (l) => `<span class="nw">${esc(Kit.day(l.from))}</span>${l.to !== l.from ? `<div class="small muted nw">to ${esc(Kit.day(l.to))}</div>` : ''}` },
+        { label: 'Days', cls: 'num', sort: (l) => l.days, render: (l) => `<span class="num">${l.days}</span>` },
+        { label: 'Balance', render: (l) => { const bl = HR.leaveBal(l.empId, l.type, l.from.slice(0, 4)); return `<span class="bal small ${bl.available < 0 ? 'b' : ''}" style="${bl.available < 0 ? 'color:var(--error)' : ''}">${bl.balance} left${bl.pending ? `, ${bl.pending} pending` : ''}</span>`; } },
+        { label: 'Status', sort: (l) => l.status, render: (l) => (l.status === 'Pending approval' ? Kit.status('Pending', 'warn') : Kit.status(l.status)) + (l.decidedBy && l.status !== 'Pending approval' ? `<div class="xs muted">${esc(l.decidedBy)}</div>` : '') },
+        { label: '', cls: 'actions', render: (l) => l.status === 'Pending approval' ? `<div class="row" style="gap:4px;justify-content:flex-end">${approveBtn(l, 'Approve', `data-ap="${l.id}"`)}<button class="btn xs danger" data-rj="${l.id}" ${can(OPT, 'approve') && !HR.selfBlock(l.requestedBy, l.empId) ? '' : 'disabled title="Needs Approve permission, and you cannot decide your own request"'} aria-label="Reject" title="Reject">${icon('x')}</button></div>` : '' },
+      ],
+      onRow: (l) => detail(l.id),
+      afterDraw: (tb) => { $$('[data-ap]', tb).forEach(x => x.addEventListener('click', () => decide(find(x.dataset.ap), true))); $$('[data-rj]', tb).forEach(x => x.addEventListener('click', () => decide(find(x.dataset.rj), false))); },
+      empty: 'No leave requests in this view', emptyIcon: 'plane', pageSize: 12,
+    });
+  }
+  const find = (id) => db.hrLeaves.find(l => l.id === id);
+  function detail(id) {
+    const l = find(id), v = HR.get(l.empId), lt = HR.leaveType(l.type), bl = HR.leaveBal(l.empId, l.type, l.from.slice(0, 4));
+    const team = db.hrLeaves.filter(x => x.id !== l.id && x.status === 'Approved' && HR.prof(x.empId).deptId === v.deptId && x.from <= l.to && x.to >= l.from);
+    const deptSize = HR.active().filter(x => x.deptId === v.deptId).length;
+    const blk = HR.selfBlock(l.requestedBy, l.empId);
+    const canCancel = can(OPT, 'cancel') && (l.status === 'Pending approval' || (l.status === 'Approved' && l.from > T));
+    drawer({ title: lt.name + ' ' + l.no, sub: esc(v.name) + ' · ' + esc(v.designation), wide: true,
+      body: `<div class="grid g2"><dl class="kv"><dt>Status</dt><dd>${Kit.status(l.status)}</dd><dt>Employee</dt><dd>${HR.empLink(l.empId)}</dd><dt>Department</dt><dd>${esc(HR.dept(v.deptId))}</dd><dt>Dates</dt><dd>${esc(Kit.day(l.from))} to ${esc(Kit.day(l.to))}</dd><dt>Days</dt><dd>${l.days} (${esc(lt.count || 'Working days')})</dd><dt>Pay</dt><dd>${lt.paid ? 'Paid leave' : 'Unpaid, deducted in payroll at ' + Kit.money(HR.daily(v)) + ' a day'}</dd><dt>Reason</dt><dd>${esc(l.reason || '-')}</dd><dt>Requested by</dt><dd>${esc(l.requestedBy)} · ${esc(Kit.when(l.requestedAt))}</dd>${l.decidedBy ? `<dt>Decision</dt><dd>${esc(l.decidedBy)} · ${esc(Kit.when(l.decidedAt))}${l.decisionNote ? `<div class="small muted">${esc(l.decisionNote)}</div>` : ''}</dd>` : ''}</dl>
+        <div class="stack"><div class="card card-pad"><div class="section-t">${esc(lt.name)} balance ${l.from.slice(0, 4)}</div><dl class="kv tight"><dt>Entitlement</dt><dd>${bl.ent} days${l.type === 'AL' ? ` <span class="small muted">incl. ${HR.prof(l.empId).alOpening} carried forward</span>` : ''}</dd><dt>Taken</dt><dd>${bl.taken}</dd><dt>Pending</dt><dd>${bl.pending}</dd><dt>Balance</dt><dd><b>${bl.balance}</b>${bl.available < 0 ? ' <span class="badge b-err">Short by ' + (-bl.available) + '</span>' : ''}</dd></dl></div>
+        <div class="card card-pad"><div class="section-t">Department cover</div>${team.length ? `<div class="small" style="margin-bottom:6px">${team.length} of ${deptSize} ${esc(HR.dept(v.deptId))} staff also on leave in this period:</div>${team.map(x => `<div class="small">${esc(HR.name(x.empId))}, ${esc(Kit.day(x.from))} to ${esc(Kit.day(x.to))}</div>`).join('')}` : `<div class="small muted">No other approved leave in ${esc(HR.dept(v.deptId))} for these dates.</div>`}
+          <div class="xs muted" style="margin-top:8px">Minimum staffing rules by department are in the 2nd phase scope.</div></div></div></div>
+        ${blk && l.status === 'Pending approval' ? `<div class="banner warn" style="margin-top:12px">${icon('user-lock')}<span>${esc(blk)}</span></div>` : ''}`,
+      foot: `<button class="btn" data-close>Close</button><span class="grow"></span>${canCancel ? `<button class="btn danger" id="dCan">${icon('ban')} Cancel request</button>` : ''}${l.status === 'Pending approval' ? `<button class="btn danger" id="dRej" ${can(OPT, 'approve') && !blk ? '' : 'disabled title="' + esc(blk || 'Needs Approve permission') + '"'}>${icon('x')} Reject</button><button class="btn success" id="dApp" ${can(OPT, 'approve') && !blk ? '' : 'disabled title="' + esc(blk || 'Needs Approve permission') + '"'}>${icon('check')} Approve</button>` : ''}`,
+      onMount: (el, close) => {
+        const on = (i, fn) => { const x = $('#' + i, el); if (x) x.addEventListener('click', () => { close(); fn(); }); };
+        on('dApp', () => decide(l, true)); on('dRej', () => decide(l, false));
+        on('dCan', () => confirm({ title: 'Cancel ' + l.no + '?', body: 'The leave request is cancelled and the days return to the balance.', confirm: 'Cancel request', reason: true, cancel: 'Keep request',
+          onConfirm: (reason) => { const before = l.status; Object.assign(l, { status: 'Cancelled', decidedBy: ME.displayName, decidedAt: UI.nowStamp(), decisionNote: reason }); save(); audit('Cancelled leave request', 'Leave', { id: l.id, label: l.no }, [['Status', before, 'Cancelled']], { reason }); toast(l.no + ' cancelled'); drawTabs(); show(); } }));
+      } });
+  }
+  function decide(l, approve) {
+    const blk = HR.selfBlock(l.requestedBy, l.empId); if (blk) { toast(blk, 'err'); return; }
+    const v = HR.get(l.empId), bl = HR.leaveBal(l.empId, l.type, l.from.slice(0, 4));
+    confirm({ title: (approve ? 'Approve ' : 'Reject ') + l.no + '?', tone: approve ? 'primary' : 'danger', icon: approve ? 'check' : 'x', confirm: approve ? 'Approve' : 'Reject', reason: !approve,
+      body: `${esc(v.name)}: ${esc(HR.leaveType(l.type).name)}, ${l.days} day${l.days === 1 ? '' : 's'} from ${esc(Kit.day(l.from))}.`,
+      impact: approve ? [`Balance after approval: ${bl.balance - l.days} days`, 'Duty roster shows the leave for these dates'].concat(HR.leaveType(l.type).paid ? [] : ['Unpaid days are deducted in the payroll run']).map(esc) : null,
+      onConfirm: (reason) => {
+        Object.assign(l, { status: approve ? 'Approved' : 'Rejected', decidedBy: ME.displayName, decidedAt: UI.nowStamp(), decisionNote: reason || '' });
+        save(); audit(approve ? 'Approved leave request' : 'Rejected leave request', 'Leave', { id: l.id, label: l.no }, [['Status', 'Pending approval', l.status]], { reason: reason || '' });
+        toast(l.no + (approve ? ' approved' : ' rejected')); drawTabs(); show();
+      } });
+  }
+  function newLeave() {
+    drawer({ title: 'Leave request', sub: 'Raised on behalf of an employee. Another user approves it.',
+      body: `<div class="err-summary hidden"></div><div class="form-grid">
+        ${field({ id: 'l_emp', label: 'Employee', type: 'select', options: HR.empOpts(), value: empQ || '', req: true, full: true })}
+        ${field({ id: 'l_type', label: 'Leave type', type: 'select', options: db.hrLeaveTypes.filter(x => x.status !== 'Inactive').map(x => [x.code, x.name]), req: true, full: true })}
+        ${field({ id: 'l_from', label: 'From', type: 'date', req: true })}${field({ id: 'l_to', label: 'To', type: 'date', req: true })}
+        <div class="full" id="l_info"></div>
+        ${field({ id: 'l_reason', label: 'Reason', type: 'textarea', full: true })}
+        <div class="field full hidden" id="l_docw"><label for="l_doc">Supporting document<span class="req">*</span></label><input class="input" type="file" id="l_doc" accept=".pdf,.jpg,.jpeg,.png"><div class="err hidden" data-err="l_doc"></div></div></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><span class="grow"></span><button class="btn primary" id="lSave" disabled>${icon('send')} Submit request</button>`,
+      onMount: (el, close) => {
+        const g = (i) => $('#' + i, el).value, sv = $('#lSave', el);
+        const upd = () => {
+          const lt = HR.leaveType(g('l_type')), v = HR.get(g('l_emp'));
+          $('#l_docw', el).classList.toggle('hidden', !lt.doc);
+          const days = HR.workDays(g('l_from'), g('l_to'), g('l_type'));
+          let info = '';
+          if (v && g('l_type')) { const bl = HR.leaveBal(v.id, g('l_type'), (g('l_from') || T).slice(0, 4)); info = `<div class="banner ${days && bl.available < days && g('l_type') !== 'UL' ? 'err' : 'info'}">${icon('scale')}<span><b>${days || 0}</b> ${esc((lt.count || 'Working days').toLowerCase())} requested · ${esc(lt.name)} available <b>${bl.available}</b> of ${bl.ent}${bl.pending ? ` (${bl.pending} pending)` : ''}${lt.gender !== 'All' && v.gender !== lt.gender ? ` · <b>Only for ${esc(lt.gender.toLowerCase())} employees</b>` : ''}</span></div>`; }
+          $('#l_info', el).innerHTML = info;
+          sv.disabled = !(g('l_emp') && g('l_type') && g('l_from') && g('l_to') && (!lt.doc || $('#l_doc', el).files.length));
+        };
+        $$('input,select,textarea', el).forEach(i => { i.addEventListener('input', upd); i.addEventListener('change', upd); });
+        upd();
+        sv.addEventListener('click', () => {
+          const errs = {}, lt = HR.leaveType(g('l_type')), v = HR.get(g('l_emp')), days = HR.workDays(g('l_from'), g('l_to'), g('l_type'));
+          const bl = HR.leaveBal(v.id, lt.code, g('l_from').slice(0, 4));
+          if (g('l_to') < g('l_from')) errs.l_to = 'End date must be on or after the start date.';
+          else if (!days) errs.l_to = 'The dates contain no working days.';
+          else if (lt.code !== 'UL' && days > bl.available) errs.l_type = `Not enough ${lt.name.toLowerCase()}: ${bl.available} days available, ${days} requested.`;
+          if (lt.gender !== 'All' && v.gender !== lt.gender) errs.l_type = `${lt.name} is only for ${lt.gender.toLowerCase()} employees.`;
+          if (db.hrLeaves.some(x => x.empId === v.id && ['Approved', 'Pending approval'].includes(x.status) && x.from <= g('l_to') && x.to >= g('l_from'))) errs.l_from = 'These dates overlap another leave request of this employee.';
+          if (g('l_from') < Kit.addDays(T, -30)) errs.l_from = 'Leave more than 30 days in the past needs HR correction.';
+          if (!showErrors(el, errs)) return;
+          const no = Kit.nextNo('LV-', db.hrLeaves);
+          const rec = { id: 'hlv_' + no.slice(3), no, empId: v.id, type: lt.code, from: g('l_from'), to: g('l_to'), days, reason: g('l_reason').trim(), status: 'Pending approval', requestedBy: ME.displayName, requestedAt: UI.nowStamp(), decidedBy: '', decidedAt: '', decisionNote: '', doc: lt.doc ? $('#l_doc', el).files[0].name : '' };
+          db.hrLeaves.push(rec); save(); audit('Created leave request', 'Leave', { id: rec.id, label: no }, [['Employee', '', v.name], ['Leave', '', lt.name + ', ' + days + ' days']]);
+          close(); toast(no + ' submitted for approval'); tab = 'req'; lvView = 'Pending approval'; drawTabs(); show();
+        });
+      } });
+  }
+
+  /* ---------- Balances ---------- */
+  function bal() {
+    const types = db.hrLeaveTypes.filter(t => t.status !== 'Inactive' && ['AL', 'SL', 'EL', 'CL', 'HJ', 'UL', 'ML'].includes(t.code));
+    $('#body').innerHTML = `<div class="banner info" style="margin-bottom:12px">${icon('info')}<span>Leave year ${T.slice(0, 4)}. Annual leave includes days carried forward from last year. Pending requests are shown but not yet deducted.</span></div><div id="t"></div>`;
+    UI.table($('#t'), {
+      rows: () => HR.active().filter(v => !empQ || v.id === empQ), search: (v) => [v.name, v.empNo].join(' '), searchPlaceholder: 'Employee',
+      filters: [{ label: 'Department', options: HR.deptsInUse(), test: (v, x) => v.deptId === x }, { label: 'Category', options: ['Doctor', 'Nurse', 'Allied health', 'Administration', 'Support'].map(x => [x, x]), test: (v, x) => v.category === x }],
+      columns: [{ label: 'Employee', sort: (v) => v.name, render: (v) => HR.empCell(v, HR.dept(v.deptId)) }].concat(types.map(t => ({ label: t.code + ' ' + t.name.replace(/ leave$/, ''), sort: (v) => HR.leaveBal(v.id, t.code).balance, render: (v) => {
+        if (t.gender !== 'All' && v.gender !== t.gender) return '<span class="muted">n/a</span>';
+        const bl = HR.leaveBal(v.id, t.code); const pct = bl.ent ? Math.round(100 * bl.balance / bl.ent) : 0;
+        return `<div class="bal"><b>${bl.balance}</b><span class="muted small"> / ${bl.ent}</span>${bl.pending ? ` <span class="badge b-warn nodot">${bl.pending} pend.</span>` : ''}</div><div class="progress ${pct < 25 ? 'warn' : 'ok'}" style="height:4px;margin-top:3px;max-width:80px"><i style="width:${Math.max(2, pct)}%"></i></div>`; } }))),
+      onRow: (v) => { location.href = R('hr/leave.html?emp=' + v.id); }, pageSize: 12,
+    });
+  }
+
+  /* ---------- Overtime ---------- */
+  function ot() {
+    const b = $('#body');
+    b.innerHTML = `<div class="banner info" style="margin-bottom:12px">${icon('calculator')}<span>Hourly rate = gross salary / ${HR.SET.payDivisor} / ${HR.SET.hoursPerDay}. Rates: normal day x${HR.SET.otRates.Normal}, weekly rest day x${HR.SET.otRates['Rest day']}, public holiday x${HR.SET.otRates['Public holiday']}. Approved overtime is paid in the payroll run of its month and becomes Paid when the run is posted.</span></div>
+      <div class="row" style="margin-bottom:12px"><div id="seg"></div></div><div id="t"></div>`;
+    const sts = ['Pending approval', 'Approved', 'Paid', 'Rejected', 'All'];
+    const cnt = (s) => db.hrOvertime.filter(o => (s === 'All' || o.status === s) && (!empQ || o.empId === empQ)).length;
+    Kit.seg($('#seg'), sts.map(s => [s, `${s === 'Pending approval' ? 'Pending' : s} (${cnt(s)})`]), otView, (v) => { otView = v; t.redraw(); });
+    const t = UI.table($('#t'), {
+      rows: () => db.hrOvertime.filter(o => (otView === 'All' || o.status === otView) && (!empQ || o.empId === empQ)).sort((a, c) => c.date.localeCompare(a.date)),
+      search: (o) => [o.no, HR.name(o.empId), o.reason].join(' '), searchPlaceholder: 'Request, employee or reason',
+      filters: [{ label: 'Type', options: Object.keys(HR.SET.otRates).map(x => [x, x]), test: (o, x) => o.type === x }, { label: 'Department', options: HR.deptsInUse(), test: (o, x) => HR.prof(o.empId).deptId === x }],
+      columns: [
+        { label: 'Request', sort: (o) => o.no, render: (o) => `<span class="mono">${esc(o.no)}</span>` },
+        { label: 'Employee', sort: (o) => HR.name(o.empId), render: (o) => HR.empCell(HR.get(o.empId), HR.dept(HR.prof(o.empId).deptId)) },
+        { label: 'Date', sort: (o) => o.date, render: (o) => `<span class="nw">${esc(Kit.day(o.date))}</span><div class="xs muted">${HR.DAYS[HR.dow(o.date)]}</div>` },
+        { label: 'Hours', cls: 'num', sort: (o) => o.hours, render: (o) => `<span class="num">${o.hours}</span>` },
+        { label: 'Type', render: (o) => `${esc(o.type)} <span class="tag">x${otRate(o)}</span>` },
+        { label: 'Amount', cls: 'num', sort: (o) => otAmount(o), render: (o) => `<span class="num nw">${Kit.money(otAmount(o))}</span>` },
+        { label: 'Payroll', render: (o) => `<span class="small nw">${esc(HR.monthLabel(o.payrollMonth))}</span><div class="xs muted" style="max-width:180px">${esc(o.reason)}</div>` },
+        { label: 'Status', sort: (o) => o.status, render: (o) => (o.status === 'Pending approval' ? Kit.status('Pending', 'warn') : Kit.status(o.status)) + (o.decidedBy ? `<div class="xs muted">${esc(o.decidedBy)}</div>` : '') },
+        { label: '', cls: 'actions', render: (o) => o.status === 'Pending approval' ? `<div class="row" style="gap:4px;justify-content:flex-end">${approveBtn(o, 'Approve', `data-ap="${o.id}"`)}<button class="btn xs danger" data-rj="${o.id}" ${can(OPT, 'approve') && !HR.selfBlock(o.requestedBy, o.empId) ? '' : 'disabled title="Needs Approve permission, and you cannot decide your own request"'} aria-label="Reject" title="Reject">${icon('x')}</button></div>` : '' },
+      ],
+      afterDraw: (tb) => { $$('[data-ap]', tb).forEach(x => x.addEventListener('click', () => decideOt(findOt(x.dataset.ap), true))); $$('[data-rj]', tb).forEach(x => x.addEventListener('click', () => decideOt(findOt(x.dataset.rj), false))); },
+      empty: 'No overtime requests in this view', emptyIcon: 'timer', pageSize: 12,
+    });
+  }
+  const findOt = (id) => db.hrOvertime.find(o => o.id === id);
+  const payMonthFor = (date) => { let m = date.slice(0, 7); const r = HR.runOf(m); if (r && ['Approved', 'Posted'].includes(r.status)) m = HR.monthAdd(m, 1); return m; };
+  function decideOt(o, approve) {
+    const blk = HR.selfBlock(o.requestedBy, o.empId); if (blk) { toast(blk, 'err'); return; }
+    const pm = payMonthFor(o.date);
+    confirm({ title: (approve ? 'Approve ' : 'Reject ') + o.no + '?', tone: approve ? 'primary' : 'danger', icon: approve ? 'check' : 'x', confirm: approve ? 'Approve' : 'Reject', reason: !approve,
+      body: `${esc(HR.name(o.empId))}: ${o.hours} h ${esc(o.type.toLowerCase())} overtime on ${esc(Kit.day(o.date))}, ${Kit.money(otAmount(o))}.`,
+      impact: approve ? [esc(`Paid in the ${HR.monthLabel(pm)} payroll run`)].concat(HR.runOf(pm) && HR.runOf(pm).status !== 'Draft' ? [esc('Recalculate the payroll run to include it')] : []) : null,
+      onConfirm: (reason) => {
+        Object.assign(o, { status: approve ? 'Approved' : 'Rejected', decidedBy: ME.displayName, decidedAt: UI.nowStamp(), decisionNote: reason || '', payrollMonth: approve ? pm : o.payrollMonth });
+        save(); audit(approve ? 'Approved overtime' : 'Rejected overtime', 'Overtime', { id: o.id, label: o.no }, [['Status', 'Pending approval', o.status]], { reason: reason || '' });
+        toast(o.no + (approve ? ' approved' : ' rejected')); drawTabs(); show();
+      } });
+  }
+  function newOt() {
+    drawer({ title: 'Overtime request', sub: 'Hours worked beyond the rostered shift.',
+      body: `<div class="err-summary hidden"></div><div class="form-grid">
+        ${field({ id: 'o_emp', label: 'Employee', type: 'select', options: HR.empOpts(), value: empQ || '', req: true, full: true })}
+        ${field({ id: 'o_date', label: 'Date worked', type: 'date', req: true, attrs: `max="${T}"` })}${field({ id: 'o_hours', label: 'Hours', type: 'number', req: true, attrs: 'min="0.5" max="12" step="0.5"' })}
+        ${field({ id: 'o_type', label: 'Day type', type: 'select', options: Object.keys(HR.SET.otRates).map(x => [x, `${x} (x${HR.SET.otRates[x]})`]), value: 'Normal', req: true, full: true })}
+        <div class="full" id="o_info"></div>
+        ${field({ id: 'o_reason', label: 'Reason', type: 'textarea', req: true, full: true })}</div>`,
+      foot: `<button class="btn" data-close>Cancel</button><span class="grow"></span><button class="btn primary" id="oSave" disabled>${icon('send')} Submit request</button>`,
+      onMount: (el, close) => {
+        const g = (i) => $('#' + i, el).value, sv = $('#oSave', el);
+        const upd = () => {
+          const v = HR.get(g('o_emp')), h = Number(g('o_hours'));
+          if (g('o_date') && HR.dow(g('o_date')) >= 5 && g('o_type') === 'Normal') $('#o_type', el).value = 'Rest day';
+          $('#o_info', el).innerHTML = v && h > 0 ? `<div class="banner info">${icon('calculator')}<span>${h} h x ${Kit.money(HR.hourly(v))} x ${HR.SET.otRates[g('o_type')]} = <b>${Kit.money(h * HR.hourly(v) * HR.SET.otRates[g('o_type')])}</b></span></div>` : '';
+          sv.disabled = !(g('o_emp') && g('o_date') && g('o_hours') && g('o_reason').trim().length >= 3);
+        };
+        $$('input,select,textarea', el).forEach(i => { i.addEventListener('input', upd); i.addEventListener('change', upd); });
+        sv.addEventListener('click', () => {
+          const errs = {}, h = Number(g('o_hours'));
+          if (g('o_date') > T) errs.o_date = 'Overtime is requested after it is worked.';
+          if (!(h >= 0.5 && h <= 12)) errs.o_hours = 'Hours must be between 0.5 and 12.';
+          if (HR.onLeave(g('o_emp'), g('o_date'))) errs.o_date = 'The employee was on approved leave that day.';
+          if (!showErrors(el, errs)) return;
+          const no = Kit.nextNo('OT-', db.hrOvertime);
+          const rec = { id: 'hot_' + no.slice(3), no, empId: g('o_emp'), date: g('o_date'), hours: h, type: g('o_type'), reason: g('o_reason').trim(), status: 'Pending approval', requestedBy: ME.displayName, requestedAt: UI.nowStamp(), decidedBy: '', decidedAt: '', payrollMonth: payMonthFor(g('o_date')) };
+          db.hrOvertime.push(rec); save(); audit('Created overtime request', 'Overtime', { id: rec.id, label: no }, [['Hours', '', String(h)], ['Type', '', rec.type]]);
+          close(); toast(no + ' submitted for approval'); tab = 'ot'; otView = 'Pending approval'; drawTabs(); show();
+        });
+      } });
+  }
+
+  const nl = $('#newLv'); if (nl) nl.addEventListener('click', newLeave);
+  const no = $('#newOt'); if (no) no.addEventListener('click', newOt);
+  drawTabs(); show();
+  const qid = UI.param('id');
+  if (qid && tab === 'req' && find(qid)) detail(qid);
+  if (qid && tab === 'ot' && findOt(qid)) { otView = findOt(qid).status; show(); }
+})();
+</script>
+</body>
+</html>

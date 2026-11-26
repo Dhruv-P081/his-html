@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Warehouses · Tibbi Orbit</title>
+<link rel="stylesheet" href="assets/styles.css">
+<script src="assets/icons.js"></script><script src="assets/data.js"></script><script src="assets/data-core.js"></script><script src="assets/ui.js"></script>
+</head>
+<body>
+<script>
+const { db, save, $, $$, icon, esc, page, can, table, drawer, field, showErrors, badge, L, toast, audit, me, nowStamp, uid, CODE_RE, normCode, historyDrawer, statusToggle, lastUpdated, codeName, fmtDate } = UI;
+const OPT = 'admin.masters.wh';
+const canAdd = can(OPT, 'add'), canEdit = can(OPT, 'edit');
+const TYPES = ['Main Store', 'Pharmacy Store', 'Sub Store', 'General'];
+const CATS = ['Medical and general', 'Medicines', 'Consumables', 'Reagents', 'General'];
+if (page({ active: 'warehouses.html', opt: OPT, title: 'Warehouse Master', crumbs: [['Home', 'home.html'], ['Administration', 'admin.html'], ['Warehouses']],
+  subtitle: 'A warehouse sets an access scope only. Stock processing rules live in Material Management.',
+  actions: canAdd ? `<button class="btn primary" id="new">${icon('plus')} New warehouse</button>` : '', body: '<div id="list"></div>' })) {
+  const deptsUsing = w => { const a = db.assignments.filter(x => x.warehouseId === w.id && x.status === 'Active'); return Array.from(new Set(a.map(x => x.deptId))); };
+  const tbl = table($('#list'), {
+    searchPlaceholder: 'Search code or name', search: w => w.code + ' ' + w.name + ' ' + w.location,
+    filters: [
+      { label: 'Company', options: db.companies.map(c => [c.id, c.code + ' · ' + c.name]), test: (w, v) => w.companyId === v },
+      { label: 'Branch', options: db.branches.map(b => [b.id, b.name]), test: (w, v) => w.branchId === v },
+      { label: 'Type', options: TYPES.map(t => [t, t]), test: (w, v) => w.type === v },
+      { label: 'Status', options: [['Active', 'Active'], ['Inactive', 'Inactive']], test: (w, v) => w.status === v }],
+    rows: () => db.warehouses,
+    columns: [
+      { label: 'Warehouse', render: w => codeName(w.code, w.name), sort: w => w.code },
+      { label: 'Branch', render: w => `${esc(L.bName(w.branchId))}<br><span class="small muted">${esc(L.company(w.companyId).code)}</span>`, sort: w => L.bName(w.branchId) },
+      { label: 'Type · category', render: w => `<span class="tag">${esc(w.type)}</span><br><span class="small muted">${esc(w.category)}</span>`, sort: w => w.type },
+      { label: 'Location', render: w => esc(w.location || '—') },
+      { label: 'Custodian', render: w => w.custodianUserId ? esc(L.uName(w.custodianUserId)) : '<span class="muted">—</span>' },
+      { label: 'Used by', render: w => { const d = deptsUsing(w); return d.length ? `${d.length} dept.` : '<span class="muted">—</span>'; } },
+      { label: 'Status', render: w => badge(w.status), sort: w => w.status },
+      { label: 'Last updated', render: lastUpdated, sort: w => w.updatedAt },
+    ],
+    onRow: w => openWh(w),
+  });
+  function openWh(w) {
+    const asg = db.assignments.filter(a => a.warehouseId === w.id);
+    drawer({ title: w.name, sub: `Warehouse · <span class="mono">${esc(w.code)}</span> · ${esc(L.bName(w.branchId))} · version ${w.version}`, wide: true,
+      body: `<div class="row" style="margin-bottom:14px">${badge(w.status)}<span class="tag">${esc(w.type)}</span>${w.deactivationReason ? `<span class="small muted">Deactivated ${fmtDate(w.deactivatedAt)}: ${esc(w.deactivationReason)}</span>` : ''}</div>
+      <div class="grid g2"><div class="card card-pad"><dl class="kv"><dt>Company</dt><dd>${esc(L.cName(w.companyId))}</dd><dt>Branch</dt><dd>${esc(L.bName(w.branchId))}</dd><dt>Category</dt><dd>${esc(w.category)}</dd><dt>Location</dt><dd>${esc(w.location || '—')}</dd><dt>Custodian</dt><dd>${w.custodianUserId ? esc(L.uName(w.custodianUserId)) + '<div class="small muted">Custodian does not grant access.</div>' : '—'}</dd><dt>Flags</dt><dd>A: ${w.flags.a ? 'Yes' : 'No'} · B: ${w.flags.b ? 'Yes' : 'No'} · C: ${esc(w.flags.c || '—')}</dd></dl></div>
+      <div class="card"><div class="card-head"><h3>Access assignments</h3><span class="req-ref">WH-02</span></div><table class="tbl"><tbody>${asg.map(a => `<tr><td><b>${esc(L.uName(a.userId))}</b><div class="small muted">${esc(L.dName(a.deptId))} · ${esc(L.rName(a.roleId))}</div></td><td>${(s => badge(s.ok ? 'Active' : 'Inactive', s.why))(UI.assignmentUsable(a))}</td></tr>`).join('') || '<tr><td class="muted">No assignments use this warehouse.</td></tr>'}</tbody></table></div></div>`,
+      foot: `<button class="btn ghost" id="hist">${icon('history')} History</button><span class="grow"></span>${canEdit ? `<button class="btn ${w.status === 'Active' ? 'danger' : ''}" id="tog">${w.status === 'Active' ? icon('ban') + ' Deactivate' : icon('circle-check') + ' Activate'}</button><button class="btn primary" id="ed">${icon('pencil')} Edit</button>` : ''}`,
+      onMount: (el, close) => {
+        $('#hist', el).addEventListener('click', () => historyDrawer(w.id, w.code + ' ' + w.name));
+        const ed = $('#ed', el); if (ed) ed.addEventListener('click', () => { close(); edit(w); });
+        const tg = $('#tog', el); if (tg) tg.addEventListener('click', () => { close(); const act = asg.filter(a => UI.assignmentUsable(a).ok);
+          statusToggle({ record: w, entity: 'Warehouse', label: w.code + ' ' + w.name, impact: [`${act.length} access assignments lose warehouse actions: ${esc(act.map(a => L.uName(a.userId)).join(', ') || 'none')}`, 'Non-stock functions in those departments are not affected', 'History is kept'], done: tbl.redraw }); });
+      } });
+  }
+  function edit(w) {
+    const isNew = !w; const referenced = w && db.assignments.some(a => a.warehouseId === w.id);
+    drawer({ title: isNew ? 'New warehouse' : 'Edit warehouse', sub: isNew ? 'Fields marked * are required.' : `<span class="mono">${esc(w.code)}</span> · version ${w.version}`, wide: true,
+      body: `<div class="err-summary hidden" style="margin-bottom:14px"></div><div class="form-grid">
+        ${field({ id: 'fCo', label: 'Company', type: 'select', req: true, value: w ? w.companyId : UI.session().ctx.companyId, options: db.companies.filter(c => c.status === 'Active').map(c => [c.id, c.code + ' · ' + c.name]), disabled: referenced })}
+        <div class="field" id="brWrap"></div>
+        ${field({ id: 'fCode', label: 'Warehouse code', req: true, value: w ? w.code : '', max: 30, readonly: referenced, hint: 'Unique within the branch.' })}
+        ${field({ id: 'fName', label: 'Warehouse name', req: true, value: w ? w.name : '', max: 150 })}
+        ${field({ id: 'fType', label: 'Warehouse type', type: 'select', req: true, value: w ? w.type : '', options: TYPES.map(t => [t, t]) })}
+        ${field({ id: 'fCat', label: 'Warehouse category', type: 'select', value: w ? w.category : '', options: CATS.map(t => [t, t]), hint: 'Pending: is this the same as type?' })}
+        ${field({ id: 'fLoc', label: 'Location', value: w ? w.location : '', max: 150 })}
+        <div class="field"><label for="fCust">Custodian</label><select class="input" id="fCust"><option value="">None</option>${db.users.filter(u => u.status === 'Active').map(u => `<option value="${u.id}" ${w && w.custodianUserId === u.id ? 'selected' : ''}>${esc(u.displayName)}</option>`).join('')}</select><div class="hint">Custodian selection does not grant access.</div></div>
+        <label class="check"><input type="checkbox" id="fA" ${w && w.flags.a ? 'checked' : ''}> Flag A</label><label class="check"><input type="checkbox" id="fB" ${w && w.flags.b ? 'checked' : ''}> Flag B</label>
+        ${field({ id: 'fC', label: 'Flag C', value: w ? w.flags.c : '', max: 100 })}
+        ${field({ id: 'fDesc', label: 'Description', type: 'textarea', value: w ? w.description : '', full: true })}</div>`,
+      foot: `<span class="grow req-ref">WH-01 · WH-03</span><button class="btn" data-close>Cancel</button><button class="btn primary" id="sv">${isNew ? 'Create warehouse' : 'Save changes'}</button>`,
+      onMount: (el, close) => {
+        const co = $('#fCo', el);
+        const drawBr = () => { $('#brWrap', el).innerHTML = `<label for="fBr">Branch<span class="req">*</span></label><select class="input" id="fBr" ${referenced ? 'disabled' : ''}><option value="">Select</option>${db.branches.filter(b => b.companyId === co.value && b.status === 'Active').map(b => `<option value="${b.id}" ${w && w.branchId === b.id ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}</select>${referenced ? '<div class="hint">A referenced warehouse cannot move branch.</div>' : ''}<div class="err hidden" data-err="fBr"></div>`; };
+        co.addEventListener('change', drawBr); drawBr();
+        $('#sv', el).addEventListener('click', () => {
+          const errs = {}; const brId = $('#fBr', el).value; const code = normCode($('#fCode', el).value);
+          if (!brId) errs.fBr = 'Select the branch.';
+          if (!code) errs.fCode = 'Warehouse code is required.'; else if (!CODE_RE.test(code)) errs.fCode = 'Use up to 30 letters, digits, hyphens or underscores.';
+          else if (db.warehouses.some(x => x.id !== (w && w.id) && x.branchId === brId && normCode(x.code) === code)) errs.fCode = `Code ${code} already exists in this branch.`;
+          if (!$('#fName', el).value.trim()) errs.fName = 'Warehouse name is required.';
+          if (!$('#fType', el).value) errs.fType = 'Select the warehouse type.';
+          if (!showErrors(el, errs)) return;
+          const rec = w || { id: uid('wh'), version: 0, status: 'Active' };
+          const before = Object.assign({}, rec);
+          Object.assign(rec, { companyId: co.value, branchId: brId, code, name: $('#fName', el).value.trim(), type: $('#fType', el).value, category: $('#fCat', el).value, location: $('#fLoc', el).value.trim(), custodianUserId: $('#fCust', el).value || null,
+            flags: { a: $('#fA', el).checked, b: $('#fB', el).checked, c: $('#fC', el).value.trim() }, description: $('#fDesc', el).value.trim(), updatedBy: me().displayName, updatedAt: nowStamp(), version: (rec.version || 0) + 1 });
+          if (isNew) db.warehouses.push(rec);
+          save(); audit(isNew ? 'Warehouse created' : 'Warehouse edited', 'Warehouse', { id: rec.id, label: rec.code + ' - ' + rec.name }, ['name', 'type', 'category', 'location'].filter(k => before[k] !== rec[k]).map(k => [k, before[k] || '', rec[k]]));
+          close(); toast(`Warehouse ${rec.code} ${isNew ? 'created' : 'saved'}`); tbl.redraw();
+        });
+      } });
+  }
+  const nb = $('#new'); if (nb) nb.addEventListener('click', () => edit(null));
+}
+</script>
+</body>
+</html>

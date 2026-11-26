@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Incident Case · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<style>
+  .steps-row { display: flex; gap: 0; align-items: center; flex-wrap: wrap; }
+  .steps-row .stp { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 700; color: var(--mute); }
+  .steps-row .stp i { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-style: normal; font-size: 11px; border: 2px solid var(--line-strong); background: var(--card); }
+  .steps-row .stp.on { color: var(--ink); } .steps-row .stp.on i { border-color: var(--primary-light); background: var(--primary-light); color: #fff; }
+  .steps-row .stp.past i { border-color: var(--success); color: var(--success); }
+  .steps-row .bar { width: 36px; height: 2px; background: var(--line); margin: 0 8px; }
+  .orig { white-space: pre-wrap; font-size: 13.5px; line-height: 1.55; }
+  .itm { padding: 12px 18px; border-bottom: 1px solid var(--line); }
+  .itm:last-child { border-bottom: 0; }
+</style>
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-incident.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/incident.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, drawer, field, showErrors, fmtDate } = UI;
+  const id = UI.param('id');
+  const c = db.incidentCases.find(x => x.id === id);
+  if (!UI.page({ opt: 'incident.case', title: c ? 'Incident ' + c.no : 'Incident case', subtitle: c ? `${esc(Inc.typeName(c.typeCode))} · ${esc(Inc.catName(c.categoryCode))}` : '',
+    crumbs: [['Home', 'home.html'], ['Incident Management', 'incident/index.html'], ['Incident Register', 'incident/register.html'], [c ? c.no : 'Case', null]],
+    actions: '<div id="acts" class="row wrap" style="gap:8px"></div>' })) return;
+  if (!c) { $('#page').innerHTML = `<div class="card"><div class="empty">${icon('file-search')}<b>Incident not found</b><span>Open an incident from the register.</span><div style="margin-top:12px"><a class="btn" href="${R('incident/register.html')}">Incident Register</a></div></div></div>`; return; }
+  const T = Inc.T;
+
+  function draw() {
+    const work = Inc.canWork(c), closed = c.status === 'Closed';
+    const dis = (ok, why) => ok ? '' : `disabled title="${why}"`;
+    const workWhy = 'Only the IMT lead or an assigned investigator can do this';
+    // Header actions: allowed status changes from the status configuration.
+    $('#acts').innerHTML = Inc.nextStatuses(c.status).map(s => s === 'Closed'
+        ? `<button class="btn success" data-st="Closed" ${dis(Inc.canClose(), 'Needs IMT close rights and Approve permission')}>${icon('lock')} Close incident</button>`
+        : closed ? `<button class="btn danger" data-st="${s}" ${dis(Inc.canClose(), 'Needs IMT close rights')}>${icon('rotate-ccw')} Reopen</button>`
+        : `<button class="btn ${s === 'Hold' ? '' : 'primary'}" data-st="${s}" ${dis(work, workWhy)}>${icon(s === 'Hold' ? 'circle-pause' : 'circle-play')} ${s === 'In Progress' && c.status === 'Hold' ? 'Resume' : s === 'In Progress' ? 'Start investigation' : 'Put on hold'}</button>`).join('')
+      + `<button class="btn" id="prCase" ${dis(can('incident.case', 'print'), 'Needs Print permission')}>${icon('printer')} Print</button>`;
+    $$('[data-st]', $('#acts')).forEach(b => b.addEventListener('click', () => Inc.changeStatus(c, b.dataset.st, draw)));
+    $('#prCase').addEventListener('click', printCase);
+
+    const si = Inc.STATUSES.indexOf(c.status);
+    const audits = (db.audit || []).filter(e => e.recordId === c.id);
+    $('#page').innerHTML = `
+      <div class="card card-pad" style="margin-bottom:14px"><div class="row wrap" style="gap:18px;align-items:center">
+        <div class="steps-row">${Inc.STATUSES.map((s, i) => `${i ? '<span class="bar"></span>' : ''}<span class="stp ${i === si ? 'on' : i < si ? 'past' : ''}"><i>${i < si ? '&#10003;' : i + 1}</i>${esc(s)}</span>`).join('')}</div>
+        <span class="grow"></span>${Inc.sevBadge(c.severity)}<span class="tag">${icon('hourglass')} ${Inc.ageDays(c)} day${Inc.ageDays(c) === 1 ? '' : 's'} ${closed ? 'to close' : 'open'}</span>${c.anonymous ? `<span class="badge b-violet nodot">${icon('eye-off')} Anonymous</span>` : ''}</div></div>
+      ${c.status === 'Hold' ? `<div class="banner warn" style="margin-bottom:14px">${icon('circle-pause')}<span><b>On hold:</b> ${esc(c.holdReason || 'No reason recorded')}</span></div>` : ''}
+      ${closed ? `<div class="banner ok" style="margin-bottom:14px">${icon('lock')}<span><b>Closed ${esc(fmtDate(c.closedAt))} by ${esc(c.closedBy)}.</b> Outcome: ${esc(c.outcome)}.<br>${esc(c.closureSummary)}</span></div>` : ''}
+      ${!c.reviewed ? `<div class="banner info" style="margin-bottom:14px">${icon('inbox')}<span>New report waiting for review and categorization by the Incident Management Team.</span></div>` : ''}
+      <div class="grid g-side">
+        <div class="stack" style="gap:16px">
+          <div class="card"><div class="card-head"><h3>${icon('file-text')} Original report</h3><div class="actions">${Kit.scopeNote('As submitted. It cannot be edited.')}</div></div>
+            <div class="card-pad"><dl class="kv" style="margin-bottom:14px">
+              <dt>Reported</dt><dd>${esc(fmtDate(c.reportedAt))} by ${Inc.reporter(c)}${!c.anonymous && c.reporterContact ? ` <span class="muted small">· ${esc(c.reporterContact)}</span>` : ''}</dd>
+              <dt>Occurred</dt><dd>${esc(fmtDate(c.occurredAt))}</dd>
+              <dt>Location</dt><dd>${esc(c.location)}<div class="small muted">${esc(UI.L.dName(c.deptId))} · ${esc(UI.L.bName(c.branchId))}</div></dd>
+              <dt>Reporter selected</dt><dd>${esc(Inc.catName(c.reporterCategoryCode))} · severity ${esc(c.reporterSeverity || 'not given')}</dd></dl>
+              <div class="section-t" style="margin-bottom:8px">Description</div><div class="orig">${esc(c.description)}</div>
+              <div class="section-t" style="margin:14px 0 8px">Immediate action taken</div><div class="orig">${esc(c.immediateAction)}</div></div>
+            <div class="card-head" style="border-top:1px solid var(--line)"><h3>${icon('users-round')} People involved</h3></div>
+            ${c.people.length ? `<div class="table-wrap"><table class="tbl compact"><thead><tr><th>Person</th><th>Name</th><th>Role</th></tr></thead><tbody>${c.people.map(p => `<tr><td>${esc(p.kind)}</td><td>${p.patientId ? Kit.patientCell(Kit.pt(p.patientId)) : esc(p.name)}</td><td>${esc(p.role)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="card-pad small muted">No people recorded.</div>'}
+          </div>
+
+          <div class="card"><div class="card-head"><h3>${icon('message-circle-question')} Enquiries and responses</h3><div class="actions"><button class="btn sm" id="addEq" ${dis(work && !closed, closed ? 'Incident is closed' : workWhy)}>${icon('send')} Send enquiry</button></div></div>
+            ${c.enquiries.length ? c.enquiries.map(e => `<div class="itm"><div class="row" style="gap:8px"><b class="small grow">To ${esc(e.to)}</b>${Kit.status(e.status === 'Responded' ? 'Received' : e.due < T ? 'Overdue' : 'Pending', e.status === 'Responded' ? 'ok' : null)}<span class="xs muted">Due ${esc(fmtDate(e.due))}</span></div>
+                <div class="small" style="margin-top:4px">${esc(e.question)}</div><div class="xs muted">Asked by ${esc(e.askedBy)}, ${esc(fmtDate(e.askedAt))}</div>
+                ${e.response ? `<div class="card card-pad" style="margin-top:8px;background:var(--soft)"><div class="small">${esc(e.response)}</div><div class="xs muted" style="margin-top:4px">${esc(e.respondedBy)}, ${esc(fmtDate(e.respondedAt))}</div></div>` : `<button class="btn xs" style="margin-top:8px" data-resp="${e.id}" ${dis(work && !closed, workWhy)}>${icon('reply')} Record response</button>`}</div>`).join('') : '<div class="card-pad small muted">No enquiries yet.</div>'}</div>
+
+          <div class="card"><div class="card-head"><h3>${icon('paperclip')} Supporting documents</h3><div class="actions"><label class="btn sm ${work ? '' : 'disabled'}" for="addDoc" style="cursor:pointer" ${work ? '' : `title="${workWhy}"`}>${icon('upload')} Add document</label><input type="file" id="addDoc" class="hidden" multiple ${work ? '' : 'disabled'}></div></div>
+            ${c.attachments.length ? `<div class="list-rows pad">${c.attachments.map(a => `<div>${icon('file-text', 'mute')}<span class="grow"><b class="small">${esc(a.name)}</b><div class="xs muted">${esc(a.size)} · ${esc(a.by)} · ${esc(fmtDate(a.at))}</div></span></div>`).join('')}</div>` : '<div class="card-pad small muted">No documents.</div>'}</div>
+
+          <div class="grid g2">
+            <div class="card"><div class="card-head"><h3>${icon('gavel')} Decisions</h3><div class="actions"><button class="btn sm" id="addDc" ${dis(work && !closed, workWhy)}>${icon('plus')} Add</button></div></div>
+              ${c.decisions.length ? c.decisions.map(d => `<div class="itm"><div class="small">${esc(d.text)}</div><div class="xs muted">${esc(d.by)}, ${esc(fmtDate(d.at))}</div></div>`).join('') : '<div class="card-pad small muted">No decisions recorded.</div>'}</div>
+            <div class="card"><div class="card-head"><h3>${icon('list-todo')} Actions</h3><div class="actions"><button class="btn sm" id="addAc" ${dis(work && !closed, workWhy)}>${icon('plus')} Add</button></div></div>
+              ${c.actions.length ? c.actions.map(a => `<div class="itm"><div class="row" style="gap:8px;align-items:flex-start"><div class="grow"><div class="small b">${esc(a.text)}</div><div class="xs muted">${esc(a.owner)} · due ${esc(fmtDate(a.due))}</div></div>${a.status === 'Done' ? Kit.status('Done') : `${a.due < T ? Kit.status('Overdue') : ''}<button class="btn xs" data-done="${a.id}" ${dis(work, workWhy)}>${icon('check')} Done</button>`}</div></div>`).join('') : '<div class="card-pad small muted">No actions.</div>'}
+              <div class="card-pad" style="border-top:1px solid var(--line)">${Kit.scopeNote('Full CAPA management is SOW V4 2nd phase scope.')}</div></div>
+          </div>
+        </div>
+
+        <div class="stack" style="gap:16px">
+          <div class="card"><div class="card-head"><h3>${icon('tags')} Categorization</h3><div class="actions"><button class="btn sm" id="cg" ${dis(Inc.canAssign() && !closed, 'Needs IMT assign rights')}>${icon('pencil')} ${c.reviewed ? 'Change' : 'Review'}</button></div></div>
+            <div class="card-pad"><dl class="kv tight"><dt>Category</dt><dd>${esc(Inc.catName(c.categoryCode))}</dd><dt>Type</dt><dd>${esc(Inc.typeName(c.typeCode))}</dd><dt>Severity</dt><dd>${Inc.sevBadge(c.severity)}</dd>
+              <dt>Reviewed</dt><dd>${c.reviewed ? `${esc(c.categorizedBy)}<div class="xs muted">${esc(fmtDate(c.categorizedAt))}</div>` : '<span class="badge b-warn nodot">Not yet</span>'}</dd></dl></div></div>
+          <div class="card"><div class="card-head"><h3>${icon('user-search')} Investigators</h3><div class="actions"><button class="btn sm" id="as" ${dis(Inc.canAssign() && !closed, 'Needs IMT assign rights')}>${icon('user-plus')} Assign</button></div></div>
+            ${c.assigned.length ? `<div class="list-rows pad">${c.assigned.map(code => { const m = Inc.member(code) || {}; return `<div><span class="avatar sm">${UI.initials(m.name)}</span><span class="grow"><b class="small">${esc(m.name)}</b><div class="xs muted">${esc(m.role)}</div></span></div>`; }).join('')}</div>` : '<div class="card-pad"><span class="badge b-warn nodot">Unassigned</span></div>'}</div>
+          <div class="card"><div class="card-head"><h3>${icon('history')} Case history</h3><div class="actions"><span class="small muted">${c.history.length} events</span></div></div>
+            <div class="card-pad"><div class="timeline">${c.history.slice().reverse().map(h => `<div class="tl-item ${h.to === 'Closed' ? 'ok' : h.to === 'Hold' ? 'warn' : /Reopen/.test(h.action) ? 'err' : ''}"><b class="small">${esc(h.action)}</b>${h.from || h.to ? `<div class="small">${h.from ? esc(h.from) + ' → ' : ''}${esc(h.to)}</div>` : ''}${h.reason ? `<div class="small muted">${esc(h.reason)}</div>` : ''}<div class="meta">${esc(fmtDate(h.at))} · ${esc(h.by)}</div></div>`).join('')}</div></div></div>
+          <div class="card"><div class="card-head"><h3>${icon('shield-check')} Audit trail</h3><div class="actions"><span class="small muted">System log</span></div></div>
+            ${audits.length ? `<div class="list-rows pad">${audits.map(e => `<div style="align-items:flex-start"><span class="grow"><b class="small">${esc(e.action)}</b><div class="xs muted">${esc(e.actor)} · ${esc(fmtDate(e.at))}${e.source ? ' · ' + esc(e.source) : ''}</div>${(e.changes || []).map(x => `<div class="xs">${esc(x[0])}: ${esc(x[1] || '-')} → ${esc(x[2])}</div>`).join('')}${e.reason ? `<div class="xs muted">Reason: ${esc(e.reason)}</div>` : ''}</span></div>`).join('')}</div>` : '<div class="card-pad small muted">No changes recorded in this session yet. Earlier events are listed in the case history.</div>'}</div>
+        </div>
+      </div>`;
+    const on = (sel, fn) => { const el = $(sel); el && el.addEventListener('click', fn); };
+    on('#cg', () => Inc.categorize(c, draw));
+    on('#as', () => Inc.assign(c, draw));
+    on('#addEq', addEnquiry); on('#addDc', addDecision); on('#addAc', addAction);
+    $$('[data-resp]').forEach(b => b.addEventListener('click', () => respond(c.enquiries.find(e => e.id === b.dataset.resp))));
+    $$('[data-done]').forEach(b => b.addEventListener('click', () => { const a = c.actions.find(x => x.id === b.dataset.done); a.status = 'Done'; a.doneAt = Inc.stamp(); Inc.log(c, 'Action completed', '', a.text); save(); audit('Incident action completed', 'Incident', { id: c.id, label: c.no }, [['Action', 'Open', 'Done']]); toast('Action marked done'); draw(); }));
+    const ad = $('#addDoc');
+    ad && ad.addEventListener('change', (e) => {
+      const fs = Array.from(e.target.files || []); if (!fs.length) return;
+      fs.forEach(f => { c.attachments.push({ name: f.name, size: f.size >= 1048576 ? (f.size / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(f.size / 1024)) + ' KB', by: Inc.meName(), at: Inc.stamp() }); Inc.log(c, 'Document added', '', f.name); });
+      save(); audit('Incident document added', 'Incident', { id: c.id, label: c.no }, fs.map(f => ['Document', '', f.name])); toast(fs.length + ' document' + (fs.length > 1 ? 's' : '') + ' added'); draw();
+    });
+  }
+
+  function formDrawer(title, fieldsHtml, okLabel, ok, check) {
+    drawer({ title, sub: c.no, body: `<div class="err-summary hidden"></div><div class="form-grid">${fieldsHtml}</div>`,
+      foot: `<button class="btn" data-close>Cancel</button><span class="grow"></span><button class="btn primary" id="fdGo" disabled>${okLabel}</button>`,
+      onMount: (el, close) => {
+        const go = $('#fdGo', el), sync = () => { go.disabled = !check(el); };
+        $$('input,select,textarea', el).forEach(i => { i.addEventListener('input', sync); i.addEventListener('change', sync); });
+        go.addEventListener('click', () => { if (ok(el) !== false) { close(); draw(); } });
+      } });
+  }
+  const v = (el, id) => $('#' + id, el).value.trim();
+  function addEnquiry() {
+    formDrawer('Send enquiry', `${field({ id: 'eTo', label: 'To (person or department)', req: true, full: true, max: 80, placeholder: 'For example: Ward 3 charge nurse' })}
+      ${field({ id: 'eQ', label: 'Question', type: 'textarea', req: true, full: true, max: 600 })}${field({ id: 'eDue', label: 'Response due', type: 'date', req: true, value: Kit.addDays(T, 3), attrs: `min="${T}"` })}`,
+      `${icon('send')} Send enquiry`, (el) => {
+        const e = { id: UI.uid('eq'), to: v(el, 'eTo'), question: v(el, 'eQ'), askedBy: Inc.meName(), askedAt: Inc.stamp(), due: v(el, 'eDue'), response: '', respondedBy: '', respondedAt: '', status: 'Awaiting response' };
+        c.enquiries.push(e); Inc.log(c, 'Enquiry sent', '', e.to, e.question); save(); audit('Incident enquiry sent', 'Incident', { id: c.id, label: c.no }, [['Enquiry to', '', e.to]]); toast('Enquiry sent to ' + e.to);
+      }, (el) => v(el, 'eTo').length >= 2 && v(el, 'eQ').length >= 5 && v(el, 'eDue'));
+  }
+  function respond(e) {
+    formDrawer('Record response', `<div class="full card card-pad" style="background:var(--soft)"><div class="small b">To ${esc(e.to)}</div><div class="small">${esc(e.question)}</div></div>
+      ${field({ id: 'rBy', label: 'Response from', req: true, value: e.to, max: 80 })}${field({ id: 'rTx', label: 'Response', type: 'textarea', req: true, full: true, max: 1500 })}`,
+      `${icon('check')} Save response`, (el) => {
+        Object.assign(e, { response: v(el, 'rTx'), respondedBy: v(el, 'rBy'), respondedAt: Inc.stamp(), status: 'Responded' });
+        Inc.log(c, 'Response received', '', e.respondedBy); save(); audit('Incident enquiry response recorded', 'Incident', { id: c.id, label: c.no }, [['Enquiry', 'Awaiting response', 'Responded']]); toast('Response saved');
+      }, (el) => v(el, 'rBy').length >= 2 && v(el, 'rTx').length >= 5);
+  }
+  function addDecision() {
+    formDrawer('Record decision', field({ id: 'dTx', label: 'Decision', type: 'textarea', req: true, full: true, max: 800 }), `${icon('gavel')} Save decision`, (el) => {
+      const d = { id: UI.uid('dc'), at: Inc.stamp(), by: Inc.meName(), text: v(el, 'dTx') };
+      c.decisions.push(d); Inc.log(c, 'Decision recorded', '', '', d.text); save(); audit('Incident decision recorded', 'Incident', { id: c.id, label: c.no }, [['Decision', '', d.text]]); toast('Decision saved');
+    }, (el) => v(el, 'dTx').length >= 5);
+  }
+  function addAction() {
+    formDrawer('Add action', `${field({ id: 'aTx', label: 'Action', req: true, full: true, max: 200 })}${field({ id: 'aOw', label: 'Owner', req: true, max: 80 })}${field({ id: 'aDue', label: 'Due date', type: 'date', req: true, value: Kit.addDays(T, 14), attrs: `min="${T}"` })}`,
+      `${icon('plus')} Add action`, (el) => {
+        const a = { id: UI.uid('ac'), text: v(el, 'aTx'), owner: v(el, 'aOw'), due: v(el, 'aDue'), status: 'Open' };
+        c.actions.push(a); Inc.log(c, 'Action added', '', a.text, 'Owner ' + a.owner); save(); audit('Incident action added', 'Incident', { id: c.id, label: c.no }, [['Action', '', a.text]]); toast('Action added');
+      }, (el) => v(el, 'aTx').length >= 5 && v(el, 'aOw').length >= 2 && v(el, 'aDue'));
+  }
+  function printCase() {
+    Kit.printDoc({ title: 'Incident case ' + c.no, sub: 'Incident Management · confidential',
+      html: `<table><tbody><tr><th>Reference</th><td>${esc(c.no)}</td><th>Status</th><td>${esc(c.status)}</td></tr>
+        <tr><th>Category</th><td>${esc(Inc.catName(c.categoryCode))}</td><th>Type</th><td>${esc(Inc.typeName(c.typeCode))}</td></tr>
+        <tr><th>Severity</th><td>${esc(c.severity)}</td><th>Reported by</th><td>${c.anonymous ? 'Anonymous' : esc(c.reporterName)}</td></tr>
+        <tr><th>Occurred</th><td>${esc(fmtDate(c.occurredAt))}</td><th>Location</th><td>${esc(c.location)}</td></tr>
+        <tr><th>Investigators</th><td colspan="3">${esc(c.assigned.map(Inc.memberName).join(', ') || 'Unassigned')}</td></tr></tbody></table>
+        <h4>Description</h4><p>${esc(c.description)}</p><h4>Immediate action</h4><p>${esc(c.immediateAction)}</p>
+        ${c.enquiries.length ? `<h4>Enquiries</h4><table><tbody>${c.enquiries.map(e => `<tr><td>${esc(e.to)}</td><td>${esc(e.question)}</td><td>${esc(e.response || 'Awaiting response')}</td></tr>`).join('')}</tbody></table>` : ''}
+        ${c.decisions.length ? `<h4>Decisions</h4><ul>${c.decisions.map(d => `<li>${esc(d.text)} (${esc(d.by)})</li>`).join('')}</ul>` : ''}
+        ${c.actions.length ? `<h4>Actions</h4><ul>${c.actions.map(a => `<li>${esc(a.text)}, ${esc(a.owner)}, due ${esc(a.due)}: ${esc(a.status)}</li>`).join('')}</ul>` : ''}
+        ${c.status === 'Closed' ? `<h4>Closure</h4><p><b>${esc(c.outcome)}</b>. ${esc(c.closureSummary)}</p>` : ''}
+        <h4>History</h4><table><tbody>${c.history.map(h => `<tr><td>${esc(h.at)}</td><td>${esc(h.by)}</td><td>${esc(h.action)} ${esc(h.from ? h.from + ' → ' : '')}${esc(h.to)}</td><td>${esc(h.reason)}</td></tr>`).join('')}</tbody></table>` });
+    audit('Incident case printed', 'Incident', { id: c.id, label: c.no }, []);
+  }
+  draw();
+})();
+</script>
+</body>
+</html>

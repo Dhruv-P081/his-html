@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orders (CPOE) · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-emr.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/emr.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, me, nowStamp } = UI;
+  const OPT = 'emr.consult.orders';
+  const ptF = UI.param('pt');
+  if (!UI.page({ opt: OPT, title: 'Orders (CPOE)', subtitle: 'Laboratory, radiology, medication, diet and care orders across patients, with status tracking and approval of restricted orders.',
+    actions: `<button class="btn primary" id="new" ${can(OPT, 'add') ? '' : 'disabled title="Needs Add permission"'}>${icon('plus')} New order</button>` })) return;
+
+  const CANCELLABLE = /^(Ordered|Pending approval|Pending verification|Scheduled|Active)$/;
+  const groups = {
+    open: o => EMR.isOpen(o) && o.status !== 'Pending approval' && o.status !== 'Rejected',
+    approval: o => o.status === 'Pending approval',
+    done: o => !EMR.isOpen(o) && o.status !== 'Cancelled',
+    cancelled: o => o.status === 'Cancelled' || o.status === 'Rejected',
+    all: () => true,
+  };
+  let tab = UI.param('tab') || (db.orders.some(groups.approval) ? 'approval' : 'open');
+  const base = () => db.orders.filter(o => !ptF || o.patientId === ptF);
+  $('#page').innerHTML = `${ptF ? `<div class="banner info" style="margin-bottom:12px">${icon('user')}<span class="grow">Showing orders for <b>${esc(Kit.ptName(ptF))}</b>.</span><a class="btn xs" href="${R('emr/orders.html')}">Show all patients</a></div>` : ''}
+    <div class="grid g4" style="margin-bottom:16px">
+      ${Kit.kpi('Open orders', base().filter(groups.open).length, { icon: 'list-todo', foot: base().filter(o => groups.open(o) && o.priority !== 'Routine').length + ' urgent or STAT' })}
+      ${Kit.kpi('Waiting for approval', base().filter(groups.approval).length, { icon: 'lock', foot: 'Controlled drugs, CT and MRI' })}
+      ${Kit.kpi('Ordered today', base().filter(o => String(o.orderedAt).startsWith(db.TODAY)).length, { icon: 'calendar', foot: base().filter(o => String(o.orderedAt).startsWith(db.TODAY) && o.cdss).length + ' with CDSS override' })}
+      ${Kit.kpi('Cancelled', base().filter(groups.cancelled).length, { icon: 'circle-x', foot: 'Reason recorded on each' })}
+    </div>
+    <div id="tabs" style="margin-bottom:12px"></div><div id="tbl"></div>`;
+  const drawTabs = () => Kit.tabs($('#tabs'), [['open', 'Open'], ['approval', 'Pending approval'], ['done', 'Completed'], ['cancelled', 'Cancelled or rejected'], ['all', 'All']].map(([id, label]) => ({ id, label, count: base().filter(groups[id]).length })), tab, (t) => { tab = t; t1.redraw(); });
+  drawTabs();
+  const docs = Array.from(new Set(db.orders.map(o => o.by))).map(id => [id, Kit.docName(id)]).filter(x => x[1]);
+  const t1 = UI.table($('#tbl'), {
+    columns: [
+      { label: 'Order', sort: o => o.no, render: o => `<span class="mono b">${esc(o.no)}</span>${o.rxNo ? `<div class="xs mute mono">${esc(o.rxNo)}</div>` : ''}` },
+      { label: 'Patient', sort: o => Kit.ptName(o.patientId), render: o => Kit.patientCell(Kit.pt(o.patientId)) },
+      { label: 'Order item', sort: o => o.name, render: o => `<div class="row" style="gap:8px">${icon(EMR.TYPE_ICON[o.type] || 'circle', 'mute')}<div class="cell-main"><b>${esc(o.name)}</b><span>${esc(EMR.TYPE_LABEL[o.type] || o.type)}${o.type === 'med' ? ' · ' + esc(o.dose || '') + ' ' + esc(o.frequency || '') : ''}${o.restricted ? ' · <span class="badge b-violet nodot">' + icon('lock') + ' Restricted</span>' : ''}${o.cdss ? ' · <span class="badge b-warn nodot">CDSS override</span>' : ''}</span></div></div>` },
+      { label: 'Priority', sort: o => ({ STAT: 0, Urgent: 1 }[o.priority] ?? 2), render: o => Kit.priority(o.priority) },
+      { label: 'Ordered', sort: o => o.orderedAt, render: o => `<span class="small">${Kit.when(o.orderedAt)}</span><div class="xs mute">${esc(Kit.docName(o.by))}</div>` },
+      { label: 'Status', sort: o => o.status, render: o => Kit.status(o.status) + (EMR.isCritical(o) ? ' <span class="flag-c">C</span>' : '') },
+      { label: '', cls: 'actions', render: o => {
+        const ap = o.status === 'Pending approval' ? `<button class="btn xs success" data-ap="${o.id}" ${!can(OPT, 'approve') ? 'disabled title="Needs Approve permission"' : o.createdBy === me().id ? 'disabled title="You cannot approve your own order"' : ''}>${icon('check')} Approve</button> ` : '';
+        const cx = CANCELLABLE.test(o.status) ? `<button class="btn xs danger" data-cx="${o.id}" ${can(OPT, 'cancel') ? '' : 'disabled title="Needs Cancel permission"'}>${o.status === 'Active' ? 'Discontinue' : 'Cancel'}</button>` : '';
+        return ap + cx; } },
+    ],
+    rows: () => base().filter(groups[tab]).sort((a, b) => String(b.orderedAt).localeCompare(String(a.orderedAt))),
+    search: o => [o.no, o.rxNo, o.name, o.code, Kit.ptName(o.patientId), (Kit.pt(o.patientId) || {}).mrn].join(' '), searchPlaceholder: 'Order no, test, medicine, patient or MRN',
+    filters: [{ label: 'Type', options: Object.entries(EMR.TYPE_LABEL), test: (o, v) => o.type === v }, { label: 'Priority', options: [['STAT', 'STAT'], ['Urgent', 'Urgent'], ['Routine', 'Routine']], test: (o, v) => o.priority === v },
+      { label: 'Doctor', options: docs, test: (o, v) => o.by === v }, { label: 'Date', options: [['today', 'Today'], ['week', 'Last 7 days']], test: (o, v) => v === 'today' ? String(o.orderedAt).startsWith(db.TODAY) : String(o.orderedAt) >= Kit.addDays(db.TODAY, -7) }],
+    onRow: (o) => view(o), pageSize: 12, empty: 'No orders in this list',
+    afterDraw: (tb) => { $$('[data-ap]', tb).forEach(b => b.addEventListener('click', () => approve(db.orders.find(o => o.id === b.dataset.ap)))); $$('[data-cx]', tb).forEach(b => b.addEventListener('click', () => cancel(db.orders.find(o => o.id === b.dataset.cx)))); },
+  });
+  const refresh = () => { drawTabs(); t1.redraw(); };
+
+  function approve(o, after) {
+    UI.confirm({ title: 'Approve restricted order?', tone: 'primary', icon: 'shield-check', confirm: 'Approve',
+      body: `<b>${esc(o.name)}</b> for ${esc(Kit.ptName(o.patientId))}<div class="small" style="margin-top:4px">${esc(o.restrictReason || 'Restricted order')} · requested by ${esc(Kit.docName(o.by))} · ${esc(o.notes || '')}</div>`,
+      impact: [o.type === 'med' ? 'The order goes to Pharmacy for verification' : 'The order is released to ' + (o.type === 'rad' ? 'Radiology' : 'the Laboratory')],
+      extra: `<div class="field" style="margin-top:12px"><label for="apC">Approval note</label><input class="input" id="apC" placeholder="Optional"></div>`,
+      onConfirm: () => {
+        const before = o.status, c = ($('#apC') || {}).value || '';
+        o.status = o.type === 'med' ? 'Pending verification' : 'Ordered'; o.approvedBy = me().displayName; o.approvedAt = nowStamp(); o.approvalNote = c; save();
+        audit('Restricted order approved', 'Order', { id: o.id, label: o.no + ' · ' + o.name }, [['Status', before, o.status]], { reason: c });
+        toast('Order approved and released'); refresh(); after && after();
+      } });
+  }
+  function reject(o, after) {
+    UI.confirm({ title: 'Reject restricted order?', body: `<b>${esc(o.name)}</b> for ${esc(Kit.ptName(o.patientId))}. The ordering doctor sees the reason.`, reason: true, confirm: 'Reject order',
+      onConfirm: (reason) => { const before = o.status; o.status = 'Rejected'; o.cancelReason = reason; o.cancelledBy = me().displayName; o.cancelledAt = nowStamp(); save();
+        audit('Restricted order rejected', 'Order', { id: o.id, label: o.no + ' · ' + o.name }, [['Status', before, 'Rejected']], { reason }); toast('Order rejected'); refresh(); after && after(); } });
+  }
+  function cancel(o, after) {
+    UI.confirm({ title: (o.status === 'Active' ? 'Discontinue ' : 'Cancel ') + 'order ' + o.no + '?', body: `<b>${esc(o.name)}</b> for ${esc(Kit.ptName(o.patientId))}.`, reason: true, confirm: o.status === 'Active' ? 'Discontinue' : 'Cancel order',
+      impact: [o.type === 'lab' ? 'The sample request is withdrawn from the Laboratory worklist' : o.type === 'rad' ? 'The exam is removed from the Radiology schedule' : o.type === 'med' ? 'Pharmacy will not dispense; nursing stops administration' : 'Nursing stops this instruction', 'Any charge not yet billed is not raised'],
+      onConfirm: (reason) => { const before = o.status; o.status = 'Cancelled'; o.cancelReason = reason; o.cancelledBy = me().displayName; o.cancelledAt = nowStamp(); save();
+        audit('Order cancelled', 'Order', { id: o.id, label: o.no + ' · ' + o.name }, [['Status', before, 'Cancelled']], { reason }); toast('Order cancelled'); refresh(); after && after(); } });
+  }
+  function view(o) {
+    const p = Kit.pt(o.patientId), e = Kit.enc(o.encounterId) || {};
+    const steps = [['Ordered', o.orderedAt, Kit.docName(o.by), 'ok']];
+    if (o.restricted) steps.push([o.approvedBy ? 'Approved' : o.status === 'Rejected' ? 'Rejected' : 'Waiting for approval', o.approvedAt || o.cancelledAt || '', o.approvedBy || o.cancelledBy || o.restrictReason, o.approvedBy ? 'ok' : o.status === 'Rejected' ? 'err' : 'warn']);
+    if (o.resultedAt) steps.push(['Resulted', o.resultedAt, o.resultedBy, 'ok']);
+    if (o.verifiedAt) steps.push(['Verified', o.verifiedAt, o.verifiedBy, 'ok']);
+    if (EMR.ackOf(o.id)) steps.push(['Reviewed by doctor', EMR.ackOf(o.id).at, EMR.ackOf(o.id).by + (EMR.ackOf(o.id).comment ? ': ' + EMR.ackOf(o.id).comment : ''), 'ok']);
+    if (o.status === 'Cancelled') steps.push(['Cancelled', o.cancelledAt, (o.cancelledBy || '') + ': ' + (o.cancelReason || ''), 'err']);
+    else if (!/Ordered|Pending approval|Rejected/.test(o.status) && !o.resultedAt) steps.push([o.status, '', 'Current status', 'mute']);
+    const d = UI.drawer({ title: o.no + ' · ' + o.name, sub: esc(EMR.TYPE_LABEL[o.type]) + ' order', wide: true,
+      body: `${Kit.patientBanner(p, e)}<div class="grid g2"><dl class="kv">
+        <dt>Status</dt><dd>${Kit.status(o.status)}</dd><dt>Priority</dt><dd>${Kit.priority(o.priority)}</dd><dt>Code</dt><dd class="mono">${esc(o.code)}</dd>
+        ${o.type === 'med' ? `<dt>Dose</dt><dd>${esc(o.dose)} · ${esc(o.route)}</dd><dt>Frequency</dt><dd>${esc(o.frequency)} · ${esc(o.days)} days · qty ${esc(o.qty)}</dd><dt>Setting</dt><dd>${esc(o.setting || '')} ${o.rxNo ? '· ' + esc(o.rxNo) : ''}</dd>` : ''}
+        <dt>Visit</dt><dd>${esc(e.type || '')} ${esc(e.no || '')}</dd><dt>Ordered by</dt><dd>${esc(Kit.docName(o.by))}</dd><dt>Notes</dt><dd>${esc(o.notes || '-')}</dd>${o.restricted ? `<dt>Restriction</dt><dd>${esc(o.restrictReason)}</dd>` : ''}
+        </dl><div class="timeline">${steps.map(s => `<div class="tl-item ${s[3]}"><b>${esc(s[0])}</b><div class="meta">${s[1] ? UI.fmtDate(s[1]) + ' · ' : ''}${esc(s[2] || '')}</div></div>`).join('')}</div></div>
+        ${o.cdss ? `<div class="section-t" style="margin:16px 0 8px">CDSS alerts</div>${o.cdss.map(a => `<div class="alert-cdss warn" style="margin-bottom:6px">${icon('shield-alert')}<div>${esc(a.text)}<div class="xs">Overridden: ${esc(a.override)}</div></div></div>`).join('')}` : ''}
+        ${o.results ? `<div class="section-t" style="margin:16px 0 8px">Results</div><div class="card"><table class="tbl compact"><thead><tr><th>Parameter</th><th class="num">Value</th><th>Unit</th><th>Reference</th><th>Flag</th></tr></thead><tbody>${o.results.map(r => `<tr><td>${esc(r.name)}</td><td class="num"><b class="${r.flag === 'H' || r.critical ? 'flag-h' : r.flag === 'L' ? 'flag-l' : ''}">${esc(r.value)}</b></td><td>${esc(r.unit)}</td><td class="small muted">${esc(r.low)} - ${esc(r.high)}</td><td>${EMR.flagHtml(r)}</td></tr>`).join('')}</tbody></table></div>` : ''}`,
+      foot: `${o.status === 'Pending approval' ? `<button class="btn danger" id="vRj" ${can(OPT, 'approve') && o.createdBy !== me().id ? '' : 'disabled title="Needs Approve permission (not your own order)"'}>Reject</button><button class="btn success" id="vAp" ${can(OPT, 'approve') && o.createdBy !== me().id ? '' : 'disabled title="Needs Approve permission (not your own order)"'}>${icon('check')} Approve</button>` : ''}
+        ${CANCELLABLE.test(o.status) && o.status !== 'Pending approval' ? `<button class="btn danger" id="vCx" ${can(OPT, 'cancel') ? '' : 'disabled title="Needs Cancel permission"'}>${o.status === 'Active' ? 'Discontinue' : 'Cancel order'}</button>` : ''}<span class="grow"></span>
+        ${e.id ? `<a class="btn" href="${R('emr/console.html?enc=' + e.id + '&tab=orders')}">Open console</a>` : ''}<button class="btn" data-close>Close</button>` });
+    const close = d.close;
+    const b1 = $('#vAp', d.el); if (b1) b1.addEventListener('click', () => { close(); approve(o); });
+    const b2 = $('#vRj', d.el); if (b2) b2.addEventListener('click', () => { close(); reject(o); });
+    const b3 = $('#vCx', d.el); if (b3) b3.addEventListener('click', () => { close(); cancel(o); });
+  }
+  $('#new').addEventListener('click', () => {
+    const live = (pid) => db.encounters.filter(e => e.patientId === pid && ((e.type === 'IPD' && e.status !== 'Discharged') || (e.start.startsWith(db.TODAY) && !/Booked|Discharged/.test(e.status))));
+    Kit.pickPatient({ title: 'New order: choose patient', filter: (x) => live(x.id).length > 0, onPick: (x) => { const e = live(x.id)[0]; location.href = R('emr/console.html?enc=' + e.id + '&tab=orders'); } });
+  });
+  const pre = db.orders.find(o => o.id === UI.param('id')); if (pre) view(pre);
+})();
+</script>
+</body>
+</html>

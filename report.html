@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Report · Tibbi Orbit</title>
+<link rel="stylesheet" href="assets/styles.css">
+<script src="assets/icons.js"></script><script src="assets/data.js"></script><script src="assets/data-core.js"></script><script src="assets/ui.js"></script>
+</head>
+<body>
+<script>
+const { db, $, $$, icon, esc, page, can, table, badge, L, toast, audit, me, nowStamp, fmtDate, today, assignmentUsable, tupleText, session } = UI;
+const rep = db.reports.find(r => r.id === UI.param('id')) || db.reports[0];
+const canExport = can('admin.reports.view', 'print');
+const global = can('admin.security.users', 'admin') || can('admin.org.company', 'admin');
+const myCos = new Set(db.assignments.filter(a => a.userId === session().userId && assignmentUsable(a).ok).map(a => a.companyId));
+const inScope = coId => global || !coId || myCos.has(coId);   // REP-03
+const cOpt = db.companies.map(c => [c.id, c.code]);
+const bOpt = db.branches.map(b => [b.id, b.name]);
+const st = s => badge(s);
+const daysTo = d => d ? Math.round((new Date(d) - new Date(today())) / 86400000) : null;
+function cutoffOf(u) { const e = u.empId && L.emp(u.empId); const c = [[u.activeTo, 'Active To'], [u.expiry, 'Expiry'], [e && e.lastWorkingDate, 'HR separation']].filter(x => x[0]).sort((a, b) => a[0].localeCompare(b[0])); return c[0]; }
+const DEF = {
+  'RPT-01': { rows: () => db.branches.filter(b => inScope(b.companyId)), filters: [['Company', cOpt, (r, v) => r.companyId === v], ['Status', [['Active', 'Active'], ['Inactive', 'Inactive']], (r, v) => r.status === v]],
+    cols: [['Company', r => esc(L.company(r.companyId).code + ' · ' + L.cName(r.companyId))], ['Branch', r => `<span class="mono">${esc(r.code)}</span> ${esc(r.name)}`], ['Timezone', r => esc(r.timezone)], ['Status', r => st(r.status)], ['Departments', r => db.departments.filter(d => d.branchId === r.id).length], ['Warehouses', r => db.warehouses.filter(w => w.branchId === r.id).length],
+      ['Setup completeness', r => { const miss = [!r.phone && 'phone', !r.email && 'email', !db.departments.some(d => d.branchId === r.id) && 'departments'].filter(Boolean); return miss.length ? `<span class="badge b-warn">Missing ${miss.join(', ')}</span>` : '<span class="badge b-ok">Complete</span>'; }]] },
+  'RPT-02': { rows: () => db.departments.map(d => ({ kind: 'Department', code: d.code, name: d.name, branchId: d.branchId, companyId: d.companyId, type: d.type, owner: (L.emp(d.hodEmpId) || {}).name || '', status: d.status })).concat(db.warehouses.map(w => ({ kind: 'Warehouse', code: w.code, name: w.name, branchId: w.branchId, companyId: w.companyId, type: w.type, owner: L.uName(w.custodianUserId), status: w.status }))).filter(r => inScope(r.companyId)),
+    filters: [['Company', cOpt, (r, v) => r.companyId === v], ['Branch', bOpt, (r, v) => r.branchId === v], ['Record', [['Department', 'Department'], ['Warehouse', 'Warehouse']], (r, v) => r.kind === v], ['Status', [['Active', 'Active'], ['Inactive', 'Inactive']], (r, v) => r.status === v]],
+    cols: [['Record', r => r.kind], ['Code', r => `<span class="mono">${esc(r.code)}</span>`], ['Name', r => esc(r.name)], ['Branch', r => esc(L.bName(r.branchId))], ['Type', r => esc(r.type)], ['HOD / custodian', r => esc(r.owner || '—')], ['Status', r => st(r.status)]] },
+  'RPT-03': { rows: () => db.assignments.filter(a => inScope(a.companyId)), filters: [['Company', cOpt, (r, v) => r.companyId === v], ['Branch', bOpt, (r, v) => r.branchId === v], ['Role', db.roles.map(r => [r.id, r.code]), (r, v) => r.roleId === v], ['Effective', [['yes', 'Authorizing'], ['no', 'Not authorizing']], (r, v) => assignmentUsable(r).ok === (v === 'yes')]],
+    cols: [['Login', r => `<span class="mono">${esc(L.user(r.userId).login)}</span>`], ['User', r => esc(L.uName(r.userId))], ['Access tuple', r => esc(tupleText(r, true))], ['Role', r => esc(L.role(r.roleId).code)], ['Validity', r => `${fmtDate(r.from)} to ${r.to ? fmtDate(r.to) : 'open'}`], ['Grantor', r => esc(r.grantor)], ['Effective status', r => { const s = assignmentUsable(r); return r.status !== 'Active' ? badge('Revoked') : s.ok ? badge('Active') : badge('Inactive', s.why); }]] },
+  'RPT-04': { rows: () => db.roles.flatMap(r => Object.entries(r.perms).map(([o, a]) => ({ role: r, opt: UI.optionById(o), acts: a }))).filter(x => x.opt), filters: [['Role', db.roles.map(r => [r.id, r.code]), (r, v) => r.role.id === v], ['Module', db.modules.map(m => [m.id, m.name]), (r, v) => r.opt.moduleId === v], ['Action', db.ACTION_KEYS.map(k => [k, db.ACTIONS[k]]), (r, v) => r.acts.includes(v)], ['Role status', [['Active', 'Active'], ['Inactive', 'Inactive']], (r, v) => r.role.status === v]],
+    cols: [['Role', r => `<span class="mono">${esc(r.role.code)}</span> ${st(r.role.status)}`], ['Module', r => esc(db.modules.find(m => m.id === r.opt.moduleId).name)], ['Screen', r => esc(r.opt.name)], ['Granted actions', r => r.acts.map(k => db.ACTIONS[k]).join(', ')], ['Scope restriction', r => r.role.scope === 'System' ? 'System role' : 'Company ' + esc(L.company(r.role.companyId).code)], ['Assigned users', r => new Set(db.assignments.filter(a => a.roleId === r.role.id && a.status === 'Active').map(a => a.userId)).size]] },
+  'RPT-05': { rows: () => db.assignments.filter(a => L.role(a.roleId).privileged && inScope(a.companyId)), filters: [['Company', cOpt, (r, v) => r.companyId === v], ['Branch', bOpt, (r, v) => r.branchId === v]],
+    cols: [['User', r => esc(L.uName(r.userId))], ['Privileged role', r => esc(L.role(r.roleId).code)], ['Privileged permissions', r => Object.values(L.role(r.roleId).perms).filter(a => a.includes('admin')).length + ' Admin Access grants'], ['Assignment', r => esc(tupleText(r, true))], ['Validity', r => `${fmtDate(r.from)} to ${r.to ? fmtDate(r.to) : 'open'}`], ['Last review', r => fmtDate(r.at)], ['Status', r => assignmentUsable(r).ok ? badge('Active') : badge('Inactive', assignmentUsable(r).why)]] },
+  'RPT-06': { rows: () => db.loginEvents, filters: [['Outcome', ['Success', 'Failure', 'Locked', 'Logout', 'No access'].map(x => [x, x]), (r, v) => r.outcome === v], ['User', Array.from(new Set(db.loginEvents.map(e => e.user))).map(u => [u, u]), (r, v) => r.user === v]],
+    cols: [['Event time', r => fmtDate(r.at)], ['User', r => `<span class="mono">${esc(r.user)}</span>`], ['Outcome', r => badge(r.outcome)], ['Company / branch', r => r.company ? esc(r.company + ' / ' + r.branch) : '—'], ['Session', r => `<span class="mono">${esc(r.session || '—')}</span>`], ['Source', r => esc(r.source)]] },
+  'RPT-07': { rows: () => db.audit.filter(e => !['Session'].includes(e.entity)), filters: [['Entity', Array.from(new Set(db.audit.map(e => e.entity))).map(x => [x, x]), (r, v) => r.entity === v], ['Actor', Array.from(new Set(db.audit.map(e => e.actor))).map(x => [x, x]), (r, v) => r.actor === v]],
+    cols: [['Event ID', r => `<span class="mono">${esc(r.id)}</span>`], ['Time', r => fmtDate(r.at)], ['Actor', r => esc(r.actor)], ['Action', r => esc(r.action)], ['Record', r => esc(r.record)], ['Before → after', r => r.changes.map(c => `${esc(c[0])}: <s class="muted">${esc(c[1] || '∅')}</s> → <b>${esc(c[2])}</b>`).join('<br>') || '—'], ['Reason', r => esc(r.reason || '—')], ['Outcome', r => badge(r.outcome)]] },
+  'RPT-08': { rows: () => db.assignments.filter(a => inScope(a.companyId) && (a.status !== 'Active' || !assignmentUsable(a).ok || (a.to && daysTo(a.to) <= 60))), filters: [['Company', cOpt, (r, v) => r.companyId === v], ['Branch', bOpt, (r, v) => r.branchId === v]],
+    cols: [['User', r => esc(L.uName(r.userId))], ['Tuple', r => esc(tupleText(r, true))], ['Role', r => esc(L.role(r.roleId).code)], ['End date', r => r.to ? fmtDate(r.to) : 'open'], ['Days remaining', r => { const d = daysTo(r.to); return d == null ? '—' : d < 0 ? `<span class="badge b-err">Ended ${-d} days ago</span>` : `<span class="badge ${d <= 14 ? 'b-warn' : 'b-info'}">${d} days</span>`; }], ['Blocking condition', r => r.status !== 'Active' ? 'Revoked' : assignmentUsable(r).ok ? 'Ends soon' : esc(assignmentUsable(r).why)]] },
+  'RPT-12': { rows: () => db.users.filter(u => u.type === 'Employee'), filters: [['HR status', ['Active', 'Pending separation', 'Separated'].map(x => [x, x]), (r, v) => (L.emp(r.empId) || {}).hrStatus === v], ['Account', ['Active', 'Blocked', 'Inactive', 'Locked', 'Pending activation'].map(x => [x, x]), (r, v) => r.status === v]],
+    cols: [['User', r => esc(r.displayName)], ['Employee link', r => ((L.emp(r.empId) || {}).empNo ? `<span class="mono">${esc(L.emp(r.empId).empNo)}</span>` : '<span class="muted">Not linked</span>')], ['Account period', r => `${fmtDate(r.activeFrom)} to ${r.activeTo ? fmtDate(r.activeTo) : 'open'}`], ['Block', r => r.blocked ? badge('Blocked') : '—'], ['HR status', r => (L.emp(r.empId) || {}).hrStatus ? badge(L.emp(r.empId).hrStatus) : '—'], ['HR last working date', r => fmtDate((L.emp(r.empId) || {}).lastWorkingDate) || '—'], ['Effective cutoff', r => { const c = cutoffOf(r); return c ? fmtDate(c[0]) + ' <span class="small muted">' + c[1] + '</span>' : '—'; }], ['Sync', r => `<span class="small">${fmtDate((L.emp(r.empId) || {}).lastSync)}</span>`], ['Outcome', r => badge(r.status)]] },
+  'RPT-13': { rows: () => db.users.filter(u => (u.isDoctor || u.isNurse || u.isTech) && !u.blocked && u.status === 'Active'), filters: [['Classification', db.classifications.map(c => [c, c]), (r, v) => r.classification === v], ['Profile', [['isDoctor', 'Doctor'], ['isNurse', 'Nurse'], ['isTech', 'Technician'], ['mobileDisplay', 'On mobile app'], ['admitting', 'Admitting doctor']], (r, v) => !!r[v]]],
+    cols: [['Name', r => esc(r.displayName)], ['Classification', r => esc(r.classification)], ['Flags', r => [r.isDoctor && 'Doctor', r.isNurse && 'Nurse', r.isTech && 'Technician'].filter(Boolean).join(', ')], ['Admitting', r => r.admitting ? 'Yes' : 'No'], ['Mobile app', r => r.mobileDisplay ? 'Shown' : 'Hidden'], ['Languages', r => esc(r.languages.join(', '))], ['Services', r => esc(r.services.join(', ') || '—')], ['Education', r => `<span class="small">${esc(r.empId ? (L.emp(r.empId) || {}).education : r.education)}</span><br><span class="small muted">${r.empId ? 'HR' : 'Non Employee'}</span>`]],
+    note: 'Blocked and inactive users are excluded from this operational view.' },
+  'RPT-14': { rows: () => db.departments.filter(d => inScope(d.companyId)), filters: [['Company', cOpt, (r, v) => r.companyId === v], ['Type', [['Admin', 'Admin'], ['Clinical', 'Clinical']], (r, v) => r.type === v], ['Setting', [['OPD', 'OPD'], ['IPD', 'IPD']], (r, v) => r.settings.includes(v)]],
+    cols: [['Department', r => `<span class="mono">${esc(r.code)}</span> ${esc(r.name)}<br><span class="small muted">${esc(L.bName(r.branchId))}</span>`], ['Type', r => esc(r.type)], ...[['opdRev', 'OPD revenue'], ['opdExp', 'OPD expense'], ['ipdRev', 'IPD revenue'], ['ipdExp', 'IPD expense']].map(([k, l]) => [l, r => { const id = r.acc[k]; if (id === 'NA') return '<span class="tag">N/A</span>'; const a = L.account(id); return a ? `<span class="mono">${esc(a.code)}</span>${a.status !== 'Active' ? ' <span class="badge b-err">Inactive</span>' : ''}` : '<span class="badge b-warn">Missing</span>'; }]), ['HOD', r => esc((L.emp(r.hodEmpId) || {}).name || '—')], ['Clinics', r => esc(r.clinicIds.map(L.clName).join(', ') || '—')]] },
+  'RPT-15': { rows: () => db.users.filter(u => db.assignments.some(a => a.userId === u.id)), filters: [['Default state', [['ok', 'Valid default'], ['bad', 'Invalid or missing']], (r, v) => { const d = db.assignments.find(a => a.userId === r.id && a.isDefault); return (d && assignmentUsable(d).ok ? 'ok' : 'bad') === v; }]],
+    cols: [['User', r => esc(r.displayName)], ['Default context', r => { const d = db.assignments.find(a => a.userId === r.id && a.isDefault); return d ? esc(tupleText(d, true)) + (assignmentUsable(d).ok ? '' : ` <span class="badge b-err">${esc(assignmentUsable(d).why)}</span>`) : '<span class="badge b-warn">No default</span>'; }],
+      ['Roles (all contexts)', r => db.assignments.filter(a => a.userId === r.id && a.status === 'Active').length], ['Associated users', r => { const x = db.associations.find(a => a.userId === r.id); return x ? esc(x.with.map(L.uName).join(', ')) : '—'; }], ['Default associated', r => { const x = db.associations.find(a => a.userId === r.id); if (!x || !x.defaultId) return '—'; const d = L.user(x.defaultId); return esc(d.displayName) + (d.blocked || d.status !== 'Active' ? ' <span class="badge b-err">Invalid</span>' : ''); }]] },
+  'RPT-16': { rows: () => db.resetTrail, filters: [['Administrator', Array.from(new Set(db.resetTrail.map(r => r.admin))).map(x => [x, x]), (r, v) => r.admin === v]],
+    cols: [['Request time', r => fmtDate(r.at)], ['Administrator', r => esc(r.admin)], ['Target user', r => `<span class="mono">${esc(r.target)}</span>`], ['Reason', r => esc(r.reason)], ['Delivery', r => esc(r.delivery)], ['Outcome', r => esc(r.status)]],
+    note: 'Never includes credentials or tokens.' },
+};
+const d = DEF[rep.id];
+if (page({ active: 'reports.html', opt: 'admin.reports.view', title: rep.name, crumbs: [['Home', 'home.html'], ['Administration', 'admin.html'], ['Reports', 'reports.html'], [rep.id]], subtitle: esc(rep.purpose),
+  actions: canExport ? `<button class="btn" id="csv">${icon('download')} CSV</button><button class="btn" id="xlsx">${icon('download')} XLSX</button><button class="btn" id="pdf">${icon('printer')} Print / PDF</button>` : '<span class="small muted">Export not permitted</span>',
+  body: `<div class="card" style="margin-bottom:14px"><div class="report-meta">
+    <div><b>Report</b>${esc(rep.id)} · ${esc(rep.name)}</div><div><b>Generated by</b>${esc(me().displayName)}</div><div><b>Generated at</b>${UI.fmtDate(nowStamp())} (Asia/Kuwait)</div>
+    <div><b>As of</b><input type="date" class="input" id="asof" value="${today()}" style="height:32px;margin-top:2px"></div></div>
+    <div class="card-pad small muted" id="applied" style="padding:10px 20px"></div></div>
+    ${global ? '' : `<div class="banner info" style="margin-bottom:12px">${icon('shield')}<span>Rows, totals and lookups are limited to your scope.</span></div>`}
+    <div class="banner warn hidden" id="asofNote" style="margin-bottom:12px">${icon('info')}<span>Historical reconstruction is not available in this prototype. The report shows current-state data, not a historical view.</span></div>
+    ${d.note ? `<div class="banner info" style="margin-bottom:12px">${icon('info')}<span>${esc(d.note)}</span></div>` : ''}<div id="rt"></div>` })) {
+  let current = [];
+  let t; t = table($("#rt"), {
+    searchPlaceholder: 'Search in report', search: r => JSON.stringify(r), pageSize: 15, emptyIcon: 'chart-column', empty: 'No rows match these filters',
+    filters: d.filters.map(f => ({ label: f[0], options: f[1], test: f[2] })),
+    rows: d.rows,
+    columns: d.cols.map(c => ({ label: c[0], render: c[1] })),
+    afterDraw: () => {
+      const s = t ? t.state : { q: '', filters: {} };
+      current = d.rows().filter(r => (!s.q || JSON.stringify(r).toLowerCase().includes(s.q.toLowerCase())) && d.filters.every((f, i) => !s.filters[i] || f[2](r, s.filters[i])));
+      const ap = d.filters.map((f, i) => s.filters[i] ? `${f[0]}: ${(f[1].find(o => o[0] === s.filters[i]) || [, s.filters[i]])[1]}` : null).filter(Boolean);
+      $('#applied').textContent = 'Applied filters: ' + (ap.length || s.q ? ap.concat(s.q ? [`search "${s.q}"`] : []).join(' · ') : 'none') + ` · ${current.length} rows`;
+    },
+  });
+  t.redraw();
+  $('#asof').addEventListener('change', () => $('#asofNote').classList.toggle('hidden', $('#asof').value === today()));
+  const strip = h => { const x = document.createElement('div'); x.innerHTML = h; return x.textContent.trim(); };
+  const safe = v => { v = String(v); if (/^[=+\-@\t\r]/.test(v)) v = "'" + v; return '"' + v.replace(/"/g, '""') + '"'; };  // REP-04
+  function exportFile(kind) {
+    const lines = [[`${rep.id} ${rep.name}`], [`Generated by ${me().displayName} at ${nowStamp()} Asia/Kuwait`], [$('#applied').textContent], [`As of ${$('#asof').value}`], [], d.cols.map(c => c[0])].concat(current.map(r => d.cols.map(c => strip(String(c[1](r))))));
+    const csv = lines.map(l => l.map(safe).join(',')).join('\r\n');
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `${rep.id}_${today()}.${kind === 'xlsx' ? 'csv' : 'csv'}`; a.click();
+    audit('Report exported', 'Report', { id: rep.id, label: rep.id + ' ' + rep.name }, [['Format', '', kind.toUpperCase()], ['Rows', '', String(current.length)], ['Filters', '', $('#applied').textContent]]);
+    toast(`${current.length} rows exported${kind === 'xlsx' ? ' (prototype saves CSV)' : ''}. Export recorded in audit.`);
+  }
+  if (canExport) { $('#csv').addEventListener('click', () => exportFile('csv')); $('#xlsx').addEventListener('click', () => exportFile('xlsx')); $('#pdf').addEventListener('click', () => { audit('Report printed', 'Report', { id: rep.id, label: rep.id }, [['Rows', '', String(current.length)]]); window.print(); }); }
+}
+</script>
+</body>
+</html>

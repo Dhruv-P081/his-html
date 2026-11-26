@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lab report print and e-send · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-lab.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/lab.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, esc, icon, $, R } = UI;
+  const OPT = 'lab.out';
+  if (!UI.page({ opt: OPT, title: 'Report print and e-send', subtitle: 'Print approved laboratory reports with the letterhead and signature, or send them by email, SMS, the patient app or to the referring doctor.',
+    actions: `<a class="btn" href="${R('lab/results.html')}">${icon('microscope')} Result entry</a>` })) return;
+  Lab.dispatchPage($('#page'), { opt: OPT, kind: 'lab', key: 'labDispatch',
+    orders: () => Lab.orders().filter(o => o.status === 'Verified' && o.results),
+    finalAt: o => o.verifiedAt || o.resultedAt || '', testName: o => o.name, ref: o => Lab.acc(o), title: o => 'Lab report · ' + o.name,
+    reportHtml: Lab.reportHtml,
+    flags: o => (o.results || []).some(r => r.critical) ? ' <span class="flag-c">Critical</span>' : (o.results || []).some(r => r.flag) ? ' <span class="badge b-warn nodot">Abnormal</span>' : '',
+    filters: [{ label: 'Section', options: [...new Set(db.labTests.map(t => t.section))].map(s => [s, s]), test: (o, v) => Lab.test(o.code).section === v },
+      { label: 'Setting', options: [['OPD', 'OPD'], ['ER', 'Emergency'], ['IPD', 'Inpatient']], test: (o, v) => Lab.setting(o) === v }] });
+})();
+</script>
+</body>
+</html>

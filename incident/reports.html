@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Incident Reports · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-incident.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/incident.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, $ } = UI;
+  if (!UI.page({ opt: 'incident.reports', title: 'Incident Reports', subtitle: 'Five reports for incident management (SOW V4 Annexure B).' })) return;
+  const T = Inc.T, C = () => db.incidentCases;
+  const from = { id: 'from', label: 'Reported from', type: 'date', value: Kit.addDays(T, -90) }, to = { id: 'to', label: 'Reported to', type: 'date', value: T };
+  const inR = (c, v) => (!v.from || c.reportedAt.slice(0, 10) >= v.from) && (!v.to || c.reportedAt.slice(0, 10) <= v.to);
+  const catOpts = db.incidentCategories.map(c => [c.code, c.name]);
+  const sevOpts = Inc.SEVERITIES.map(x => [x, x]);
+  const stOpts = Inc.STATUSES.map(x => [x, x]);
+  const avg = (a) => a.length ? Math.round(10 * a.reduce((s, x) => s + x, 0) / a.length) / 10 : 0;
+  Kit.reportCatalog($('#page'), { opt: 'incident.reports', allowance: 5, reports: [
+    { id: 'inr01', title: 'Incident register summary', purpose: 'All incidents in the period with category, severity, status and age.',
+      filters: [from, to, { id: 'status', label: 'Status', type: 'select', options: stOpts }, { id: 'cat', label: 'Category', type: 'select', options: catOpts }],
+      columns: ['Reference', 'Reported', 'Category', 'Type', 'Severity', 'Location', 'Reporter', 'Status', 'Age (days)'],
+      rows: (v) => C().filter(c => inR(c, v) && (!v.status || c.status === v.status) && (!v.cat || c.categoryCode === v.cat)).map(c => [c.no, UI.fmtDate(c.reportedAt), Inc.catName(c.categoryCode), Inc.typeName(c.typeCode), c.severity, c.location, c.anonymous ? 'Anonymous' : c.reporterName, c.status, Inc.ageDays(c)]) },
+    { id: 'inr02', title: 'Incidents by category and type', purpose: 'Count of incidents per category and type, split by severity.',
+      filters: [from, to, { id: 'sev', label: 'Severity', type: 'select', options: sevOpts }],
+      columns: ['Category', 'Type', 'Low', 'Medium', 'High', 'Critical', 'Total'],
+      rows: (v) => db.incidentTypes.map(t => { const r = C().filter(c => c.typeCode === t.code && inR(c, v) && (!v.sev || c.severity === v.sev)); return [Inc.catName(t.categoryCode), t.name].concat(Inc.SEVERITIES.map(s => r.filter(c => c.severity === s).length)).concat([r.length]); }).filter(r => r[6]),
+      totals: (rows) => ['Total', ''].concat([2, 3, 4, 5, 6].map(i => rows.reduce((s, r) => s + r[i], 0))) },
+    { id: 'inr03', title: 'Incidents by department and location', purpose: 'Where incidents happen, with the share of high and critical severity.',
+      filters: [from, to, { id: 'dept', label: 'Department', type: 'select', options: Array.from(new Set(db.incidentCases.map(c => c.deptId))).map(id => [id, UI.L.dName(id)]) }, { id: 'cat', label: 'Category', type: 'select', options: catOpts }],
+      columns: ['Department', 'Location', 'Incidents', 'High or critical', 'Still open'],
+      rows: (v) => { const r = C().filter(c => inR(c, v) && (!v.dept || c.deptId === v.dept) && (!v.cat || c.categoryCode === v.cat)); const g = Kit.groupBy(r, c => c.deptId + '|' + c.location); return Object.entries(g).map(([k, a]) => [UI.L.dName(k.split('|')[0]), k.split('|')[1], a.length, a.filter(c => /High|Critical/.test(c.severity)).length, a.filter(c => c.status !== 'Closed').length]).sort((a, b) => b[2] - a[2]); },
+      totals: (rows) => ['Total', '', rows.reduce((s, r) => s + r[2], 0), rows.reduce((s, r) => s + r[3], 0), rows.reduce((s, r) => s + r[4], 0)] },
+    { id: 'inr04', title: 'Open incident ageing', purpose: 'Open, In Progress and Hold incidents by age band, to spot cases that need attention.',
+      filters: [{ id: 'status', label: 'Status', type: 'select', options: stOpts.filter(s => s[0] !== 'Closed') }, { id: 'bucket', label: 'Age band', type: 'select', options: Inc.BUCKETS.map(x => [x, x]) }, { id: 'sev', label: 'Severity', type: 'select', options: sevOpts }],
+      columns: ['Reference', 'Type', 'Severity', 'Status', 'Investigators', 'Reported', 'Age (days)', 'Age band', 'Open enquiries'],
+      rows: (v) => C().filter(c => c.status !== 'Closed' && (!v.status || c.status === v.status) && (!v.sev || c.severity === v.sev) && (!v.bucket || Inc.bucket(Inc.ageDays(c)) === v.bucket)).sort((a, b) => Inc.ageDays(b) - Inc.ageDays(a))
+        .map(c => [c.no, Inc.typeName(c.typeCode), c.severity, c.status, c.assigned.map(Inc.memberName).join(', ') || 'Unassigned', UI.fmtDate(c.reportedAt.slice(0, 10)), Inc.ageDays(c), Inc.bucket(Inc.ageDays(c)), c.enquiries.filter(e => e.status !== 'Responded').length]) },
+    { id: 'inr05', title: 'Investigator workload and closure time', purpose: 'Cases per investigator, open load and average days to close.',
+      filters: [from, to, { id: 'who', label: 'Investigator', type: 'select', options: db.incidentTeam.map(m => [m.code, m.name]) }],
+      columns: ['Investigator', 'Team role', 'Assigned', 'Open', 'Hold', 'Closed', 'Average days to close'],
+      rows: (v) => db.incidentTeam.filter(m => !v.who || m.code === v.who).map(m => { const r = C().filter(c => inR(c, v) && c.assigned.includes(m.code)); const cl = r.filter(c => c.status === 'Closed'); return [m.name, m.role, r.length, r.filter(c => /Open|In Progress/.test(c.status)).length, r.filter(c => c.status === 'Hold').length, cl.length, avg(cl.map(Inc.ageDays))]; }) },
+  ] });
+})();
+</script>
+</body>
+</html>

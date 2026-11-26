@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Period closing · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<style>.chk{display:flex;gap:12px;align-items:flex-start;padding:12px 18px;border-bottom:1px solid var(--line)}.chk:last-child{border-bottom:0}.chk .ico{margin-top:2px}.chk .ok{color:var(--success)}.chk .bad{color:var(--error)}.chk .wait{color:var(--mute)}</style>
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-finance.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/finance.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, confirm, nowStamp, uid } = UI;
+  const OPT = 'finance.close';
+  if (!UI.page({ opt: OPT, title: 'Period closing', subtitle: 'Month-end checklist for FY2026. A closed period is locked for posting. Closing and reopening need approval by a second user.' })) return;
+  const T = Fin.T, me = Fin.meName();
+  const PS = () => db.financePeriods;
+  let cur = UI.param('p') || (PS().find(p => p.state === 'Open') || PS()[0]).code;
+  $('#page').innerHTML = `<div class="split"><div class="card list-pane" id="pl"></div><div id="pb"></div></div>`;
+  const pending = (code) => db.financeCloseRequests.find(r => r.period === code && r.status === 'Pending approval');
+
+  function autoChecks(p) {
+    const inP = (d) => d >= p.from && d <= p.to;
+    const bt = db.financeBatches.filter(b => inP(b.date) && b.status !== 'Posted');
+    const jn = db.financeJournals.filter(j => j.period === p.code && ['Draft', 'Pending approval', 'Approved'].includes(j.status));
+    const m = +p.code.slice(5);
+    const rec = db.financeRecurring.filter(t => t.status === 'Active' && (t.frequency === 'Monthly' || m % 3 === 0)).filter(t => !db.financeJournals.some(j => j.templateId === t.id && j.period === p.code && j.status === 'Posted'));
+    const pr = db.financeJournals.filter(j => j.period === p.code && j.source === 'Payroll' && j.status === 'Posted');
+    const bills = db.financeBills.filter(b => inP(b.date) && b.status === 'Pending approval');
+    const lines = Fin.posted({ from: p.from, to: p.to });
+    const diff = Fin.r3(Kit.sumBy(lines, l => l.debit - l.credit));
+    const disc = db.financeDiscountReqs.filter(r => r.status === 'Pending approval' && ((db.invoices || []).find(v => v.id === r.invoiceId) || {}).date <= p.to);
+    return [
+      { label: 'Sub-ledgers posted (Billing, Pharmacy, MMIS auto-posting)', ok: !bt.length, note: bt.length ? `${bt.length} batch${bt.length > 1 ? 'es' : ''} failed or waiting: ${bt.map(b => b.no).join(', ')}` : 'All batches posted', href: 'finance/auto-posting.html' },
+      { label: 'No unposted journals in the period', ok: !jn.length, note: jn.length ? `${jn.length} journal${jn.length > 1 ? 's' : ''} in draft, approval or approved: ${jn.slice(0, 4).map(j => j.no).join(', ')}${jn.length > 4 ? '...' : ''}` : 'Nothing pending', href: 'finance/journals.html?tab=Pending approval' },
+      { label: 'Recurring vouchers (accruals, depreciation) generated and posted', ok: !rec.length, note: rec.length ? `${rec.length} template${rec.length > 1 ? 's' : ''} not posted: ${rec.map(t => t.code).join(', ')}` : 'All templates posted', href: 'finance/journals.html?tab=rec' },
+      { label: 'Payroll journal posted', ok: !!pr.length, note: pr.length ? pr.map(j => j.no).join(', ') : 'No posted payroll journal yet', href: 'finance/journals.html' },
+      { label: 'Vendor bills approved', ok: !bills.length, note: bills.length ? `${bills.length} bill${bills.length > 1 ? 's' : ''} waiting for approval` : 'No bills waiting', href: 'finance/payables.html' },
+      { label: 'Discount approvals cleared', ok: !disc.length, note: disc.length ? `${disc.length} discount request${disc.length > 1 ? 's' : ''} open` : 'None open', href: 'finance/billing.html' },
+      { label: 'Trial balance balances', ok: Math.abs(diff) < 0.0005, note: Math.abs(diff) < 0.0005 ? `${lines.length} posted lines, debits equal credits` : 'Difference ' + Fin.amt(diff), href: 'finance/statements.html' },
+    ];
+  }
+  function drawList() {
+    $('#pl').innerHTML = `<div class="card-head"><h3>${icon('calendar-check')} FY2026 periods</h3></div>${PS().map(p => `<div class="qitem ${p.code === cur ? 'on' : ''}" data-p="${p.code}">${icon(p.state === 'Closed' ? 'lock' : p.state === 'Open' ? 'lock-open' : 'calendar')}<div class="grow"><b style="font-size:13px">${esc(p.name)}</b><div class="xs muted">${esc(Kit.day(p.from))} to ${esc(Kit.day(p.to))}</div></div>${pending(p.code) ? Kit.status(pending(p.code).action === 'Reopen' ? 'Reopen requested' : 'Close requested', 'warn') : Kit.status(p.state === 'Open' ? 'Open period' : p.state === 'Future' ? 'Future' : 'Closed')}</div>`).join('')}`;
+    $$('[data-p]', $('#pl')).forEach(n => n.addEventListener('click', () => { cur = n.dataset.p; drawList(); drawBody(); }));
+  }
+  function drawBody() {
+    const p = PS().find(x => x.code === cur), i = PS().indexOf(p), prev = PS()[i - 1], next = PS()[i + 1];
+    const req = pending(p.code), checks = autoChecks(p);
+    const tasks = db.financeCloseTasks.filter(t => t.period === p.code);
+    const allOk = checks.every(c => c.ok) && tasks.every(t => t.done);
+    const hist = db.financeCloseRequests.filter(r => r.period === p.code).slice().reverse();
+    const pl = Fin.plTotals({ from: p.from, to: p.to });
+    const canTick = can(OPT, 'approve') && p.state === 'Open' && !req;
+    $('#pb').innerHTML = `
+      ${p.state === 'Closed' ? `<div class="banner warn" style="margin-bottom:14px">${icon('lock')}<span><b>Locked period.</b> ${esc(p.name)} was closed by ${esc(p.closedBy)} on ${esc(Kit.day(p.closedAt))}. Journals, receipts and postings dated in this period are blocked. Reopening needs a reason and approval.</span></div>` : ''}
+      ${p.state === 'Future' ? `<div class="banner info" style="margin-bottom:14px">${icon('calendar')}<span>${esc(p.name)} opens on ${esc(Kit.day(p.from))}. Nothing can be posted to it yet.</span></div>` : ''}
+      ${req ? `<div class="banner ${req.by === me ? 'warn' : 'info'}" style="margin-bottom:14px">${icon('stamp')}<div class="grow"><b>${esc(req.action)} requested by ${esc(req.by)}</b> · ${esc(Kit.when(req.at))}<div class="small">${esc(req.reason)}</div>${req.by === me ? '<div class="small">You raised this request. Another user must approve it (no self-approval).</div>' : ''}</div>
+        ${Fin.btn({ cls: 'sm danger', attrs: 'id="rqRj"', icon: 'x', label: 'Reject', gate: Fin.gate(OPT, 'approve', req) })}${Fin.btn({ cls: 'sm success', attrs: 'id="rqAp"', icon: 'check', label: 'Approve ' + req.action.toLowerCase(), gate: Fin.gate(OPT, 'approve', req) })}</div>` : ''}
+      <div class="grid g4" style="margin-bottom:14px">
+        ${Kit.kpi('Status', Kit.status(p.state === 'Open' ? 'Open period' : p.state), { icon: 'calendar-check' })}
+        ${Kit.kpi('Revenue', Fin.amt(p.state === 'Future' ? 0 : pl.rev).replace(/\.\d+$/, ''), { unit: 'KWD', icon: 'trending-up' })}
+        ${Kit.kpi('Net profit', Fin.amt(p.state === 'Future' ? 0 : pl.profit).replace(/\.\d+$/, ''), { unit: 'KWD', icon: 'scale' })}
+        ${Kit.kpi('Checklist', (checks.filter(c => c.ok).length + tasks.filter(t => t.done).length) + ' / ' + (checks.length + tasks.length), { icon: 'list-checks', foot: allOk ? 'Ready to close' : 'Items open' })}
+      </div>
+      <div class="grid g2">
+        <div class="card"><div class="card-head"><h3>${icon('cpu')} System checks</h3><div class="actions"><span class="small muted">Live from the ledger</span></div></div>
+          ${p.state === 'Future' ? `<div class="empty">${icon('calendar')}<b>Not open yet</b></div>` : checks.map(c => `<div class="chk">${icon(c.ok ? 'circle-check' : 'circle-x', c.ok ? 'ok' : 'bad')}<div class="grow"><b>${esc(c.label)}</b><div class="small muted">${esc(c.note)}</div></div>${c.ok ? '' : `<a class="btn xs" href="${R(c.href)}">Open</a>`}</div>`).join('')}</div>
+        <div class="card"><div class="card-head"><h3>${icon('clipboard-check')} Sign-offs</h3><div class="actions"><span class="small muted">${tasks.filter(t => t.done).length} of ${tasks.length}</span></div></div>
+          ${tasks.length ? tasks.map(t => `<label class="chk" style="cursor:${canTick ? 'pointer' : 'default'}"><input type="checkbox" data-t="${t.id}" ${t.done ? 'checked' : ''} ${canTick ? '' : 'disabled'} aria-label="${esc(t.label)}"><div class="grow"><b>${esc(t.label)}</b><div class="small muted">${t.done ? 'Signed off by ' + esc(t.by) + ' · ' + esc(Kit.when(t.at)) : 'Not signed off'}</div></div></label>`).join('') : `<div class="empty">${icon('calendar')}<b>No sign-offs yet</b></div>`}
+          ${p.state === 'Open' && !can(OPT, 'approve') ? `<div class="card-foot small muted">${icon('lock')} Needs Approve permission to sign off.</div>` : ''}</div>
+      </div>
+      <div class="card" style="margin-top:14px"><div class="card-head"><h3>${icon('history')} Close and reopen history</h3><div class="actions" id="act"></div></div>
+        ${hist.length ? `<div class="card-pad"><div class="timeline">${hist.map(r => `<div class="tl-item ${r.status === 'Approved' ? 'ok' : ''}"><b>${esc(r.action)} · ${Kit.status(r.status)}</b><div class="meta">Requested by ${esc(r.by)} · ${esc(Kit.when(r.at))}${r.approvedBy ? ' · ' + (r.status === 'Rejected' ? 'rejected' : 'approved') + ' by ' + esc(r.approvedBy) + ' · ' + esc(Kit.when(r.approvedAt)) : ''}</div><div class="small" style="margin-top:4px">${esc(r.reason)}${r.rejectReason ? ' · Rejected: ' + esc(r.rejectReason) : ''}</div></div>`).join('')}</div></div>` : `<div class="empty">${icon('history')}<b>No requests yet</b></div>`}</div>
+      ${Kit.phase2('Automatic bank feed reconciliation and foreign currency revaluation are 2nd phase. Bank reconciliation is signed off manually here.')}`;
+    // actions
+    const prevOpen = prev && prev.state !== 'Closed';
+    const closeG = !can(OPT, 'approve') ? Fin.gate(OPT, 'approve') : req ? { ok: false, why: 'A request is already waiting' } : prevOpen ? { ok: false, why: `Close ${prev.name} first` } : !allOk ? { ok: false, why: 'Complete every check and sign-off first' } : { ok: true };
+    const reopenG = !can(OPT, 'approve') ? Fin.gate(OPT, 'approve') : req ? { ok: false, why: 'A request is already waiting' } : next && next.state === 'Closed' ? { ok: false, why: `Reopen ${next.name} first` } : { ok: true };
+    $('#act').innerHTML = p.state === 'Open' ? Fin.btn({ cls: 'sm primary', attrs: 'id="aClose"', icon: 'lock', label: 'Request close', gate: closeG }) : p.state === 'Closed' ? Fin.btn({ cls: 'sm danger', attrs: 'id="aOpen"', icon: 'lock-open', label: 'Request reopen', gate: reopenG }) : '';
+    const on = (q, f) => { const b = $(q); if (b) b.addEventListener('click', f); };
+    $$('[data-t]').forEach(c => c.addEventListener('change', () => {
+      const t = db.financeCloseTasks.find(x => x.id === c.dataset.t);
+      Object.assign(t, { done: c.checked, by: c.checked ? me : '', at: c.checked ? nowStamp() : '' }); save();
+      audit(c.checked ? 'Close task signed off' : 'Close task reopened', 'Period close', { id: p.code, label: p.name }, [[t.label, c.checked ? 'Open' : 'Done', c.checked ? 'Done' : 'Open']]);
+      drawBody(); drawList();
+    }));
+    on('#aClose', () => confirm({ title: 'Request close of ' + p.name + '?', tone: 'primary', icon: 'lock', body: 'A second user approves the close. After that, posting to this period is locked.', reason: true, confirm: 'Send request', onConfirm: (reason) => {
+      db.financeCloseRequests.push({ id: uid('cr'), period: p.code, action: 'Close', reason, status: 'Pending approval', by: me, at: nowStamp(), approvedBy: '', approvedAt: '' }); save();
+      audit('Period close requested', 'Period', { id: p.code, label: p.name }, [], { reason }); toast('Close request sent for approval'); drawBody(); drawList();
+    } }));
+    on('#aOpen', () => confirm({ title: 'Request reopen of ' + p.name + '?', body: 'Reopening allows postings to a period that was reported. Give a clear reason. A second user approves it.', impact: ['Statements already issued for this period may change', 'The period must be closed again after the correction'], reason: true, confirm: 'Send request', onConfirm: (reason) => {
+      db.financeCloseRequests.push({ id: uid('cr'), period: p.code, action: 'Reopen', reason, status: 'Pending approval', by: me, at: nowStamp(), approvedBy: '', approvedAt: '' }); save();
+      audit('Period reopen requested', 'Period', { id: p.code, label: p.name }, [], { reason }); toast('Reopen request sent for approval'); drawBody(); drawList();
+    } }));
+    on('#rqAp', () => confirm({ title: `Approve ${req.action.toLowerCase()} of ${p.name}?`, tone: req.action === 'Close' ? 'primary' : 'danger', icon: req.action === 'Close' ? 'lock' : 'lock-open', body: req.action === 'Close' ? 'Posting to this period is locked from now on.' : 'Posting to this period is allowed again until it is closed.', confirm: 'Approve', onConfirm: () => {
+      if (req.action === 'Close' && !(autoChecks(p).every(c => c.ok) && db.financeCloseTasks.filter(t => t.period === p.code).every(t => t.done))) { toast('Checks are no longer complete. Reject the request and fix them first.', 'err'); return; }
+      const before = p.state;
+      Object.assign(req, { status: 'Approved', approvedBy: me, approvedAt: nowStamp() });
+      if (req.action === 'Close') Object.assign(p, { state: 'Closed', closedBy: me, closedAt: nowStamp() }); else Object.assign(p, { state: 'Open', reopenedBy: me, reopenedAt: nowStamp() });
+      save(); audit('Period ' + (req.action === 'Close' ? 'closed' : 'reopened'), 'Period', { id: p.code, label: p.name }, [['State', before, p.state]], { reason: req.reason });
+      toast(p.name + (req.action === 'Close' ? ' closed' : ' reopened')); drawBody(); drawList();
+    } }));
+    on('#rqRj', () => confirm({ title: 'Reject the request?', reason: true, confirm: 'Reject', onConfirm: (reason) => { Object.assign(req, { status: 'Rejected', approvedBy: me, approvedAt: nowStamp(), rejectReason: reason }); save(); audit('Period request rejected', 'Period', { id: p.code, label: p.name }, [['Request', req.action, 'Rejected']], { reason }); toast('Rejected'); drawBody(); drawList(); } }));
+  }
+  drawList(); drawBody();
+})();
+</script>
+</body>
+</html>

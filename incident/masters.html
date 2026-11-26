@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Incident Configuration · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-incident.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, $ } = UI;
+  if (!UI.page({ opt: 'incident.masters', title: 'Incident Configuration', subtitle: 'Categories, types, notification and escalation, status configuration and Incident Management Team access (SOW V4 Module 8).' })) return;
+  const sev = ['Low', 'Medium', 'High', 'Critical'];
+  const users = db.users.filter(u => u.status === 'Active').map(u => [u.id, u.displayName]);
+  $('#page').innerHTML = `<div style="margin-bottom:14px">${Kit.phase2('Automated escalation timers and SLA management, CAPA management, trend and root cause analysis, and integration with Quality, Risk or HR systems are SOW V4 2nd phase scope.')}</div><div id="m"></div>`;
+  Kit.masters($('#m'), { opt: 'incident.masters', defs: [
+    { id: 'cat', title: 'Incident categories', icon: 'layers', key: 'incidentCategories', columns: ['code', 'name', 'defaultSeverity'],
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Name', req: true }, { key: 'defaultSeverity', label: 'Default severity', type: 'select', options: sev, req: true }, { key: 'description', label: 'Description', type: 'textarea' }] },
+    { id: 'typ', title: 'Incident types', icon: 'tags', key: 'incidentTypes', columns: ['code', 'name', 'categoryCode', 'defaultSeverity'],
+      note: 'Each type belongs to a category. The reporter picks the type on the incident form.',
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Name', req: true }, { key: 'categoryCode', label: 'Category', type: 'select', options: db.incidentCategories.map(c => [c.code, c.name]), req: true }, { key: 'defaultSeverity', label: 'Default severity', type: 'select', options: sev, req: true }] },
+    { id: 'esc', title: 'Notification and escalation', icon: 'bell-ring', key: 'incidentEscalation', columns: ['code', 'name', 'trigger', 'notify'],
+      note: 'Who is told, when and how. Hours apply to escalation rules; automatic timers are 2nd phase, until then the dashboard ageing view is used.',
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Rule name', req: true }, { key: 'trigger', label: 'Trigger', type: 'select', options: ['On submit', 'On assignment', 'On status change', 'On closure', 'Unassigned', 'Open too long'], req: true },
+        { key: 'categories', label: 'Categories (codes or All)', req: true, default: 'All' }, { key: 'severities', label: 'Severities (or All)', req: true, default: 'All' }, { key: 'notify', label: 'Notify', req: true },
+        { key: 'channel', label: 'Channel', type: 'select', options: ['In-app', 'In-app and email', 'In-app, email and SMS', 'Email'], req: true }, { key: 'afterHours', label: 'After (hours)', type: 'number', default: 0 }] },
+    { id: 'sts', title: 'Incident status configuration', icon: 'list-checks', key: 'incidentStatuses', columns: ['code', 'name', 'seq', 'allowedNext'],
+      note: 'SOW V4 workflow: Open, In Progress, Hold, Closed. Allowed next statuses drive the buttons on the case screen.',
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Status name', type: 'select', options: ['Open', 'In Progress', 'Hold', 'Closed'], req: true }, { key: 'seq', label: 'Order', type: 'number', req: true },
+        { key: 'allowedNext', label: 'Allowed next statuses (comma separated)', req: true, full: true }, { key: 'reasonRequired', label: 'Reason required', type: 'check' }, { key: 'outcomeRequired', label: 'Outcome required', type: 'check' }, { key: 'description', label: 'Description', type: 'textarea' }] },
+    { id: 'imt', title: 'User roles and access (Incident Management Team)', icon: 'users-round', key: 'incidentTeam', columns: ['code', 'name', 'role', 'scope'],
+      note: 'All staff can report. Only team members can review, categorize, investigate and close. Anonymous reports never show the reporter to anyone.',
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'userId', label: 'User', type: 'select', options: users, req: true }, { key: 'name', label: 'Display name', req: true },
+        { key: 'role', label: 'Team role', type: 'select', options: ['IMT Lead', 'Quality Officer', 'Investigator', 'Clinical Reviewer'], req: true }, { key: 'scope', label: 'Category scope', req: true, default: 'All categories', full: true },
+        { key: 'canAssign', label: 'Can categorize and assign', type: 'check' }, { key: 'canClose', label: 'Can close and reopen', type: 'check' }, { key: 'notifyNew', label: 'Receives new incident notifications', type: 'check' }] },
+  ] });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>e-Prescriptions · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-emr.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/emr.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, me, nowStamp } = UI;
+  const OPT = 'emr.consult.rx';
+  if (!UI.page({ opt: OPT, title: 'e-Prescriptions', subtitle: 'Outpatient and discharge prescriptions sent to the pharmacy. View, print or cancel before dispensing.',
+    actions: `<button class="btn primary" id="new" ${can(OPT, 'add') ? '' : 'disabled title="Needs Add permission"'}>${icon('plus')} New prescription</button>` })) return;
+
+  function rxList() {
+    const g = Kit.groupBy(db.orders.filter(o => o.type === 'med' && o.rxNo), o => o.rxNo);
+    return Object.entries(g).map(([rxNo, lines]) => {
+      const live = lines.filter(l => l.status !== 'Cancelled');
+      const st = !live.length ? 'Cancelled' : live.every(l => l.status === 'Dispensed') ? 'Dispensed' : live.some(l => l.status === 'Dispensed') ? 'Partially dispensed' : live.some(l => l.status === 'Pending verification') ? 'Pending verification' : live[0].status;
+      return { rxNo, lines, live, status: st, patientId: lines[0].patientId, encounterId: lines[0].encounterId, by: lines[0].by, at: lines[0].orderedAt, cdss: lines.some(l => l.cdss), amount: Kit.sumBy(live, l => (Kit.item(l.itemId) || {}).price * (l.qty || 0)) };
+    }).sort((a, b) => String(b.at).localeCompare(String(a.at)));
+  }
+  let tab = 'all';
+  const T = { all: () => true, pend: r => r.status === 'Pending verification', ver: r => r.status === 'Verified', disp: r => /Dispensed/.test(r.status), cx: r => r.status === 'Cancelled' };
+  const all = rxList();
+  $('#page').innerHTML = `<div class="grid g4" style="margin-bottom:16px">
+      ${Kit.kpi('Prescriptions today', all.filter(r => String(r.at).startsWith(db.TODAY)).length, { icon: 'pill', foot: Kit.sumBy(all.filter(r => String(r.at).startsWith(db.TODAY)), r => r.live.length) + ' medicine lines' })}
+      ${Kit.kpi('Waiting for pharmacy', all.filter(T.pend).length + all.filter(T.ver).length, { icon: 'clock', foot: all.filter(T.pend).length + ' to verify · ' + all.filter(T.ver).length + ' to dispense' })}
+      ${Kit.kpi('Dispensed', all.filter(T.disp).length, { icon: 'package-check', foot: 'All dates' })}
+      ${Kit.kpi('With allergy or duplicate override', all.filter(r => r.cdss).length, { icon: 'shield-alert', foot: 'CDSS alerts overridden with a reason' })}
+    </div><div id="tabs" style="margin-bottom:12px"></div><div id="tbl"></div>`;
+  const drawTabs = () => { const l = rxList(); Kit.tabs($('#tabs'), [['all', 'All'], ['pend', 'Pending verification'], ['ver', 'Verified'], ['disp', 'Dispensed'], ['cx', 'Cancelled']].map(([id, label]) => ({ id, label, count: l.filter(T[id]).length })), tab, (t) => { tab = t; tb.redraw(); }); };
+  drawTabs();
+  const tb = UI.table($('#tbl'), {
+    columns: [
+      { label: 'Prescription', sort: r => r.rxNo, render: r => `<span class="mono b">${esc(r.rxNo)}</span>${r.cdss ? '<div><span class="badge b-warn nodot">CDSS override</span></div>' : ''}` },
+      { label: 'Patient', sort: r => Kit.ptName(r.patientId), render: r => Kit.patientCell(Kit.pt(r.patientId)) },
+      { label: 'Medicines', render: r => `<div class="small">${r.lines.map(l => `<div class="${l.status === 'Cancelled' ? 'mute' : ''}" style="${l.status === 'Cancelled' ? 'text-decoration:line-through' : ''}">${esc(l.name)} · ${esc(l.frequency)}</div>`).join('')}</div>` },
+      { label: 'Doctor', sort: r => Kit.docName(r.by), render: r => `<span class="small">${esc(Kit.docName(r.by))}</span>` },
+      { label: 'Date', sort: r => r.at, render: r => `<span class="small">${Kit.when(r.at)}</span>` },
+      { label: 'Value', sort: r => r.amount, render: r => `<span class="num small">${Kit.money(r.amount)}</span>` },
+      { label: 'Status', sort: r => r.status, render: r => Kit.status(r.status, r.status === 'Partially dispensed' ? 'info' : undefined) },
+      { label: '', cls: 'actions', render: r => `<button class="btn xs" data-pr="${esc(r.rxNo)}" ${can(OPT, 'print') ? '' : 'disabled title="Needs Print permission"'}>${icon('printer')} Print</button>` },
+    ],
+    rows: () => rxList().filter(T[tab]), search: r => [r.rxNo, Kit.ptName(r.patientId), (Kit.pt(r.patientId) || {}).mrn, r.lines.map(l => l.name).join(' ')].join(' '), searchPlaceholder: 'Rx number, patient, MRN or medicine',
+    filters: [{ label: 'Doctor', options: EMR.clinicalDoctors().map(d => [d.id, d.name]), test: (r, v) => r.by === v }, { label: 'Date', options: [['today', 'Today'], ['week', 'Last 7 days']], test: (r, v) => v === 'today' ? String(r.at).startsWith(db.TODAY) : String(r.at) >= Kit.addDays(db.TODAY, -7) }],
+    onRow: (r) => view(r.rxNo), pageSize: 10, empty: 'No prescriptions in this list',
+    afterDraw: (t) => $$('[data-pr]', t).forEach(b => b.addEventListener('click', () => EMR.printRx(b.dataset.pr))),
+  });
+  function view(rxNo) {
+    const r = rxList().find(x => x.rxNo === rxNo); if (!r) return;
+    const p = Kit.pt(r.patientId), e = Kit.enc(r.encounterId) || {};
+    const canCx = r.live.length && !r.live.some(l => l.status === 'Dispensed');
+    const d = UI.drawer({ title: 'Prescription ' + rxNo, sub: `${Kit.when(r.at)} · ${esc(Kit.docName(r.by))} · ${esc(e.no || '')}`, wide: true,
+      body: `${Kit.patientBanner(p, e)}
+        <div class="card"><table class="tbl compact"><thead><tr><th>Medicine</th><th>Dose</th><th>Route</th><th>Frequency</th><th>Days</th><th>Qty</th><th>Status</th></tr></thead><tbody>${r.lines.map(l => `<tr><td><b>${esc(l.name)}</b><div class="xs mute">${esc((Kit.item(l.itemId) || {}).brand || '')} · ${esc(l.code)}</div>${l.cdss ? l.cdss.map(a => `<div class="xs" style="color:var(--warning);font-weight:700">${icon('shield-alert')} ${esc(a.text)} Override: ${esc(a.override)}</div>`).join('') : ''}${l.cancelReason ? `<div class="xs flag-h">Cancelled: ${esc(l.cancelReason)}</div>` : ''}</td><td>${esc(l.dose)}</td><td>${esc(l.route)}</td><td>${esc(l.frequency)}</td><td>${esc(l.days)}</td><td>${esc(l.qty)}</td><td>${Kit.status(l.status)}</td></tr>`).join('')}</tbody></table></div>
+        ${!canCx && r.live.length ? `<div class="banner info" style="margin-top:12px">${icon('info')}<span>Part of this prescription has been dispensed. Ask the pharmacy to process a return instead of cancelling.</span></div>` : ''}
+        <div style="margin-top:12px">${Kit.phase2('Drug-drug interaction checking is 2nd phase scope.')}</div>`,
+      foot: `${canCx ? `<button class="btn danger" id="cx" ${can(OPT, 'cancel') ? '' : 'disabled title="Needs Cancel permission"'}>Cancel prescription</button>` : ''}<span class="grow"></span><button class="btn" data-close>Close</button><button class="btn primary" id="pr" ${can(OPT, 'print') ? '' : 'disabled title="Needs Print permission"'}>${icon('printer')} Print</button>` });
+    $('#pr', d.el).addEventListener('click', () => EMR.printRx(rxNo));
+    const cx = $('#cx', d.el); if (cx) cx.addEventListener('click', () => { d.close(); UI.confirm({ title: 'Cancel prescription ' + rxNo + '?', body: `${r.live.length} medicine line(s) for <b>${esc(p.name)}</b> are withdrawn from the pharmacy queue.`, reason: true, confirm: 'Cancel prescription',
+      onConfirm: (reason) => { r.live.forEach(l => { l.status = 'Cancelled'; l.cancelReason = reason; l.cancelledBy = me().displayName; l.cancelledAt = nowStamp(); }); save();
+        audit('e-Prescription cancelled', 'Prescription', { id: rxNo, label: rxNo + ' · ' + p.name }, [['Status', r.status, 'Cancelled']], { reason }); toast('Prescription cancelled'); drawTabs(); tb.redraw(); } }); });
+  }
+  $('#new').addEventListener('click', () => {
+    const live = (pid) => db.encounters.filter(e => e.patientId === pid && ((e.type === 'IPD' && e.status !== 'Discharged') || (e.start.startsWith(db.TODAY) && !/Booked|Discharged/.test(e.status))));
+    Kit.pickPatient({ title: 'New prescription: choose patient', filter: (x) => live(x.id).length > 0, onPick: (x) => { location.href = R('emr/console.html?enc=' + live(x.id)[0].id + '&tab=rx'); } });
+  });
+  const pre = UI.param('rx'); if (pre) view(pre);
+})();
+</script>
+</body>
+</html>

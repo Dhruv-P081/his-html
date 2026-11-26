@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Report an Incident · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<style>
+  .ppl-row { display: grid; grid-template-columns: 150px minmax(0, 1.4fr) minmax(0, 1fr) auto; gap: 10px; align-items: end; padding: 10px 0; border-bottom: 1px solid var(--line); }
+  .ppl-row:last-child { border-bottom: 0; }
+  .ref-big { font-size: 30px; font-weight: 800; letter-spacing: .02em; font-family: ui-monospace, Menlo, monospace; }
+  @media (max-width: 900px) { .ppl-row { grid-template-columns: 1fr; } }
+</style>
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-incident.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/incident.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, field, showErrors, fmtDate } = UI;
+  if (!UI.page({ opt: 'incident.rep.new', title: 'Report an Incident', subtitle: 'Any staff member can report. You may report anonymously. Reports go to the Incident Management Team.' })) return;
+  const T = Inc.T;
+  const canAdd = can('incident.rep.new', 'add');
+  const ctx = UI.session().ctx;
+  const u = UI.me();
+  const st = { anonymous: false, people: [], files: [] };
+  const depts = db.departments.filter(d => d.companyId === ctx.companyId && d.status === 'Active');
+
+  function form() {
+    $('#page').innerHTML = `
+      <div class="banner info" style="margin-bottom:14px">${icon('shield-alert')}<span>Use this form for any event that caused or could have caused harm to a patient, visitor or staff member, or damage to property. In an emergency, act first and report afterwards.</span></div>
+      <div class="card">
+        <div class="card-head"><h3>${icon('user-round')} Reporter</h3><div class="actions"><label class="row" style="gap:10px;cursor:pointer"><span class="small b">Submit anonymously</span><span class="switch"><input type="checkbox" id="anon" aria-label="Submit anonymously"><span></span></span></label></div></div>
+        <div class="card-pad" id="repBox"></div>
+        <div class="card-head" style="border-top:1px solid var(--line)"><h3>${icon('triangle-alert')} What happened</h3></div>
+        <div class="card-pad"><div class="err-summary hidden" style="margin-bottom:12px"></div><div class="form-grid c3">
+          ${field({ id: 'fCat', label: 'Category', type: 'select', req: true, options: db.incidentCategories.filter(c => c.status !== 'Inactive').map(c => [c.code, c.name]) })}
+          <div class="field"><label for="fTyp">Incident type<span class="req">*</span></label><select class="input" id="fTyp" disabled><option value="">Select category first</option></select><div class="err hidden" data-err="fTyp"></div></div>
+          ${field({ id: 'fSev', label: 'How serious is it?', type: 'select', options: Inc.SEVERITIES.map(x => [x, x]), hint: 'Your view. The team confirms the severity.' })}
+          ${field({ id: 'fDate', label: 'Date of incident', type: 'date', req: true, value: T, attrs: `max="${T}"` })}
+          ${field({ id: 'fTime', label: 'Time of incident', type: 'time', req: true })}
+          ${field({ id: 'fDept', label: 'Department', type: 'select', req: true, value: ctx.deptId, options: depts.map(d => [d.id, `${d.name} (${(UI.L.branch(d.branchId) || {}).code || ''})`]) })}
+          ${field({ id: 'fLoc', label: 'Exact location', req: true, full: true, max: 120, placeholder: 'For example: Ward 3, room 304, near the bathroom' })}
+          ${field({ id: 'fDesc', label: 'Description', type: 'textarea', req: true, full: true, max: 2000, hint: 'Facts only: what happened, in order. At least 20 characters. Do not include opinions or blame.' })}
+          ${field({ id: 'fAct', label: 'Immediate action taken', type: 'textarea', req: true, full: true, max: 1000, hint: 'What was done straight away to keep people safe.' })}
+        </div></div>
+        <div class="card-head" style="border-top:1px solid var(--line)"><h3>${icon('users-round')} People involved</h3><div class="actions"><button class="btn sm" id="addP">${icon('user-plus')} Add person</button></div></div>
+        <div class="card-pad" id="pplBox"></div>
+        <div class="card-head" style="border-top:1px solid var(--line)"><h3>${icon('paperclip')} Attachments</h3><div class="actions"><label class="btn sm" for="fFiles" style="cursor:pointer">${icon('upload')} Add files</label><input type="file" id="fFiles" multiple class="hidden" accept=".jpg,.jpeg,.png,.pdf,.doc,.docx"></div></div>
+        <div class="card-pad" id="fileBox"></div>
+        <div class="sticky-foot"><span class="small muted grow" id="valHint"></span><button class="btn" id="clr">Clear</button><button class="btn primary" id="go" disabled ${canAdd ? '' : 'title="Needs Add permission"'}>${icon('send')} Submit report</button></div>
+      </div>`;
+    drawReporter(); drawPeople(); drawFiles(); wire();
+  }
+  function drawReporter() {
+    $('#repBox').innerHTML = st.anonymous
+      ? `<div class="banner ok">${icon('eye-off')}<span><b>Anonymous report.</b> Your name, user account and contact details are not stored with this report and are not shown to anyone, including the Incident Management Team. Keep the reference number to follow up.</span></div>`
+      : `<div class="form-grid c3">${field({ id: 'rName', label: 'Reported by', value: u.displayName, readonly: true })}${field({ id: 'rDept', label: 'Your department', value: UI.L.dName(ctx.deptId), readonly: true })}${field({ id: 'rCt', label: 'Contact (extension or mobile)', max: 40, placeholder: 'Optional', value: st.contact || '' })}</div>`;
+    const rc = $('#rCt'); rc && rc.addEventListener('input', (e) => { st.contact = e.target.value; });
+  }
+  function drawPeople() {
+    const box = $('#pplBox');
+    box.innerHTML = st.people.length ? st.people.map((p, i) => `<div class="ppl-row" data-i="${i}">
+        <div class="field"><label for="pk${i}">Person</label><select class="input" id="pk${i}" data-k>${['Patient', 'Staff', 'Visitor', 'Other'].map(k => `<option ${k === p.kind ? 'selected' : ''}>${k}</option>`).join('')}</select></div>
+        <div class="field"><label for="pn${i}">Name</label>${p.kind === 'Patient' ? `<div class="row" style="gap:6px"><input class="input" id="pn${i}" value="${esc(p.patientId ? p.name + ' · ' + ((Kit.pt(p.patientId) || {}).mrn || '') : '')}" readonly placeholder="Find the patient"><button class="btn sm" type="button" data-find>${icon('search')} Find</button></div>` : `<input class="input" id="pn${i}" data-n value="${esc(p.name)}" maxlength="80" placeholder="${p.kind === 'Visitor' ? 'Name if known' : 'Full name'}">`}</div>
+        <div class="field"><label for="pr${i}">Role or involvement</label><input class="input" id="pr${i}" data-r value="${esc(p.role)}" maxlength="80" placeholder="${p.kind === 'Staff' ? 'For example: staff nurse' : 'For example: patient affected'}"></div>
+        <button class="btn sm icon danger" type="button" data-rm aria-label="Remove person">${icon('trash-2')}</button></div>`).join('')
+      : `<div class="small muted">No people added. Add the patient, staff or visitors involved, if any.</div>`;
+    $$('.ppl-row', box).forEach(r => {
+      const p = st.people[+r.dataset.i];
+      $('[data-k]', r).addEventListener('change', (e) => { p.kind = e.target.value; p.patientId = ''; p.name = ''; drawPeople(); validate(); });
+      const n = $('[data-n]', r); n && n.addEventListener('input', (e) => { p.name = e.target.value; validate(); });
+      $('[data-r]', r).addEventListener('input', (e) => { p.role = e.target.value; });
+      const f = $('[data-find]', r); f && f.addEventListener('click', () => Kit.pickPatient({ title: 'Find the patient involved', onPick: (pt) => { if (!pt) return; p.patientId = pt.id; p.name = pt.name; drawPeople(); validate(); } }));
+      $('[data-rm]', r).addEventListener('click', () => { st.people.splice(+r.dataset.i, 1); drawPeople(); validate(); });
+    });
+  }
+  function drawFiles() {
+    $('#fileBox').innerHTML = st.files.length ? `<div class="chips">${st.files.map((f, i) => `<span class="chip">${icon('paperclip')} ${esc(f.name)} <span class="xs muted">${esc(f.size)}</span><button type="button" data-fx="${i}" aria-label="Remove ${esc(f.name)}">${icon('x')}</button></span>`).join('')}</div>`
+      : `<div class="small muted">Photos, statements or documents. JPG, PNG, PDF or Word, up to 10 MB each.</div>`;
+    $$('[data-fx]', $('#fileBox')).forEach(b => b.addEventListener('click', () => { st.files.splice(+b.dataset.fx, 1); drawFiles(); }));
+  }
+  function errors() {
+    const e = {};
+    const d = $('#fDate').value, t = $('#fTime').value;
+    if (d && d > T) e.fDate = 'The date cannot be in the future.';
+    if ($('#fDesc').value.trim() && $('#fDesc').value.trim().length < 20) e.fDesc = 'Describe what happened in at least 20 characters.';
+    return e;
+  }
+  function validate() {
+    const missing = [];
+    if (!$('#fCat').value) missing.push('category'); if (!$('#fTyp').value) missing.push('type');
+    if (!$('#fDate').value) missing.push('date'); if (!$('#fTime').value) missing.push('time');
+    if (!$('#fDept').value) missing.push('department'); if ($('#fLoc').value.trim().length < 3) missing.push('location');
+    if ($('#fDesc').value.trim().length < 20) missing.push('description'); if ($('#fAct').value.trim().length < 3) missing.push('immediate action');
+    if (st.people.some(p => p.kind === 'Patient' ? !p.patientId : !p.name.trim() && p.kind !== 'Visitor')) missing.push('people involved');
+    $('#valHint').textContent = missing.length ? 'Still needed: ' + missing.join(', ') + '.' : 'Ready to submit.';
+    $('#go').disabled = !canAdd || missing.length > 0;
+  }
+  function wire() {
+    $('#anon').addEventListener('change', (e) => { st.anonymous = e.target.checked; drawReporter(); });
+    $('#fCat').addEventListener('change', (e) => {
+      const ts = db.incidentTypes.filter(t => t.categoryCode === e.target.value && t.status !== 'Inactive');
+      $('#fTyp').disabled = !ts.length;
+      $('#fTyp').innerHTML = `<option value="">${ts.length ? 'Select type' : 'Select category first'}</option>` + ts.map(t => `<option value="${t.code}">${esc(t.name)}</option>`).join('');
+      const c = Inc.cat(e.target.value); if (c && !$('#fSev').value) $('#fSev').value = c.defaultSeverity;
+      validate();
+    });
+    $('#fTyp').addEventListener('change', (e) => { const t = Inc.typ(e.target.value); if (t) $('#fSev').value = t.defaultSeverity; validate(); });
+    $$('#page input, #page select, #page textarea').forEach(i => { i.addEventListener('input', validate); i.addEventListener('change', validate); });
+    $('#addP').addEventListener('click', () => { st.people.push({ kind: st.people.length ? 'Staff' : 'Patient', patientId: '', name: '', role: '' }); drawPeople(); validate(); });
+    $('#fFiles').addEventListener('change', (e) => {
+      Array.from(e.target.files || []).forEach(f => { if (f.size > 10 * 1024 * 1024) { toast(f.name + ' is larger than 10 MB', 'err'); return; } st.files.push({ name: f.name, size: Math.max(1, Math.round(f.size / 1024)) + ' KB' }); });
+      e.target.value = ''; drawFiles();
+    });
+    $('#clr').addEventListener('click', () => UI.confirm({ title: 'Clear the form?', body: 'Everything you entered is removed.', confirm: 'Clear', onConfirm: () => { st.people = []; st.files = []; st.anonymous = false; st.contact = ''; form(); } }));
+    $('#go').addEventListener('click', submit);
+    validate();
+  }
+  function nextRef() { const max = db.incidentCases.reduce((m, c) => Math.max(m, parseInt(String(c.no).split('-').pop(), 10) || 0), 0); return 'INC-26-' + String(max + 1).padStart(4, '0'); }
+  function submit() {
+    if (!showErrors($('#page'), errors())) { window.scrollTo(0, 0); return; }
+    const now = Inc.stamp();
+    const typ = Inc.typ($('#fTyp').value);
+    const sev = $('#fSev').value || typ.defaultSeverity;
+    const c = { id: UI.uid('inc'), no: nextRef(), reportedAt: now, occurredAt: $('#fDate').value + ' ' + $('#fTime').value, categoryCode: $('#fCat').value, typeCode: typ.code, severity: sev,
+      reporterCategoryCode: $('#fCat').value, reporterSeverity: $('#fSev').value, deptId: $('#fDept').value, location: $('#fLoc').value.trim(), branchId: (UI.L.dept($('#fDept').value) || {}).branchId || ctx.branchId,
+      anonymous: st.anonymous, reporterUserId: st.anonymous ? '' : u.id, reporterName: st.anonymous ? '' : u.displayName, reporterContact: st.anonymous ? '' : (st.contact || '').trim(),
+      people: st.people.map(p => ({ kind: p.kind, patientId: p.patientId || '', name: p.name.trim() || (p.kind === 'Visitor' ? 'Visitor (name not given)' : ''), role: p.role.trim() })),
+      description: $('#fDesc').value.trim(), immediateAction: $('#fAct').value.trim(),
+      attachments: st.files.map(f => ({ name: f.name, size: f.size, by: st.anonymous ? 'Anonymous reporter' : u.displayName, at: now })),
+      status: 'Open', reviewed: false, categorizedBy: '', categorizedAt: '', assigned: [], enquiries: [], decisions: [], actions: [], outcome: '', closureSummary: '', closedAt: '', closedBy: '', holdReason: '', history: [] };
+    const rules = db.incidentEscalation.filter(r => r.status !== 'Inactive' && r.trigger === 'On submit' && (r.categories === 'All' || r.categories.split(',').map(x => x.trim()).includes(c.categoryCode)) && (r.severities === 'All' || r.severities.split(',').map(x => x.trim()).includes(sev)));
+    c.history.push({ at: now, by: st.anonymous ? 'Anonymous reporter' : u.displayName, action: st.anonymous ? 'Reported anonymously' : 'Reported', from: '', to: 'Open', reason: '' });
+    c.history.push({ at: now, by: 'System', action: 'Routed to Incident Management Team', from: '', to: '', reason: 'Notification rule ' + rules.map(r => r.code).join(' and ') });
+    db.incidentCases.unshift(c); save();
+    // Anonymous: the audit event carries no user identity.
+    audit('Incident reported', 'Incident', { id: c.id, label: c.no }, [['Status', '', 'Open'], ['Category', '', Inc.catName(c.categoryCode)], ['Severity', '', sev]], st.anonymous ? { actor: 'Anonymous reporter', source: 'Web' } : {});
+    done(c, rules);
+  }
+  function done(c, rules) {
+    const canReg = can('incident.case', 'view') && Inc.isMember();
+    $('#page').innerHTML = `<div class="card" style="max-width:760px;margin:0 auto"><div class="card-pad" style="text-align:center;padding:36px 28px">
+        <div class="m-ico b-ok" style="margin:0 auto 12px;width:56px;height:56px;border-radius:16px;display:grid;place-items:center">${icon('circle-check')}</div>
+        <h2 style="margin:0 0 6px">Report submitted</h2>
+        <div class="muted">Your incident has been routed to the Incident Management Team for review.</div>
+        <div style="margin:20px 0 6px" class="small muted">Reference number</div><div class="ref-big" id="refNo">${esc(c.no)}</div>
+        <div class="small muted" style="margin-top:4px">Submitted ${esc(fmtDate(c.reportedAt))}${c.anonymous ? ' · anonymous' : ''}</div>
+        ${c.anonymous ? `<div class="banner warn" style="margin-top:18px;text-align:start">${icon('eye-off')}<span>This report is anonymous. Your identity was not stored. Write down the reference number; it is the only way to ask about this report.</span></div>` : ''}
+      </div>
+      <div class="card-pad" style="border-top:1px solid var(--line)"><div class="small b" style="margin-bottom:8px">Notified</div>
+        <div class="list-rows">${rules.map(r => `<div>${icon('bell-ring', 'mute')}<span class="grow"><b class="small">${esc(r.notify)}</b><div class="xs muted">${esc(r.name)} · ${esc(r.channel)}</div></span><span class="tag mono">${esc(r.code)}</span></div>`).join('')}</div></div>
+      <div class="sticky-foot"><button class="btn" id="pr" ${can('incident.register', 'print') || can('incident.rep.new', 'view') ? '' : 'disabled'}>${icon('printer')} Print acknowledgement</button>${canReg ? `<a class="btn" href="${R('incident/case.html?id=' + c.id)}">${icon('file-search')} Open case</a>` : ''}<button class="btn primary" id="again">${icon('file-plus')} Report another</button></div></div>`;
+    $('#again').addEventListener('click', () => { st.people = []; st.files = []; st.anonymous = false; st.contact = ''; form(); window.scrollTo(0, 0); });
+    $('#pr').addEventListener('click', () => Kit.printDoc({ title: 'Incident report acknowledgement', sub: 'Incident Management',
+      html: `<table><tbody><tr><th>Reference</th><td><b>${esc(c.no)}</b></td></tr><tr><th>Submitted</th><td>${esc(fmtDate(c.reportedAt))}</td></tr><tr><th>Reported by</th><td>${c.anonymous ? 'Anonymous' : esc(c.reporterName)}</td></tr>
+        <tr><th>Category</th><td>${esc(Inc.catName(c.categoryCode))} · ${esc(Inc.typeName(c.typeCode))}</td></tr><tr><th>Occurred</th><td>${esc(fmtDate(c.occurredAt))}, ${esc(c.location)}</td></tr><tr><th>Status</th><td>Open, routed to the Incident Management Team</td></tr></tbody></table>
+        <p style="margin-top:14px;font-size:11.5px">Quote the reference number for any follow-up. Reports are handled in confidence.</p>` }));
+    toast('Report ' + c.no + ' submitted');
+  }
+  form();
+})();
+</script>
+</body>
+</html>

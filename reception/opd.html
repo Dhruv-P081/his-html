@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OPD visits · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-reception.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/reception.js"></script>
+<style>#q td:nth-child(1), #q td:nth-child(5), #q td:nth-child(6) { white-space: nowrap; } #q td.actions { white-space: normal; min-width: 96px; } #q td.actions .btn { margin: 2px 0; } #q td:nth-child(2) { min-width: 200px; }</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, fmtDate, confirm } = UI;
+  const Rc = window.Reception;
+  const OPT = 'reception.visit.opd';
+  if (!UI.page({ opt: OPT, title: 'OPD registration and queue', subtitle: 'Create visits, collect the consultation fee, print tokens and track the clinic queue for ' + fmtDate(db.TODAY) + '.',
+    actions: `<a class="btn" href="${R('reception/cashier.html')}">${icon('banknote')} Cashier</a><button class="btn primary" id="newV" ${Rc.gate(OPT, 'add')}>${icon('clipboard-plus')} New OPD visit</button>` })) return;
+  const T = db.TODAY;
+  const TABS = [['all', 'All', null], ['booked', 'Booked', ['Booked']], ['wait', 'Waiting', ['Checked in', 'Waiting for doctor']], ['cons', 'In consultation', ['In consultation']], ['done', 'Completed', ['Completed']], ['cx', 'Cancelled', ['Cancelled', 'No-show']]];
+  let tab = UI.param('tab') || 'wait';
+  const today = () => db.encounters.filter(e => e.type === 'OPD' && e.start.startsWith(T));
+  const inv = (e) => db.invoices.find(i => i.encounterId === e.id);
+  const waitOf = (e) => /Checked in|Waiting/.test(e.status) ? Rc.mins(Rc.qStart(e)) : e.calledAt ? Rc.mins(Rc.qStart(e), e.calledAt) : null;
+  const tatOf = (e) => e.status === 'Completed' && e.end ? Rc.mins(e.checkedInAt || e.start, e.end) : null;
+  $('#page').innerHTML = `<div class="grid g4" style="margin-bottom:16px" id="kpi"></div>
+    <div class="card"><div id="tabs"></div><div id="q"></div></div>
+    <div class="row" style="margin-top:10px">${Kit.scopeNote('Queue Management (display screens, calling system) is 2nd phase. This work list is the in-scope queue view and is subject to confirmation.')}</div>`;
+  let t;
+  function kpis() {
+    const L = today(); const waiting = L.filter(e => /Checked in|Waiting/.test(e.status));
+    const waits = waiting.map(waitOf); const done = L.filter(e => e.status === 'Completed'); const tats = done.map(tatOf).filter(x => x != null);
+    const collected = Kit.sumBy((db.receptionPayments || []).filter(p => p.at.startsWith(T) && L.some(e => (inv(e) || {}).id === p.invoiceId)), p => p.amount);
+    $('#kpi').innerHTML = Kit.kpi('Visits today', L.filter(e => !/Cancelled|No-show/.test(e.status)).length, { icon: 'clipboard-list', foot: L.filter(e => e.source === 'Walk-in').length + ' walk-in · ' + L.filter(e => e.source === 'Appointment').length + ' booked' })
+      + Kit.kpi('Waiting now', waiting.length, { icon: 'clock', foot: waits.length ? 'Longest wait ' + Rc.dur(Math.max.apply(null, waits)) : 'Nobody waiting' })
+      + Kit.kpi('Average turnaround', tats.length ? Rc.dur(Math.round(tats.reduce((a, b) => a + b, 0) / tats.length)) : '-', { icon: 'timer', foot: 'Check-in to completion, ' + done.length + ' visits' })
+      + Kit.kpi('Collected for OPD', Kit.money(collected), { icon: 'banknote', foot: ((n) => n + ' visit' + (n === 1 ? '' : 's'))(L.filter(e => inv(e) && Rc.balance(inv(e)) > 0).length) + ' with a balance due · ' + L.filter(e => !inv(e) && !/Booked|Cancelled|No-show/.test(e.status)).length + ' not billed' });
+  }
+  function drawTabs() {
+    const L = today();
+    Kit.tabs($('#tabs'), TABS.map(([id, label, st]) => ({ id, label, count: st ? L.filter(e => st.includes(e.status)).length : L.length })), tab, (v) => { tab = v; t.redraw(); });
+  }
+  function refresh() { save(); kpis(); drawTabs(); t.redraw(); }
+  const clinics = db.clinics.filter(c => db.doctors.some(d => d.clinicId === c.id));
+  kpis(); drawTabs();
+  t = UI.table($('#q'), {
+    columns: [
+      { label: 'Token', sort: (e) => e.token, render: (e) => `<span class="token">${esc(e.token || '-')}</span>` },
+      { label: 'Patient', sort: (e) => Kit.ptName(e.patientId), render: (e) => Kit.patientCell(Kit.pt(e.patientId)) },
+      { label: 'Clinic and doctor', sort: (e) => Kit.docName(e.doctorId), render: (e) => `${esc(Kit.docName(e.doctorId))}<div class="small muted">${esc(UI.L.clName(e.clinicId))}</div>` },
+      { label: 'Visit', sort: (e) => e.start, render: (e) => `<b>${Kit.time(e.start)}</b><div class="small muted" style="white-space:nowrap">${esc(e.visitType || '')} · ${esc(e.source || '')} · ${esc(e.payer)}</div>` },
+      { label: 'Wait / TAT', sort: (e) => waitOf(e) || tatOf(e) || 0, render: (e) => { const w = waitOf(e), tt = tatOf(e); if (tt != null) return `<span class="small" style="white-space:nowrap">TAT <b>${Rc.dur(tt)}</b></span>`; if (w == null) return '<span class="mute">-</span>'; return `<span class="badge ${w > 60 ? 'b-err' : w > 30 ? 'b-warn' : 'b-ok'} nodot">${Rc.dur(w)}</span>`; } },
+      { label: 'Status', render: (e) => { const i = inv(e); return Kit.status(e.status) + `<div class="small muted" style="margin-top:3px">${i ? (Rc.balance(i) > 0 ? '<span style="color:var(--warning)">Due ' + Kit.money(Rc.balance(i)) + '</span>' : (i.patientAmount > 0 ? esc(i.status) + ' ' + Kit.money(i.patientAmount) : 'Covered by payer')) : 'Not billed'}</div>`; } },
+      { label: '', cls: 'actions', render: (e) => {
+        const i = inv(e); const b = [];
+        if (e.status === 'Booked') b.push(`<button class="btn xs primary" data-a="in" data-id="${e.id}" ${Rc.gate(OPT, 'edit')}>${icon('log-in')} Check in</button>`);
+        if (e.status === 'Checked in') b.push(`<button class="btn xs" data-a="send" data-id="${e.id}" ${Rc.gate(OPT, 'edit')}>${icon('arrow-right')} Send</button>`);
+        if (!i && !/Booked|Cancelled|No-show/.test(e.status)) b.push(`<button class="btn xs" data-a="bill" data-id="${e.id}" ${Rc.gate('reception.cashier', 'add')}>${icon('receipt')} Bill</button>`);
+        if (i && Rc.balance(i) > 0) b.push(`<button class="btn xs" data-a="pay" data-id="${e.id}" ${Rc.gate('reception.cashier', 'add')}>${icon('banknote')} Collect</button>`);
+        if (e.token && !/Cancelled|No-show|Completed/.test(e.status)) b.push(`<button class="btn xs ghost" data-a="tok" data-id="${e.id}" ${Rc.gate(OPT, 'print')} aria-label="Print token">${icon('printer')}</button>`);
+        if (/Booked|Checked in|Waiting for doctor/.test(e.status)) b.push(`<button class="btn xs danger" data-a="cx" data-id="${e.id}" ${Rc.gate(OPT, 'cancel')} title="Cancel visit" aria-label="Cancel visit">${icon('x')}</button>`);
+        return `<div class="row" style="gap:6px;justify-content:flex-end;flex-wrap:nowrap">${b.join('')}</div>`;
+      } },
+    ],
+    rows: () => { const st = (TABS.find(x => x[0] === tab) || [])[2]; return today().filter(e => !st || st.includes(e.status)).sort((a, b) => (a.token || 'Z').localeCompare(b.token || 'Z')); },
+    search: (e) => { const p = Kit.pt(e.patientId) || {}; return [e.token, e.no, p.name, p.mrn, p.civilId, p.mobile, Kit.docName(e.doctorId)].join(' '); }, searchPlaceholder: 'Token, patient, MRN or doctor',
+    filters: [
+      { label: 'Clinic', options: clinics.map(c => [c.id, c.name]), test: (e, v) => e.clinicId === v },
+      { label: 'Doctor', options: db.doctors.filter(d => d.clinicId).map(d => [d.id, d.name]), test: (e, v) => e.doctorId === v },
+      { label: 'Payer', options: [['Cash', 'Cash'], ['Insurance', 'Insurance']], test: (e, v) => e.payer === v },
+    ],
+    onRow: (e) => detail(e), pageSize: 12, empty: 'No visits in this list', emptyIcon: 'clipboard-list',
+    afterDraw: (tb) => $$('[data-a]', tb).forEach(b => b.addEventListener('click', () => act(b.dataset.a, Kit.enc(b.dataset.id)))),
+  });
+  function bill(e) {
+    const p = Kit.pt(e.patientId); let i = inv(e);
+    if (!i) {
+      const d = Kit.doc(e.doctorId) || {}; const code = e.visitType === 'Follow-up' ? 'SRV-CON-F' : d.grade === 'Consultant' ? 'SRV-CON-C' : 'SRV-CON-S'; const s = db.services.find(x => x.code === code);
+      const cv = Rc.primary(p.id); const ok = cv && !(cv.to && cv.to < T);
+      const sh = Rc.share(s.price, ok ? cv.planId : null);
+      i = { id: UI.uid('iv'), no: Kit.nextNo('INV-26-', db.invoices), encounterId: e.id, patientId: p.id, date: T, type: 'OPD', lines: [{ code, desc: s.name + ' · ' + d.name, qty: 1, price: s.price }], total: s.price, payerId: ok ? cv.payerId : null, planId: ok ? cv.planId : null, payerAmount: sh.payer, patientAmount: sh.patient, paid: 0, status: sh.patient > 0 ? 'Unpaid' : 'Paid', claimStatus: ok ? 'Not submitted' : '', by: Rc.myName() };
+      db.invoices.push(i); e.invoiceId = i.id; e.payer = ok ? 'Insurance' : 'Cash';
+      audit('Generated consultation invoice', 'Invoice', { id: i.id, label: i.no }, [['Patient share', '', Kit.money(i.patientAmount)]]);
+    }
+    return i;
+  }
+  function checkIn(e) {
+    const p = Kit.pt(e.patientId); const before = e.status;
+    e.status = 'Checked in'; e.checkedInAt = Rc.now();
+    const i = bill(e);
+    audit('Checked in OPD visit', 'Encounter', { id: e.id, label: e.no + ' ' + p.name }, [['Status', before, e.status], ['Invoice', '', i.no]]);
+    refresh(); toast(`${p.name} checked in. Token ${e.token}`);
+    if (Rc.balance(i) > 0) setTimeout(() => Rc.collect(i, refresh), 60); else Rc.printToken(e);
+  }
+  function act(a, e) {
+    const p = Kit.pt(e.patientId);
+    if (a === 'in') checkIn(e);
+    if (a === 'send') { const b = e.status; e.status = 'Waiting for doctor'; audit('Sent to doctor queue', 'Encounter', { id: e.id, label: e.no }, [['Status', b, e.status]]); refresh(); toast(p.name + ' is in the queue of ' + Kit.docName(e.doctorId)); }
+    if (a === 'pay') Rc.collect(inv(e), refresh);
+    if (a === 'bill') { const i = bill(e); refresh(); toast('Invoice ' + i.no + ' generated'); if (Rc.balance(i) > 0) setTimeout(() => Rc.collect(i, refresh), 60); }
+    if (a === 'tok') Rc.printToken(e);
+    let cxType = 'Cancelled';
+    if (a === 'cx') confirm({ onMount: (el) => $('#cxT', el).addEventListener('change', (ev) => { cxType = ev.target.value; }), title: 'Cancel visit ' + e.no + '?', body: `${esc(p.name)}, token ${esc(e.token)} with ${esc(Kit.docName(e.doctorId))}.`, impact: inv(e) && inv(e).paid > 0 ? ['A payment of ' + Kit.money(inv(e).paid) + ' was taken. Raise a refund in the cashier screen.'] : ['The unpaid consultation invoice is cancelled.'],
+      confirm: 'Cancel visit', reason: true, extra: `<div class="field" style="margin-top:12px"><label>Cancellation type</label><select class="input" id="cxT"><option>Cancelled</option><option>No-show</option></select></div>`,
+      onConfirm: (reason) => {
+        const b = e.status; e.status = cxType; e.cancelReason = reason; e.cancelledBy = Rc.myName(); e.end = Rc.now();
+        const i = inv(e); if (i && !(i.paid > 0)) { i.status = 'Cancelled'; i.patientAmount = 0; i.payerAmount = 0; }
+        audit('Cancelled OPD visit', 'Encounter', { id: e.id, label: e.no + ' ' + p.name }, [['Status', b, e.status]], { reason }); refresh(); toast('Visit cancelled');
+      } });
+  }
+  function detail(e) {
+    const p = Kit.pt(e.patientId); const i = inv(e);
+    const steps = [['Visit created', e.start, 'mute'], e.checkedInAt ? ['Checked in at reception', e.checkedInAt, 'ok'] : null, /Waiting for doctor|In consultation|Completed/.test(e.status) ? ['In the doctor queue', e.checkedInAt || e.start, 'ok'] : null, /In consultation|Completed/.test(e.status) ? ['Seen by ' + Kit.docName(e.doctorId), e.calledAt || e.start, 'ok'] : null, e.status === 'Completed' ? ['Visit completed', e.end, 'ok'] : null, /Cancelled|No-show/.test(e.status) ? [e.status + ': ' + (e.cancelReason || ''), e.end, 'err'] : null].filter(Boolean);
+    UI.drawer({ title: 'Visit ' + e.no, sub: 'Token ' + esc(e.token || '-') + ' · ' + esc(UI.L.clName(e.clinicId)),
+      body: `${Kit.patientBanner(p, e)}<dl class="kv"><dt>Doctor</dt><dd>${esc(Kit.docName(e.doctorId))} · ${esc((Kit.doc(e.doctorId) || {}).room || '')}</dd><dt>Visit type</dt><dd>${esc(e.visitType)} · ${esc(e.source)}</dd><dt>Reason</dt><dd>${esc(e.complaint || '')}</dd><dt>Status</dt><dd>${Kit.status(e.status)}</dd>
+        <dt>Waiting time</dt><dd>${waitOf(e) != null ? Rc.dur(waitOf(e)) : '-'}</dd><dt>Turnaround</dt><dd>${tatOf(e) != null ? Rc.dur(tatOf(e)) : '-'}</dd></dl>
+        <div class="section-t" style="margin:16px 0 10px">Timeline</div><div class="timeline">${steps.map(s => `<div class="tl-item ${s[2]}"><b>${esc(s[0])}</b><div class="meta">${esc(fmtDate(s[1]))}</div></div>`).join('')}</div>
+        ${i ? `<div class="section-t" style="margin:6px 0 10px">Invoice ${esc(i.no)}</div><table class="tbl compact"><tbody>${i.lines.map(l => `<tr><td>${esc(l.desc)}</td><td style="text-align:end" class="num">${Kit.money(l.qty * l.price)}</td></tr>`).join('')}<tr><td>Payer share</td><td style="text-align:end" class="num">${Kit.money(i.payerAmount)}</td></tr><tr><td><b>Patient share</b></td><td style="text-align:end" class="num"><b>${Kit.money(i.patientAmount)}</b></td></tr><tr><td>Balance due</td><td style="text-align:end" class="num">${Kit.money(Rc.balance(i))}</td></tr></tbody></table>` : ''}`,
+      foot: `<a class="btn" href="${R('reception/patient.html?id=' + p.id)}">${icon('user')} Patient 360</a><span class="grow"></span>${e.token ? `<button class="btn" id="dTok" ${Rc.gate(OPT, 'print')}>${icon('printer')} Token</button>` : ''}${i && Rc.balance(i) > 0 ? `<button class="btn primary" id="dPay" ${Rc.gate('reception.cashier', 'add')}>${icon('banknote')} Collect ${Kit.money(Rc.balance(i))}</button>` : ''}`,
+      onMount: (el, close) => { const tk = $('#dTok', el); if (tk) tk.addEventListener('click', () => Rc.printToken(e)); const pb = $('#dPay', el); if (pb) pb.addEventListener('click', () => { close(); Rc.collect(i, refresh); }); } });
+  }
+  $('#newV').addEventListener('click', () => Rc.newVisit(null, () => { tab = 'wait'; refresh(); }));
+  if (UI.param('new') === '1' && can(OPT, 'add')) Rc.newVisit(UI.param('pt') ? Kit.pt(UI.param('pt')) : null, () => refresh());
+})();
+</script>
+</body>
+</html>

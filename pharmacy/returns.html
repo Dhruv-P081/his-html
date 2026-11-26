@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Returns and refunds · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-pharmacy.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/pharmacy.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, me, nowStamp, field, showErrors, drawer } = UI;
+  const P = Pharmacy, T = db.TODAY;
+  const OPT = 'pharmacy.disp.ret';
+  if (!UI.page({ opt: OPT, title: 'Returns and refunds', subtitle: 'Medicines returned from dispensing or counter sales. Unexpired, unopened stock goes back to its batch. Refunds need approval by a second person.',
+    actions: `<button class="btn primary" id="new" ${can(OPT, 'add') ? '' : 'disabled title="Needs Add permission"'}>${icon('undo-2')} New return</button>` })) return;
+
+  const TABS = [['Pending approval', 'Pending approval'], ['Approved', 'Approved'], ['Rejected', 'Rejected'], ['all', 'All']];
+  let tab = 'Pending approval';
+  const amount = (r) => Kit.sumBy(r.lines, l => l.qty * l.price);
+  const who = (r) => r.patientId ? Kit.ptName(r.patientId) : (r.customer || 'Walk-in customer');
+  const pend = () => db.pharmacyReturns.filter(r => r.status === 'Pending approval');
+  $('#page').innerHTML = `<div class="grid g4" style="margin-bottom:16px" id="kpis"></div><div id="tabs" style="margin-bottom:12px"></div><div id="tbl"></div>`;
+  const drawKpis = () => {
+    const mon = db.pharmacyReturns.filter(r => r.status === 'Approved' && r.requestedAt >= Kit.addDays(T, -30));
+    $('#kpis').innerHTML = Kit.kpi('Waiting for approval', pend().length, { icon: 'hourglass', foot: Kit.money(Kit.sumBy(pend(), amount)) + ' to refund' })
+      + Kit.kpi('Refunded, last 30 days', Kit.money(Kit.sumBy(mon, amount)), { icon: 'wallet', foot: mon.length + ' approved returns' })
+      + Kit.kpi('Back to stock', Kit.sumBy(mon, r => Kit.sumBy(r.lines.filter(l => l.toStock), l => l.qty)), { icon: 'package-plus', foot: 'Units returned to batches, 30 days' })
+      + Kit.kpi('Rejected', db.pharmacyReturns.filter(r => r.status === 'Rejected').length, { icon: 'circle-x', foot: 'Not refundable under policy' });
+  };
+  const drawTabs = () => Kit.tabs($('#tabs'), TABS.map(([k, l]) => ({ id: k, label: l, count: db.pharmacyReturns.filter(r => k === 'all' || r.status === k).length })), tab, (id) => { tab = id; t.redraw(); });
+  const t = UI.table($('#tbl'), {
+    columns: [
+      { label: 'Return', sort: r => r.no, render: r => `<span class="mono b" style="white-space:nowrap">${esc(r.no)}</span><div class="small muted" style="white-space:nowrap">${esc(Kit.when(r.requestedAt))}</div>` },
+      { label: 'Source', sort: r => r.refNo, render: r => `<span style="white-space:nowrap">${esc(r.source)}</span><div class="small muted mono" style="white-space:nowrap">${esc(r.refNo)}</div>` },
+      { label: 'Patient or customer', sort: who, render: r => r.patientId ? Kit.patientCell(Kit.pt(r.patientId)) : esc(who(r)) },
+      { label: 'Items', render: r => r.lines.map(l => `<div class="small">${esc(Kit.item(l.itemId).name)} x ${l.qty} <span class="muted">· ${esc(l.condition)}${l.toStock ? ', to stock' : ', not to stock'}</span></div>`).join('') },
+      { label: 'Refund', cls: 'num', sort: amount, render: r => `<b class="num">${Kit.money(amount(r))}</b><div class="small muted">${esc(r.refundMode)}</div>` },
+      { label: 'Requested by', sort: r => r.requestedBy, render: r => esc(r.requestedBy) + (r.approvedBy ? `<div class="small muted">${r.status === 'Rejected' ? 'Rejected' : 'Approved'} by ${esc(r.approvedBy)}</div>` : '') },
+      { label: 'Status', sort: r => r.status, render: r => Kit.status(r.status) },
+      { label: '', cls: 'actions', render: r => `<button class="btn xs ${r.status === 'Pending approval' ? 'primary' : ''}" data-o="${r.id}">${r.status === 'Pending approval' ? 'Review' : 'View'}</button>` },
+    ],
+    rows: () => db.pharmacyReturns.filter(r => tab === 'all' || r.status === tab).sort((a, b) => b.requestedAt.localeCompare(a.requestedAt)),
+    search: r => [r.no, r.refNo, who(r), r.reason, r.lines.map(l => Kit.item(l.itemId).name).join(' ')].join(' '), searchPlaceholder: 'Search return, source, patient or item',
+    filters: [{ label: 'Source', options: [['Dispense', 'Dispense'], ['Counter sale', 'Counter sale']], test: (r, v) => r.source === v }],
+    onRow: (r) => open(r), afterDraw: (tb) => $$('[data-o]', tb).forEach(b => b.addEventListener('click', () => open(db.pharmacyReturns.find(x => x.id === b.dataset.o)))),
+    empty: 'No returns in this list', emptyIcon: 'undo-2',
+  });
+  const refresh = () => { drawKpis(); drawTabs(); t.redraw(); };
+  drawKpis(); drawTabs();
+
+  function open(r) {
+    const self = r.requestedBy === me().displayName;
+    const canA = can(OPT, 'approve');
+    const dis = !canA ? 'disabled title="Needs Approve permission"' : self ? 'disabled title="You requested this return. Another person must approve it."' : '';
+    drawer({ title: 'Return ' + r.no, sub: `${esc(r.source)} ${esc(r.refNo)} · ${esc(who(r))}`, wide: true,
+      body: `${r.patientId ? Kit.patientBanner(Kit.pt(r.patientId)) : ''}
+        <dl class="kv" style="margin:14px 0"><dt>Status</dt><dd>${Kit.status(r.status)}</dd><dt>Reason</dt><dd>${esc(r.reason)}</dd><dt>Refund</dt><dd>${Kit.money(amount(r))} · ${esc(r.refundMode)}</dd><dt>Requested</dt><dd>${esc(r.requestedBy)} · ${esc(Kit.when(r.requestedAt))}</dd>
+        ${r.approvedBy ? `<dt>${r.status === 'Rejected' ? 'Rejected' : 'Approved'}</dt><dd>${esc(r.approvedBy)} · ${esc(Kit.when(r.approvedAt))}${r.decisionReason ? '<div class="small muted">' + esc(r.decisionReason) + '</div>' : ''}</dd>` : ''}</dl>
+        <div class="card"><table class="tbl compact"><thead><tr><th>Item</th><th>Batch</th><th>Expiry</th><th>Qty</th><th>Condition</th><th>Stock</th><th class="num">Amount</th></tr></thead><tbody>
+        ${r.lines.map(l => `<tr><td>${esc(Kit.item(l.itemId).name)}</td><td class="mono">${esc(l.batch)}</td><td>${esc(Kit.day(l.expiry))}${l.expiry <= T ? ' ' + Kit.status('Expired') : ''}</td><td>${l.qty}</td><td>${esc(l.condition)}</td><td>${l.toStock ? '<span class="badge b-ok">Back to batch</span>' : '<span class="badge b-neutral">Quarantine</span>'}</td><td class="num">${Kit.money(l.qty * l.price, false)}</td></tr>`).join('')}
+        </tbody></table></div>
+        ${r.status === 'Pending approval' && self ? `<div class="banner warn" style="margin-top:12px">${icon('user-x')}<span>You requested this return, so you cannot approve it. Another pharmacist or supervisor must approve it.</span></div>` : ''}`,
+      foot: r.status === 'Pending approval' ? `<button class="btn" data-close>Close</button><span class="grow"></span><button class="btn danger" id="rej" ${dis}>${icon('x')} Reject</button><button class="btn primary" id="apr" ${dis}>${icon('check')} Approve refund</button>` : `<button class="btn" data-close>Close</button>`,
+      onMount: (el, close) => {
+        const a = $('#apr', el), j = $('#rej', el);
+        if (a) a.addEventListener('click', () => UI.confirm({ title: `Approve ${r.no}?`, tone: 'primary', icon: 'check', confirm: 'Approve refund',
+          body: `Refund ${Kit.money(amount(r))} by ${esc(r.refundMode)}.`, impact: r.lines.map(l => `${esc(Kit.item(l.itemId).name)} x ${l.qty}: ${l.toStock ? 'back to batch ' + esc(l.batch) : 'to quarantine (not resaleable)'}`),
+          onConfirm: () => { approve(r); close(); } }));
+        if (j) j.addEventListener('click', () => UI.confirm({ title: `Reject ${r.no}?`, body: 'No refund is given and no stock moves.', reason: true, confirm: 'Reject return', onConfirm: (reason) => {
+          r.status = 'Rejected'; r.approvedBy = me().displayName; r.approvedAt = nowStamp(); r.decisionReason = reason; save();
+          audit('Pharmacy return rejected', 'Pharmacy return', { id: r.id, label: r.no }, [['Status', 'Pending approval', 'Rejected']], { reason }); toast(`${r.no} rejected`); close(); refresh();
+        } }));
+      } });
+  }
+  function approve(r) {
+    const wh = r.source === 'Dispense' ? ((db.pharmacyDispenses.find(d => d.id === r.refId) || {}).setting === 'IPD' ? P.WH.IPD : P.WH.OPD) : P.WH.OPD;
+    r.lines.forEach(l => {
+      const it = Kit.item(l.itemId);
+      if (l.toStock && l.expiry > T) P.restock(l.stockId, l.qty);
+      else db.pharmacyQuarantine.push({ id: UI.uid('pq'), stockId: l.stockId, itemId: l.itemId, warehouseId: wh, batch: l.batch, expiry: l.expiry, qty: l.qty, reason: `Returned ${l.condition.toLowerCase()} (${r.no})`, by: me().displayName, at: nowStamp(), status: 'Quarantined' });
+      if (P.isControlled(it) && l.toStock) P.cdAdd({ itemId: l.itemId, warehouseId: wh, type: 'Return', qty: l.qty, ref: `${r.no}, return of ${r.refNo}`, patientId: r.patientId, witness: r.requestedBy });
+    });
+    if (r.source === 'Dispense') {
+      const d = db.pharmacyDispenses.find(x => x.id === r.refId); const inv = d && db.invoices.find(x => x.id === d.invoiceId);
+      if (inv) { inv.lines.push({ code: 'PHM-RET', desc: 'Pharmacy return ' + r.no, qty: 1, price: -amount(r) }); inv.total = +Kit.sumBy(inv.lines, x => x.qty * x.price).toFixed(3); inv.patientAmount = +Math.max(0, inv.patientAmount - amount(r)).toFixed(3); inv.payerAmount = +Math.max(0, inv.total - inv.patientAmount).toFixed(3); }
+    }
+    r.status = 'Approved'; r.approvedBy = me().displayName; r.approvedAt = nowStamp(); save();
+    audit('Pharmacy return approved', 'Pharmacy return', { id: r.id, label: r.no }, [['Status', 'Pending approval', 'Approved'], ['Refund', '', `${Kit.money(amount(r))} ${r.refundMode}`]]);
+    toast(`${r.no} approved. Refund ${Kit.money(amount(r))}.`); refresh();
+  }
+
+  /* ---------- New return ---------- */
+  $('#new').addEventListener('click', () => {
+    let src = 'Counter sale', refId = '';
+    const since = Kit.addDays(T, -30);
+    const sources = () => src === 'Counter sale' ? db.pharmacySales.filter(s => s.status === 'Completed' && s.at >= since).sort((a, b) => b.at.localeCompare(a.at)).map(s => [s.id, `${s.no} · ${Kit.when(s.at)} · ${s.customer || 'Walk-in'} · ${Kit.money(s.total)}`])
+      : db.pharmacyDispenses.filter(d => d.status !== 'Voided' && d.at >= since && d.lines.some(l => l.orderId)).sort((a, b) => b.at.localeCompare(a.at)).map(d => [d.id, `${d.no} · ${Kit.when(d.at)} · ${Kit.ptName(d.patientId)}`]);
+    const recOf = () => src === 'Counter sale' ? db.pharmacySales.find(s => s.id === refId) : db.pharmacyDispenses.find(d => d.id === refId);
+    const linesOf = (rec) => !rec ? [] : src === 'Counter sale' ? rec.lines.map(l => ({ itemId: l.itemId, stockId: l.stockId, batch: l.batch, expiry: l.expiry, qty: l.qty, price: l.price }))
+      : rec.lines.reduce((a, l) => a.concat(l.batches.map(b => ({ itemId: l.itemId, stockId: b.stockId, batch: b.batch, expiry: b.expiry, qty: b.qty, price: l.price }))), []);
+    const returned = (rec, l) => Kit.sumBy(db.pharmacyReturns.filter(r => r.refId === rec.id && r.status !== 'Rejected'), r => Kit.sumBy(r.lines.filter(x => x.itemId === l.itemId && x.batch === l.batch), x => x.qty));
+    drawer({ title: 'New return', sub: 'Choose the sale or dispensing record, then the quantities coming back.', wide: true,
+      body: `<div class="err-summary hidden" style="margin-bottom:12px"></div><div id="srcSeg" style="margin-bottom:12px"></div><div class="form-grid"><div id="refHost" class="full"></div></div><div id="lns" style="margin-top:12px"></div>
+        <div class="form-grid" style="margin-top:12px">${field({ id: 'rMode', label: 'Refund method', type: 'select', options: [], req: true })}${field({ id: 'rWhy', label: 'Reason for return', type: 'textarea', req: true, full: true })}</div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="rSave" disabled>Send for approval</button>`,
+      onMount: (el, close) => {
+        const drawRef = () => {
+          $('#refHost', el).innerHTML = field({ id: 'rRef', label: src === 'Counter sale' ? 'Counter sale (last 30 days)' : 'Dispensing record (last 30 days)', type: 'select', options: sources(), value: refId, req: true, full: true });
+          $('#rRef', el).addEventListener('change', (e) => { refId = e.target.value; drawLines(); });
+          const modes = src === 'Counter sale' ? ['Cash', 'KNET', 'Card'] : ['Credit to invoice', 'Cash'];
+          const rec = recOf();
+          $('#rMode', el).innerHTML = modes.map(m => `<option ${rec && rec.payMode === m ? 'selected' : ''}>${m}</option>`).join('');
+          drawLines();
+        };
+        Kit.seg($('#srcSeg', el), [['Counter sale', 'Counter sale', 'shopping-cart'], ['Dispense', 'Dispensed prescription', 'package-check']], src, (v) => { src = v; refId = ''; drawRef(); });
+        function drawLines() {
+          const rec = recOf();
+          const ls = linesOf(rec);
+          $('#lns', el).innerHTML = !rec ? `<div class="empty" style="padding:16px">${icon('undo-2')}<b>Choose a record</b></div>`
+            : `<div class="card"><table class="tbl compact"><thead><tr><th>Item</th><th>Batch</th><th>Expiry</th><th>Sold</th><th>Return qty</th><th>Condition</th><th>Goes to</th></tr></thead><tbody>${ls.map((l, i) => { const max = l.qty - returned(rec, l); return `<tr><td>${esc(Kit.item(l.itemId).name)}</td><td class="mono">${esc(l.batch)}</td><td>${esc(Kit.day(l.expiry))}</td><td>${l.qty}${max < l.qty ? `<div class="xs muted">${l.qty - max} already returned</div>` : ''}</td>
+              <td><input class="input" type="number" min="0" max="${max}" value="0" data-rq="${i}" style="width:80px" ${max ? '' : 'disabled'} aria-label="Return quantity"></td>
+              <td><select class="input" data-rc="${i}" aria-label="Condition"><option>Unopened</option><option>Opened</option><option>Damaged</option></select></td><td data-rg="${i}" class="small"></td></tr>`; }).join('')}</tbody></table></div><div class="small muted" style="margin-top:8px" id="rTot"></div>`;
+          const upd = () => {
+            let tot = 0, any = false, bad = false;
+            ls.forEach((l, i) => { const qi = $(`[data-rq="${i}"]`, el); if (!qi) return; const q = Number(qi.value) || 0, max = l.qty - returned(rec, l); if (q > max || q < 0) bad = true; if (q > 0) any = true; tot += q * l.price;
+              const c = $(`[data-rc="${i}"]`, el).value; $(`[data-rg="${i}"]`, el).innerHTML = c === 'Unopened' && l.expiry > T ? '<span class="badge b-ok">Back to batch</span>' : '<span class="badge b-neutral">Quarantine</span>'; });
+            $('#rTot', el) && ($('#rTot', el).innerHTML = `Refund total: <b>${Kit.money(tot)}</b>`);
+            $('#rSave', el).disabled = !(any && !bad && $('#rWhy', el).value.trim().length >= 3);
+          };
+          $$('[data-rq],[data-rc]', el).forEach(x => x.addEventListener('input', upd));
+          $$('[data-rc]', el).forEach(x => x.addEventListener('change', upd));
+          el._upd = upd; upd();
+        }
+        $('#rWhy', el).addEventListener('input', () => el._upd && el._upd());
+        drawRef();
+        $('#rSave', el).addEventListener('click', () => {
+          const rec = recOf(); const ls = linesOf(rec);
+          const lines = ls.map((l, i) => { const q = Number($(`[data-rq="${i}"]`, el).value) || 0; const c = $(`[data-rc="${i}"]`, el).value; return q > 0 ? Object.assign({}, l, { qty: q, condition: c, toStock: c === 'Unopened' && l.expiry > T }) : null; }).filter(Boolean);
+          const errs = {}; if (!lines.length) errs.rRef = 'Enter a return quantity.'; if ($('#rWhy', el).value.trim().length < 3) errs.rWhy = 'Enter the reason.';
+          if (!showErrors(el, errs)) return;
+          const r = { id: UI.uid('pr'), no: Kit.nextNo('RET-26-', db.pharmacyReturns), source: src, refId: rec.id, refNo: rec.no, patientId: rec.patientId || '', customer: rec.customer || '', lines, reason: $('#rWhy', el).value.trim(), refundMode: $('#rMode', el).value, status: 'Pending approval', requestedBy: me().displayName, requestedAt: nowStamp() };
+          db.pharmacyReturns.unshift(r); save();
+          audit('Pharmacy return requested', 'Pharmacy return', { id: r.id, label: r.no }, [['Refund', '', Kit.money(amount(r))], ['Source', '', r.refNo]], { reason: r.reason });
+          toast(`${r.no} sent for approval`); close(); tab = 'Pending approval'; refresh();
+        });
+      } });
+  });
+})();
+</script>
+</body>
+</html>

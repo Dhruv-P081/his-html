@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ward census · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-nursing.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/nursing.js"></script>
+<style>
+  .ward-board { grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
+  .bed .b-flags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: auto; padding-top: 4px; }
+  .bed .b-flags .badge { font-size: 10.5px; padding: 1px 7px; }
+  .bed.vac, .bed.cln, .bed.res, .bed.blk { cursor: default; }
+  .wl-row { display: flex; gap: 10px; align-items: center; }
+</style>
+<style>@media (max-width:1560px){#nwGrid>.card:nth-child(1),#nwGrid>.card:nth-child(2){grid-column:1/-1}}</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, esc, icon, $, $$, R } = UI;
+  if (!UI.page({ module: 'nursing', title: 'Ward census', subtitle: 'Patients by bed, tasks and medicines due, abnormal vital signs and planned discharges (SOW V4 Module 4).',
+    actions: `${Nursing.wardSelect()}<a class="btn" href="${R('nursing/handover.html')}">${icon('repeat')} Shift handover</a><a class="btn primary" href="${R('nursing/mar.html')}">${icon('syringe')} Open MAR</a>` })) return;
+
+  function render(wardId) {
+    const w = Kit.ward(wardId), beds = db.beds.filter(b => b.wardId === wardId);
+    const encs = Nursing.inpatients(wardId);
+    const tasks = Nursing.tasks(encs);
+    const overdue = tasks.filter(t => t.state === 'Overdue'), dueNow = tasks.filter(t => t.state === 'Due');
+    const doses = encs.reduce((a, e) => a.concat(Nursing.marDoses(e, db.TODAY)), []);
+    const dosesDue = doses.filter(d => d.state === 'Due' || d.state === 'Overdue');
+    const abn = encs.map(e => ({ e, v: Nursing.latestVitals(e.id) })).filter(x => x.v && Nursing.vitalAbn(x.v).length);
+    const dis = encs.filter(e => e.status === 'Discharge planned' || e.expectedDischarge <= db.TODAY || db.nursingDischarge.some(d => d.encounterId === e.id && d.status !== 'Cancelled'));
+    const occ = beds.filter(b => b.status === 'Occupied').length;
+    const shift = Nursing.shiftOf();
+    const charge = (db.nurses.find(n => n.id === w.chargeNurse) || {}).name || '';
+    const hours = Array.from({ length: 24 }, (_, i) => i);
+
+    const card = (b) => {
+      const cls = { Occupied: 'occ', Vacant: 'vac', Cleaning: 'cln', Reserved: 'res', Blocked: 'blk' }[b.status] || '';
+      const e = b.encounterId && encs.find(x => x.id === b.encounterId);
+      if (!e) return `<div class="bed ${cls}"><div class="row"><span class="b-no">${esc(b.no)}</span><span class="grow"></span>${Kit.status(b.status)}</div><div class="b-sub">${esc(b.type)} · Room ${esc(b.room)}</div></div>`;
+      const p = Kit.pt(e.patientId), v = Nursing.latestVitals(e.id), ab = v ? Nursing.vitalAbn(v) : [];
+      const tOver = overdue.filter(t => t.e.id === e.id).length, dDue = dosesDue.filter(d => d.order.encounterId === e.id).length;
+      const morse = Nursing.lastWith(e.id, 'morseScore');
+      const flags = [
+        (p.allergies || []).length ? `<span class="badge b-err nodot">${icon('triangle-alert')} Allergy</span>` : '',
+        morse && morse.morseScore >= 45 ? '<span class="badge b-warn">Fall risk</span>' : '',
+        ab.length ? `<span class="badge b-err" title="${esc(Nursing.abnText(v))}">Abnormal vitals</span>` : '',
+        tOver ? `<span class="badge b-err">${tOver} overdue</span>` : '',
+        dDue ? `<span class="badge b-info">${dDue} dose${dDue > 1 ? 's' : ''} due</span>` : '',
+        !Nursing.admissionDone(e.id) ? '<span class="badge b-warn">Assessment due</span>' : '',
+        dis.includes(e) ? '<span class="badge b-violet">Discharge</span>' : '',
+      ].join('');
+      return `<div class="bed ${cls}" data-enc="${e.id}" tabindex="0" role="button" aria-label="Open ${esc(p.name)}"><div class="row"><span class="b-no">${esc(b.no)}</span><span class="grow"></span><span class="xs muted">Day ${Nursing.losDays(e)}</span></div>
+        <div class="b-pt">${esc(p.name)}</div><div class="b-sub">${esc(Kit.sexAge(p))} · ${esc(e.reason)}</div><div class="b-sub">${esc(Kit.docName(e.doctorId))}</div><div class="b-flags">${flags}</div></div>`;
+    };
+    const rowTask = (t) => `<tr class="${t.state === 'Overdue' ? 'sel' : ''}"><td class="mono">${Kit.time(t.due)}${t.due.slice(0, 10) !== db.TODAY ? `<div class="xs muted">${Kit.day(t.due)}</div>` : ''}</td><td><b>${esc(Nursing.bedNo(t.e))}</b> ${esc(Kit.ptName(t.e.patientId))}</td><td>${esc(t.name)}<div class="xs muted">${esc(Nursing.TYPE_LABEL[t.type])}</div></td><td>${Kit.status(t.state)}</td></tr>`;
+
+    $('#page').innerHTML = `
+      <div class="banner info" style="margin-bottom:14px">${icon('clock')}<span><b>${esc(w.name)}</b> · ${esc(shift)} shift · ${Kit.day(db.TODAY)} ${Nursing.nowTime()} · Charge nurse ${esc(charge)} · Floor ${esc(w.floor)}</span></div>
+      <div class="grid g4" style="margin-bottom:16px">
+        ${Kit.kpi('Inpatients', encs.length, { icon: 'bed-double', foot: `${occ} of ${beds.length} beds occupied (${Math.round(100 * occ / Math.max(1, beds.length))}%)` })}
+        ${Kit.kpi('Tasks overdue', overdue.length, { icon: 'list-todo', foot: `${dueNow.length} due now, ${tasks.length} today`, href: R('nursing/orders.html') })}
+        ${Kit.kpi('MAR doses due', dosesDue.length, { icon: 'syringe', foot: `${doses.filter(d => d.state === 'Overdue').length} overdue, ${doses.filter(d => d.state === 'Given').length} given today`, href: R('nursing/mar.html') })}
+        ${Kit.kpi('Abnormal vital signs', abn.length, { icon: 'activity', foot: `${dis.length} discharge${dis.length === 1 ? '' : 's'} planned`, href: R('nursing/charting.html') })}
+      </div>
+      <div class="card" style="margin-bottom:16px"><div class="card-head"><h3>${icon('layout-grid')} Patients by bed</h3><div class="actions"><span class="legend"><span><i style="background:#2F6BC5"></i>Occupied</span><span><i style="background:#1C8A4C"></i>Vacant</span><span><i style="background:#E0A100"></i>Cleaning</span><span><i style="background:#7C4DDB"></i>Reserved</span><span><i style="background:#8794A7"></i>Blocked</span></span></div></div>
+        <div class="card-pad"><div class="board ward-board">${beds.map(card).join('')}</div></div></div>
+      <div class="grid g2" id="nwGrid" style="margin-bottom:16px">
+        <div class="card"><div class="card-head"><h3>${icon('list-todo')} Tasks due now and overdue</h3><div class="actions"><a class="btn sm" href="${R('nursing/orders.html')}">Open worklist ${icon('arrow-right')}</a></div></div>
+          <div class="table-wrap"><table class="tbl compact"><thead><tr><th>Due</th><th>Patient</th><th>Task</th><th>Status</th></tr></thead><tbody>
+          ${overdue.concat(dueNow).slice(0, 8).map(rowTask).join('') || `<tr><td colspan="4"><div class="empty">${icon('circle-check')}<b>Nothing due</b><span>All tasks are up to date.</span></div></td></tr>`}</tbody></table></div></div>
+        <div class="card"><div class="card-head"><h3>${icon('syringe')} MAR doses due</h3><div class="actions"><a class="btn sm" href="${R('nursing/mar.html?tab=ward')}">Ward due list ${icon('arrow-right')}</a></div></div>
+          <div class="table-wrap"><table class="tbl compact"><thead><tr><th>Due</th><th>Patient</th><th>Medicine</th><th>Status</th></tr></thead><tbody>
+          ${dosesDue.slice(0, 8).map(d => `<tr class="click" data-mar="${d.order.encounterId}"><td class="mono">${Kit.time(d.due)}</td><td><b>${esc(Nursing.bedNo(Kit.enc(d.order.encounterId)))}</b> ${esc(Kit.ptName(d.order.patientId))}</td><td>${esc(d.item.generic || d.order.name)} ${esc(d.order.dose)} <span class="xs muted">${esc(d.order.route)}</span>${Nursing.isHighAlert(d.item) ? ' <span class="badge b-err nodot">High alert</span>' : ''}</td><td>${Kit.status(d.state)}</td></tr>`).join('') || `<tr><td colspan="4"><div class="empty">${icon('circle-check')}<b>No doses due</b><span>Next doses are not yet within the 1 hour window.</span></div></td></tr>`}</tbody></table></div></div>
+        <div class="card"><div class="card-head"><h3>${icon('activity')} Abnormal vital signs</h3><div class="actions"><a class="btn sm" href="${R('nursing/charting.html')}">Charting ${icon('arrow-right')}</a></div></div>
+          <div class="list-rows pad">${abn.map(x => `<div class="click" data-chart="${x.e.id}" style="cursor:pointer"><span class="token">${esc(Nursing.bedNo(x.e).split('-').pop())}</span><div class="grow"><b>${esc(Kit.ptName(x.e.patientId))}</b><div class="small" style="color:var(--error);font-weight:700">${esc(Nursing.abnText(x.v))}</div></div><span class="small muted">${Kit.when(x.v.at)}</span></div>`).join('') || `<div class="empty">${icon('heart-pulse')}<b>All latest vital signs are within range</b></div>`}</div></div>
+        <div class="card"><div class="card-head"><h3>${icon('door-open')} Discharge planned</h3><div class="actions"><a class="btn sm" href="${R('nursing/discharge.html')}">Discharge planning ${icon('arrow-right')}</a></div></div>
+          <div class="list-rows pad">${dis.map(e => { const d = db.nursingDischarge.find(x => x.encounterId === e.id); const items = d ? Object.values(d.items) : []; const pct = d ? Math.round(100 * items.filter(i => i.done).length / (items.length + 1)) : 0;
+            return `<div class="click" data-dis="${e.id}" style="cursor:pointer"><span class="token">${esc(Nursing.bedNo(e).split('-').pop())}</span><div class="grow"><b>${esc(Kit.ptName(e.patientId))}</b><div class="small muted">Expected ${Kit.day(e.expectedDischarge)} · ${esc(e.clearance || '')}</div><div class="progress ${pct >= 100 ? 'ok' : 'warn'}" style="margin-top:6px;max-width:220px"><i style="width:${Math.max(3, pct)}%"></i></div></div>${d ? Kit.status(d.status) : '<span class="badge b-neutral">Not started</span>'}</div>`; }).join('') || `<div class="empty">${icon('door-open')}<b>No discharges planned</b></div>`}</div></div>
+      </div>
+      <div class="grid g-side">
+        <div class="card"><div class="card-head"><h3>${icon('chart-column')} Tasks and doses by hour</h3><div class="actions"><span class="small muted">Today, ${esc(w.name)}</span></div></div><div class="card-pad">
+          ${Kit.barChart({ labels: hours.map(h => String(h).padStart(2, '0')), values: hours.map(h => tasks.filter(t => t.due.slice(0, 10) === db.TODAY && +t.due.slice(11, 13) === h).length + doses.filter(d => +d.due.slice(11, 13) === h).length), color: '#D23F6A', title: 'Tasks and doses by hour', height: 150 })}</div></div>
+        <div class="card"><div class="card-head"><h3>${icon('hospital')} Census by ward</h3></div><div class="card-pad">
+          ${Kit.barList(db.wards.map(x => { const n = Nursing.inpatients(x.id).length, t = db.beds.filter(b => b.wardId === x.id).length; return [x.code + ' · ' + n + '/' + t, Math.round(100 * n / Math.max(1, t)), n / t >= 0.85 ? 'err' : n / t >= 0.6 ? 'warn' : 'ok']; }), { max: 100, fmt: v => v + '%' })}</div></div>
+      </div>`;
+    $$('[data-enc]').forEach(n => { const go = () => location.href = R('nursing/charting.html?enc=' + n.dataset.enc); n.addEventListener('click', go); n.addEventListener('keydown', ev => { if (ev.key === 'Enter') go(); }); });
+    $$('[data-mar]').forEach(n => n.addEventListener('click', () => location.href = R('nursing/mar.html?enc=' + n.dataset.mar)));
+    $$('[data-chart]').forEach(n => n.addEventListener('click', () => location.href = R('nursing/charting.html?enc=' + n.dataset.chart)));
+    $$('[data-dis]').forEach(n => n.addEventListener('click', () => location.href = R('nursing/discharge.html?enc=' + n.dataset.dis)));
+  }
+  Nursing.bindWard(render);
+  render(Nursing.getWard());
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Employees · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-hr.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/hr.js"></script>
+<style>.nw{white-space:nowrap}#tbl .cell-main b{white-space:nowrap}</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, field, showErrors, drawer, confirm } = UI;
+  const OPT = 'hr.emp.master';
+  if (!UI.page({ opt: OPT, title: 'Employees', subtitle: 'Employee profiles and documents. Employee Master linked to the User Master.',
+    actions: `<button class="btn" id="exp" ${can(OPT, 'print') ? '' : 'disabled title="Needs Print permission"'}>${icon('file-spreadsheet')} Export</button>${HR.btn(OPT, 'add', 'Add employee', 'id="add"', 'primary', 'user-plus')}` })) return;
+  const T = db.TODAY;
+  const DOC_TYPES = ['Civil ID copy', 'Passport', 'Residency (Article 18)', 'Employment contract', 'Degree certificate', 'Experience certificate', 'MOH licence copy', 'Medical fitness certificate', 'Police clearance', 'Other'];
+  const NATS = ['Kuwaiti', 'Egyptian', 'Indian', 'Filipino', 'Pakistani', 'Syrian', 'Jordanian', 'Lebanese', 'Bangladeshi', 'British', 'Other'];
+  const BANKS = [['NBOK', 'National Bank of Kuwait'], ['CBKU', 'Commercial Bank of Kuwait'], ['GULB', 'Gulf Bank'], ['KFHO', 'Kuwait Finance House'], ['BBYN', 'Boubyan Bank'], ['BRGN', 'Burgan Bank'], ['ABKK', 'Al Ahli Bank of Kuwait'], ['WARB', 'Warba Bank']];
+  const bankName = (c) => (BANKS.find(b => b[0] === c) || [c, c])[1];
+  const allowComps = () => db.hrPayComponents.filter(c => c.kind === 'Allowance' && c.calc === 'Fixed amount' && c.status !== 'Inactive');
+
+  $('#page').innerHTML = `<div id="tabs" style="margin-bottom:12px"></div><div id="tbl"></div>`;
+  let tab = 'active';
+  const stOf = (v) => v.hrStatus;
+  const TABS = () => [
+    { id: 'active', label: 'Active', count: HR.all().filter(v => v.hrStatus === 'Active').length },
+    { id: 'pending', label: 'Pending separation', count: HR.all().filter(v => v.hrStatus === 'Pending separation').length },
+    { id: 'sep', label: 'Separated', count: HR.all().filter(v => v.hrStatus === 'Separated').length },
+    { id: 'all', label: 'All', count: HR.all().length }];
+  const docAlerts = (v) => (v.documents || []).filter(d => HR.docBand(d) && HR.docBand(d) !== 'Valid').length + (v.licences || []).filter(c => HR.credBand(c).band !== 'Valid').length;
+  const tabsCtl = Kit.tabs($('#tabs'), TABS(), tab, (t) => { tab = t; tb.redraw(); });
+  const tb = UI.table($('#tbl'), {
+    rows: () => HR.all().filter(v => tab === 'all' || (tab === 'active' && v.hrStatus === 'Active') || (tab === 'pending' && v.hrStatus === 'Pending separation') || (tab === 'sep' && v.hrStatus === 'Separated')),
+    search: (v) => [v.name, v.empNo, v.designation, v.civilId, v.mobile, v.email].join(' '), searchPlaceholder: 'Name, employee no., Civil ID or mobile',
+    filters: [
+      { label: 'Department', options: HR.deptsInUse(), test: (v, x) => v.deptId === x },
+      { label: 'Category', options: ['Doctor', 'Nurse', 'Allied health', 'Administration', 'Support'].map(x => [x, x]), test: (v, x) => v.category === x },
+      { label: 'Nationality', options: [['Kuwaiti', 'Kuwaiti'], ['exp', 'Expatriate']], test: (v, x) => x === 'exp' ? v.nationality !== 'Kuwaiti' : v.nationality === x },
+      { label: 'Branch', options: Array.from(new Set(HR.all().map(v => v.branchId))).map(b => [b, UI.L.bName(b)]), test: (v, x) => v.branchId === x },
+    ],
+    columns: [
+      { label: 'Employee', sort: (v) => v.name, render: (v) => HR.empCell(v) },
+      { label: 'Department', sort: (v) => HR.dept(v.deptId), render: (v) => `<span class="nw">${esc(HR.dept(v.deptId))}</span><span class="small muted"> · ${esc(v.nationality)}</span><div class="small muted nw"><span class="mono">${esc(v.grade)}</span> · ${esc(v.category)}</div>` },
+      { label: 'Joined', sort: (v) => v.joinDate, render: (v) => `<span class="nw">${esc(Kit.day(v.joinDate))}</span><div class="small muted nw">${esc(HR.serviceText(v.joinDate, v.lastWorkingDate && v.lastWorkingDate < T ? v.lastWorkingDate : T))}</div>` },
+      { label: 'Gross salary', cls: 'num', sort: (v) => HR.gross(v), render: (v) => `<span class="num nw">${Kit.money(HR.gross(v))}</span>` },
+      { label: 'Alerts', sort: (v) => docAlerts(v), render: (v) => { const n = docAlerts(v); return n ? `<span class="badge b-warn nw">${n} expiring</span>` : '<span class="muted small">None</span>'; } },
+      { label: 'User', render: (v) => HR.userOf(v.id) ? `<span class="tag" title="Linked user">${icon('link')} ${esc(HR.userOf(v.id).login)}</span>` : '<span class="muted small">No user</span>' },
+      { label: 'Status', sort: (v) => v.hrStatus, render: (v) => UI.badge(stOf(v)) },
+    ],
+    onRow: (v) => profile(v.id), empty: 'No employees found', pageSize: 12,
+  });
+  const refresh = () => { tabsCtl.set(tab); };
+
+  /* ---------- Profile drawer ---------- */
+  function profile(id, startTab) {
+    const v = HR.get(id); if (!v) return;
+    const u = HR.userOf(id);
+    let cur = startTab || 'personal';
+    const d = drawer({ title: v.name, sub: `${esc(v.empNo)} · ${esc(v.designation)} · ${esc(HR.dept(v.deptId))}`, wide: true,
+      body: `<div class="row" style="gap:14px;margin-bottom:14px"><span class="avatar lg ${v.gender === 'Female' ? 'av-f' : 'av-m'}">${UI.initials(v.name)}</span><div class="grow"><div class="row wrap" style="gap:6px">${UI.badge(v.hrStatus)}<span class="tag">${esc(v.category)}</span><span class="tag">${esc(v.nationality)}</span>${v.src === 'admin' ? `<span class="tag" title="Core fields come from the Employee Master">${icon('lock')} Employee Master</span>` : ''}${u ? `<span class="tag">${icon('link')} User ${esc(u.login)}</span>` : ''}</div><div class="small muted" style="margin-top:6px">Joined ${esc(Kit.day(v.joinDate))} · ${esc(HR.serviceText(v.joinDate))} service${v.lastWorkingDate ? ' · last working day ' + esc(Kit.day(v.lastWorkingDate)) : ''}</div></div></div>
+        <div id="ptabs"></div><div id="pbody" style="padding-top:14px"></div>`,
+      foot: `<button class="btn" data-close>Close</button><span class="grow"></span>${v.src === 'hr' && v.hrStatus === 'Active' ? HR.btn(OPT, 'edit', 'Record separation', 'id="pSep"', 'danger', 'log-out') : ''}<button class="btn" id="pPrint" ${can(OPT, 'print') ? '' : 'disabled title="Needs Print permission"'}>${icon('printer')} Print profile</button>${HR.btn(OPT, 'edit', 'Edit', 'id="pEdit"', 'primary', 'pencil')}`,
+      onMount: (el, close) => {
+        const docsN = (v.documents || []).length;
+        Kit.tabs($('#ptabs', el), [{ id: 'personal', label: 'Personal', icon: 'user' }, { id: 'job', label: 'Job', icon: 'briefcase' }, { id: 'pay', label: 'Pay', icon: 'wallet' }, { id: 'docs', label: 'Documents', icon: 'folder', count: docsN }, { id: 'user', label: 'Linked user', icon: 'link' }], cur, (t) => { cur = t; draw(); });
+        const draw = () => { const h = $('#pbody', el); h.innerHTML = ({ personal, job, pay, docs, user: linked })[cur](v, u); if (cur === 'docs') wireDocs(h, v, () => { close(); profile(id, 'docs'); }); };
+        draw();
+        const e = $('#pEdit', el); if (e) e.addEventListener('click', () => { close(); edit(id); });
+        $('#pPrint', el).addEventListener('click', () => printProfile(v));
+        const s = $('#pSep', el); if (s) s.addEventListener('click', () => separation(v, () => { close(); profile(id); }));
+      } });
+    return d;
+  }
+  const kv = (rows) => `<dl class="kv">${rows.map(([k, val]) => `<dt>${esc(k)}</dt><dd>${val == null || val === '' ? '<span class="muted">-</span>' : val}</dd>`).join('')}</dl>`;
+  function personal(v) {
+    return kv([['Full name', esc(v.name)], ['Gender', esc(v.gender)], ['Date of birth', `${esc(Kit.day(v.dob))} (${esc(UI.ageOf(v.dob))})`], ['Nationality', esc(v.nationality)], ['Civil ID', `<span class="mono">${esc(v.civilId)}</span>`],
+      ['Mobile', esc(v.mobile)], ['Email', esc(v.email)], ['Address', esc(v.address)], ['Emergency contact', `${esc(v.emergency && v.emergency.name)} (${esc(v.emergency && v.emergency.relation)}) ${esc(v.emergency && v.emergency.phone)}`], ['Education', esc(v.education)]]);
+  }
+  function job(v) {
+    const g = HR.grade(v.grade) || {};
+    const lic = (v.licences || []).map(c => { const b = HR.credBand(c); return `<div class="row" style="gap:8px;margin-bottom:4px"><span class="grow">${esc(c.type)} <span class="mono small muted">${esc(c.number)}</span></span><span class="badge b-${b.tone}">${esc(b.band === 'Valid' ? 'Valid to ' + Kit.day(c.expiry) : b.label)}</span></div>`; }).join('');
+    return kv([['Employee no.', `<span class="mono">${esc(v.empNo)}</span>`], ['Designation', esc(v.designation)], ['Department', esc(HR.dept(v.deptId))], ['Branch', esc(UI.L.bName(v.branchId))], ['Grade', `<span class="mono">${esc(v.grade)}</span> ${esc(g.name || '')}`],
+      ['Category', esc(v.category)], ['Join date', esc(Kit.day(v.joinDate))], ['Probation end', esc(Kit.day(v.probationEnd))], ['Contract', esc(v.contract)], ['Line manager', v.managerId ? HR.empLink(v.managerId) : ''], ['Default shift', HR.shiftChip(v.shift) + ' ' + esc((HR.shift(v.shift) || {}).name || '')],
+      ['HR status', UI.badge(v.hrStatus)], ['Licences', lic || '<span class="muted">No licences on file</span>']])
+      + `<div class="row" style="margin-top:12px"><a class="btn sm" href="${R('hr/credentials.html?emp=' + v.id)}">${icon('id-card')} Licences and credentials</a><a class="btn sm" href="${R('hr/leave.html?emp=' + v.id)}">${icon('plane')} Leave</a><a class="btn sm" href="${R('hr/attendance.html?emp=' + v.id)}">${icon('fingerprint')} Attendance</a></div>`;
+  }
+  function pay(v) {
+    const g = HR.grade(v.grade) || {};
+    const hist = (v.basicHistory || []).map(h => `<div class="small">${esc(Kit.day(h.from))}: ${Kit.money(h.before)} to ${Kit.money(h.after)} (${esc(h.reason)})</div>`).join('');
+    const loans = db.hrLoans.filter(l => l.empId === v.id && l.status === 'Active');
+    return `<div class="grid g2"><div>${kv([['Basic salary', `<b>${Kit.money(v.basic)}</b> <span class="small muted">grade range ${Kit.money(g.minBasic, false)} to ${Kit.money(g.maxBasic, false)}</span>`], ['Salary changes', hist || '<span class="muted">None this year</span>'], ['Pay mode', esc(v.payMode)], ['Bank', esc(bankName(v.bank))], ['IBAN', `<span class="mono">${esc(v.iban)}</span>`], ['PIFSS', v.nationality === 'Kuwaiti' ? 'Contributor (Kuwaiti national)' : 'Not applicable'], ['Daily rate', Kit.money(HR.daily(v)) + ' <span class="small muted">gross / ' + HR.SET.payDivisor + '</span>'], ['Hourly rate', Kit.money(HR.hourly(v))]])}</div>
+      <div class="card"><table class="calc-t" style="width:100%"><tbody><tr><td><b>Basic salary</b></td><td class="num">${Kit.money(v.basic)}</td></tr>${(v.allowances || []).map(a => `<tr><td>${esc(HR.comp(a.code).name)}</td><td class="num">${Kit.money(a.amount)}</td></tr>`).join('')}<tr class="tot"><td>Gross monthly</td><td class="num">${Kit.money(HR.gross(v))}</td></tr></tbody></table>
+      ${loans.length ? `<div class="card-pad small">${icon('hand-coins')} Active loans: ${loans.map(l => `<a href="${R('hr/loans.html?id=' + l.id)}">${esc(l.no)}</a> (balance ${Kit.money(HR.loanBalance(l))})`).join(', ')}</div>` : ''}</div></div>`;
+  }
+  function docs(v) {
+    const list = (v.documents || []).slice().sort((a, b) => String(a.expiry || '9').localeCompare(String(b.expiry || '9')));
+    return `<div class="card"><div class="card-head"><h3>${icon('folder')} Documents</h3><div class="actions">${HR.btn(OPT, 'edit', 'Upload document', 'id="dAdd"', 'sm primary', 'upload')}</div></div>
+      <div class="table-wrap"><table class="tbl compact"><thead><tr><th>Document</th><th>Number</th><th>Expiry</th><th>File</th><th>Uploaded</th><th></th></tr></thead><tbody>
+      ${list.length ? list.map(d => { const b = HR.docBand(d); const n = d.expiry ? HR.dateDiff(T, d.expiry) : null; return `<tr><td><b>${esc(d.type)}</b></td><td class="mono">${esc(d.number || '-')}</td><td>${d.expiry ? `${esc(Kit.day(d.expiry))} ${b === 'Valid' ? '' : `<span class="badge b-${b === 'Expired' ? 'err' : 'warn'}">${b === 'Expired' ? 'Expired' : n + ' days'}</span>`}` : '<span class="muted">No expiry</span>'}</td><td><span class="tag">${icon('file-text')} ${esc(d.file)}</span></td><td class="small muted">${esc(d.uploadedBy)}<br>${esc(Kit.when(d.uploadedAt))}</td><td class="actions"><button class="btn xs danger" data-del="${d.id}" ${can(OPT, 'edit') ? '' : 'disabled title="Needs Edit permission"'}>${icon('trash-2')} Remove</button></td></tr>`; }).join('') : `<tr><td colspan="6"><div class="empty">${icon('folder-open')}<b>No documents</b><span>Upload the Civil ID, passport, contract and certificates.</span></div></td></tr>`}
+      </tbody></table></div></div>
+      <div id="dForm" class="card card-pad hidden" style="margin-top:12px"><div class="section-t">Upload document</div><div class="err-summary hidden"></div><div class="form-grid">
+        ${field({ id: 'd_type', label: 'Document type', type: 'select', options: DOC_TYPES.map(x => [x, x]), req: true })}${field({ id: 'd_no', label: 'Document number' })}
+        ${field({ id: 'd_exp', label: 'Expiry date', type: 'date', hint: 'Leave empty if the document does not expire.' })}
+        <div class="field"><label for="d_file">File<span class="req">*</span></label><input class="input" type="file" id="d_file" accept=".pdf,.jpg,.jpeg,.png"><div class="hint">PDF, JPG or PNG, up to 5 MB.</div><div class="err hidden" data-err="d_file"></div></div></div>
+        <div class="row" style="margin-top:12px;justify-content:flex-end"><button class="btn" id="dCancel">Cancel</button><button class="btn primary" id="dSave" disabled>${icon('upload')} Upload</button></div></div>`;
+  }
+  function wireDocs(h, v, reopen) {
+    const p = HR.prof(v.id);
+    const add = $('#dAdd', h), form = $('#dForm', h), sv = $('#dSave', h);
+    if (add) add.addEventListener('click', () => { form.classList.remove('hidden'); add.disabled = true; });
+    $('#dCancel', h).addEventListener('click', () => { form.classList.add('hidden'); if (add) add.disabled = !can(OPT, 'edit'); });
+    const chk = () => { sv.disabled = !($('#d_type', h).value && $('#d_file', h).files.length); };
+    ['d_type', 'd_file'].forEach(i => $('#' + i, h).addEventListener('change', chk));
+    sv.addEventListener('click', () => {
+      const f = $('#d_file', h).files[0], exp = $('#d_exp', h).value, errs = {};
+      if (f && f.size > 5 * 1024 * 1024) errs.d_file = 'The file is larger than 5 MB.';
+      if (exp && exp < T) errs.d_exp = 'Expiry date is in the past. Upload the renewed document.';
+      if (!showErrors(form, errs)) return;
+      const rec = { id: UI.uid('hdc'), type: $('#d_type', h).value, number: $('#d_no', h).value.trim(), expiry: exp, file: f.name, uploadedBy: UI.me().displayName, uploadedAt: UI.nowStamp() };
+      p.documents = p.documents || []; p.documents.push(rec); save();
+      audit('Uploaded employee document', 'Employee', { id: v.id, label: v.name }, [['Document', '', rec.type + ' ' + rec.file]]);
+      toast('Document uploaded'); reopen(); tb.redraw();
+    });
+    $$('[data-del]', h).forEach(b => b.addEventListener('click', () => {
+      const dd = p.documents.find(x => x.id === b.dataset.del);
+      confirm({ title: 'Remove this document?', body: `${esc(dd.type)} · ${esc(dd.file)} is removed from the employee file. The audit trail keeps a record.`, reason: true, confirm: 'Remove document',
+        onConfirm: (reason) => { p.documents = p.documents.filter(x => x !== dd); save(); audit('Removed employee document', 'Employee', { id: v.id, label: v.name }, [['Document', dd.type + ' ' + dd.file, '(removed)']], { reason }); toast('Document removed'); reopen(); tb.redraw(); } });
+    }));
+  }
+  function linked(v, u) {
+    if (!u) return `<div class="empty">${icon('user-x')}<b>No user account is linked</b><span>Users are created in Administration, User Master, and linked to the employee number ${esc(v.empNo)}.</span>${can('admin.security.users', 'add') ? `<a class="btn sm" style="margin-top:10px" href="${R('users.html')}">${icon('external-link')} Open User Master</a>` : ''}</div>`;
+    const asg = (db.assignments || []).filter(a => a.userId === u.id && a.status === 'Active');
+    return kv([['Login', `<span class="mono">${esc(u.login)}</span>`], ['Display name', esc(u.displayName)], ['Account status', UI.badge(u.status)], ['User type', esc(u.type)], ['Classification', esc(u.classification)], ['Email', esc(u.email)], ['Active from', esc(Kit.day(u.activeFrom)) + (u.activeTo ? ' to ' + esc(Kit.day(u.activeTo)) : '')],
+      ['Roles', asg.length ? asg.map(a => `<div class="small"><b>${esc(UI.L.rName(a.roleId) || a.roleId)}</b> · ${esc(UI.tupleText(a, true))}</div>`).join('') : '<span class="muted">No active assignment</span>']])
+      + `<div class="banner info" style="margin-top:14px">${icon('info')}<span>Account, roles and access are managed in the User Master. HR changes to the employee status are sent to Administration for review.</span></div>
+      <a class="btn sm" style="margin-top:10px" href="${R('user.html?id=' + u.id)}">${icon('external-link')} Open in User Master</a>`;
+  }
+
+  /* ---------- Add / edit ---------- */
+  function edit(id) {
+    const isNew = !id;
+    const v = isNew ? { allowances: [{ code: 'HRA', amount: '' }, { code: 'TRN', amount: '' }], nationality: '', emergency: {}, branchId: 'br_01', payMode: 'Bank transfer', contract: 'Fixed term, 2 years renewable', shift: 'D' } : HR.get(id);
+    const lock = !isNew && v.src === 'admin';
+    const comps = allowComps();
+    const allowVal = (c) => { const a = (v.allowances || []).find(x => x.code === c); return a ? a.amount : ''; };
+    const desigOpts = db.hrDesignations.filter(x => x.status !== 'Inactive').map(x => [x.name, x.name + ' (' + x.grade + ')']);
+    if (v.designation && !desigOpts.some(o => o[0] === v.designation)) desigOpts.unshift([v.designation, v.designation]);
+    drawer({ title: isNew ? 'Add employee' : 'Edit ' + v.name, sub: isNew ? 'New Employee Master record with HR details.' : esc(v.empNo), wide: true,
+      body: `<div class="err-summary hidden"></div>${lock ? `<div class="banner info" style="margin-bottom:12px">${icon('lock')}<span>Name, designation, branch, education and HR status come from the Employee Master in Administration and are read-only here. HR details below can be edited.</span></div>` : ''}
+        <div class="section-t">Personal</div><div class="form-grid c3">
+          ${field({ id: 'f_name', label: 'Full name', value: v.name, req: true, readonly: lock, max: 80 })}
+          ${field({ id: 'f_gender', label: 'Gender', type: 'select', options: [['Male', 'Male'], ['Female', 'Female']], value: v.gender, req: true })}
+          ${field({ id: 'f_dob', label: 'Date of birth', type: 'date', value: v.dob, req: true })}
+          ${field({ id: 'f_nat', label: 'Nationality', type: 'select', options: NATS.map(x => [x, x]), value: v.nationality, req: true })}
+          ${field({ id: 'f_civ', label: 'Civil ID', value: v.civilId, req: true, max: 12, hint: '12 digits', attrs: 'inputmode="numeric"' })}
+          ${field({ id: 'f_mob', label: 'Mobile', value: v.mobile, req: true, placeholder: '+965 5xxx xxxx' })}
+          ${field({ id: 'f_email', label: 'Work email', value: v.email, type: 'email' })}
+          ${field({ id: 'f_addr', label: 'Address', value: v.address, full: false })}
+          ${field({ id: 'f_edu', label: 'Education', value: v.education, readonly: lock })}
+          ${field({ id: 'f_ecn', label: 'Emergency contact', value: v.emergency && v.emergency.name })}
+          ${field({ id: 'f_ecr', label: 'Relation', type: 'select', options: ['Spouse', 'Father', 'Mother', 'Brother', 'Sister', 'Son', 'Daughter', 'Friend'].map(x => [x, x]), value: v.emergency && v.emergency.relation })}
+          ${field({ id: 'f_ecp', label: 'Emergency phone', value: v.emergency && v.emergency.phone })}
+        </div>
+        <div class="section-t">Job</div><div class="form-grid c3">
+          ${lock ? field({ id: 'f_des', label: 'Designation', value: v.designation, readonly: true }) : field({ id: 'f_des', label: 'Designation', type: 'select', options: desigOpts, value: v.designation, req: true })}
+          ${field({ id: 'f_br', label: 'Branch', type: 'select', options: db.branches.filter(b => b.status === 'Active').map(b => [b.id, b.name]), value: v.branchId, req: true, disabled: lock })}
+          ${field({ id: 'f_dept', label: 'Department', type: 'select', options: db.departments.map(d => [d.id, d.name + ' · ' + UI.L.bName(d.branchId) + (d.status !== 'Active' ? ' (inactive)' : '')]), value: v.deptId, req: true })}
+          ${field({ id: 'f_grade', label: 'Grade', type: 'select', options: db.hrGrades.filter(g => g.status !== 'Inactive').map(g => [g.code, g.code + ' · ' + g.name]), value: v.grade, req: true })}
+          ${field({ id: 'f_join', label: 'Join date', type: 'date', value: v.joinDate, req: true })}
+          ${field({ id: 'f_contract', label: 'Contract', type: 'select', options: ['Permanent', 'Fixed term, 2 years renewable', 'Fixed term, 1 year', 'Locum'].map(x => [x, x]), value: v.contract, req: true })}
+          ${field({ id: 'f_mgr', label: 'Line manager', type: 'select', options: HR.empOpts(x => x.id !== id && x.hrStatus !== 'Separated'), value: v.managerId })}
+          ${field({ id: 'f_shift', label: 'Default shift', type: 'select', options: db.hrShifts.filter(s => s.type === 'Work' && s.status !== 'Inactive').map(s => [s.code, s.code + ' · ' + s.name]), value: v.shift, req: true })}
+        </div>
+        <div class="section-t">Pay</div><div class="form-grid c3">
+          ${field({ id: 'f_basic', label: 'Basic salary (KWD)', type: 'number', value: v.basic, req: true, attrs: 'min="0" step="0.001"', hint: '<span id="gHint"></span>' })}
+          ${comps.map(c => field({ id: 'fa_' + c.code, label: esc(c.name) + ' (KWD)', type: 'number', value: allowVal(c.code), attrs: 'min="0" step="0.001"' })).join('')}
+          ${field({ id: 'f_bank', label: 'Bank', type: 'select', options: BANKS, value: v.bank, req: true })}
+          ${field({ id: 'f_iban', label: 'IBAN', value: v.iban, req: true, max: 30, hint: 'KW, 2 check digits, 4 letter bank code, 22 characters' })}
+        </div>`,
+      foot: `<button class="btn" data-close>Cancel</button><span class="grow"></span><button class="btn primary" id="fSave" disabled>${isNew ? icon('user-plus') + ' Add employee' : icon('check') + ' Save changes'}</button>`,
+      onMount: (el, close) => {
+        const reqIds = ['f_name', 'f_gender', 'f_dob', 'f_nat', 'f_civ', 'f_mob', 'f_des', 'f_br', 'f_dept', 'f_grade', 'f_join', 'f_contract', 'f_shift', 'f_basic', 'f_bank', 'f_iban'];
+        const val = (i) => ($('#' + i, el) || {}).value || '';
+        const sv = $('#fSave', el);
+        const gh = () => { const g = HR.grade(val('f_grade')); $('#gHint', el).textContent = g ? `Grade range ${Kit.money(g.minBasic, false)} to ${Kit.money(g.maxBasic, false)}` : ''; };
+        const chk = () => { sv.disabled = reqIds.some(i => !val(i).trim()); gh(); };
+        $$('input,select', el).forEach(i => { i.addEventListener('input', chk); i.addEventListener('change', chk); });
+        $('#f_des', el).addEventListener('change', () => { const d = db.hrDesignations.find(x => x.name === val('f_des')); if (d && !val('f_grade')) { $('#f_grade', el).value = d.grade; chk(); } });
+        $('#f_iban', el).addEventListener('blur', () => { const i = $('#f_iban', el); i.value = i.value.replace(/\s/g, '').toUpperCase(); const bc = i.value.slice(4, 8); if (BANKS.some(b => b[0] === bc) && !val('f_bank')) $('#f_bank', el).value = bc; chk(); });
+        chk();
+        sv.addEventListener('click', () => {
+          const errs = {};
+          const civ = val('f_civ').trim(), iban = val('f_iban').replace(/\s/g, '').toUpperCase(), basic = Number(val('f_basic')), g = HR.grade(val('f_grade'));
+          if (!/^[23]\d{11}$/.test(civ)) errs.f_civ = 'Civil ID must be 12 digits starting with 2 or 3.';
+          else if (HR.all().some(x => x.civilId === civ && x.id !== id)) errs.f_civ = 'Another employee already has this Civil ID.';
+          if (!UI.PHONE_RE.test(val('f_mob'))) errs.f_mob = 'Enter a valid mobile number.';
+          if (val('f_email') && !UI.EMAIL_RE.test(val('f_email'))) errs.f_email = 'Enter a valid email address.';
+          if (val('f_dob') && parseInt(UI.ageOf(val("f_dob")), 10) < 18) errs.f_dob = 'Employee must be at least 18 years old.';
+          if (!/^KW\d{2}[A-Z]{4}[A-Z0-9]{22}$/.test(iban)) errs.f_iban = 'IBAN must be 30 characters: KW, 2 digits, 4 letter bank code and 22 characters.';
+          else if (iban.slice(4, 8) !== val('f_bank')) errs.f_iban = 'The bank code in the IBAN (' + iban.slice(4, 8) + ') does not match the selected bank.';
+          if (!(basic > 0)) errs.f_basic = 'Basic salary must be more than zero.';
+          else if (g && (basic < g.minBasic || basic > g.maxBasic)) errs.f_basic = `Basic salary must be within the ${g.code} range ${Kit.money(g.minBasic)} to ${Kit.money(g.maxBasic)}.`;
+          comps.forEach(c => { const x = val('fa_' + c.code); if (x !== '' && Number(x) < 0) errs['fa_' + c.code] = c.name + ' cannot be negative.'; });
+          if (!showErrors(el, errs)) return;
+          const allowances = comps.map(c => ({ code: c.code, amount: Number(val('fa_' + c.code) || 0) })).filter(a => a.amount > 0);
+          const P = { gender: val('f_gender'), dob: val('f_dob'), nationality: val('f_nat'), civilId: civ, mobile: val('f_mob').trim(), email: val('f_email').trim(), address: val('f_addr').trim(),
+            emergency: { name: val('f_ecn').trim(), relation: val('f_ecr'), phone: val('f_ecp').trim() }, deptId: val('f_dept'), grade: val('f_grade'), joinDate: val('f_join'), contract: val('f_contract'), managerId: val('f_mgr') || null, shift: val('f_shift'),
+            basic, allowances, bank: val('f_bank'), iban, category: (db.hrDesignations.find(x => x.name === val('f_des')) || {}).category || (/^MED/.test(val('f_grade')) ? 'Doctor' : /^NUR/.test(val('f_grade')) ? 'Nurse' : /^AH/.test(val('f_grade')) ? 'Allied health' : /^SUP/.test(val('f_grade')) ? 'Support' : 'Administration') };
+          if (P.category === 'Doctor' && P.grade && !/^MED/.test(P.grade)) P.category = 'Doctor';
+          if (isNew) {
+            const no = Kit.nextNo('E-', db.hrStaff, 'empNo'), nid = 'emp_' + no.slice(2);
+            db.hrStaff.push({ id: nid, empNo: no, name: val('f_name').trim(), designation: val('f_des'), branchId: val('f_br'), education: val('f_edu').trim(), hrStatus: 'Active', lastWorkingDate: null, lastSync: UI.nowStamp() });
+            db.hrProfiles[nid] = Object.assign({ empId: nid, probationEnd: Kit.addDays(P.joinDate, 100), payMode: 'Bank transfer', alOpening: 0, licences: [], documents: [], basicHistory: [] }, P);
+            save(); audit('Created employee', 'Employee', { id: nid, label: val('f_name').trim() }, [['Employee no.', '', no], ['Department', '', HR.dept(P.deptId)], ['Basic salary', '', Kit.money(basic)]]);
+            close(); toast('Employee ' + no + ' added'); refresh(); profile(nid);
+          } else {
+            const p = HR.prof(id), b = HR.base(id), changes = [];
+            const cmp = (label, a, z) => { if (String(a == null ? '' : a) !== String(z == null ? '' : z)) changes.push([label, String(a == null ? '' : a), String(z == null ? '' : z)]); };
+            cmp('Department', HR.dept(p.deptId), HR.dept(P.deptId)); cmp('Grade', p.grade, P.grade); cmp('Basic salary', p.basic, P.basic); cmp('IBAN', p.iban, P.iban); cmp('Bank', p.bank, P.bank); cmp('Mobile', p.mobile, P.mobile); cmp('Civil ID', p.civilId, P.civilId);
+            cmp('Allowances', (p.allowances || []).map(a => a.code + ' ' + a.amount).join(', '), P.allowances.map(a => a.code + ' ' + a.amount).join(', '));
+            if (Number(p.basic) !== basic) { P.basicHistory = (p.basicHistory || []).concat([{ from: T, before: p.basic, after: basic, reason: 'Salary change' }]); }
+            Object.assign(p, P);
+            if (!lock) { cmp('Name', b.name, val('f_name').trim()); cmp('Designation', b.designation, val('f_des')); Object.assign(b, { name: val('f_name').trim(), designation: val('f_des'), branchId: val('f_br'), education: val('f_edu').trim() }); }
+            save(); audit('Updated employee', 'Employee', { id, label: b.name }, changes);
+            close(); toast('Changes saved'); tb.redraw(); profile(id);
+          }
+        });
+      } });
+  }
+
+  function separation(v, done) {
+    let day = Kit.addDays(T, 30), sType = 'Resignation';
+    confirm({ onMount: (el) => { $('#s_day', el).addEventListener('change', (e) => { day = e.target.value; }); $('#s_type', el).addEventListener('change', (e) => { sType = e.target.value; }); }, title: 'Record separation for ' + v.name + '?', body: 'The employee moves to Pending separation. End of service benefits can then be calculated.', tone: 'danger', confirm: 'Record separation', reason: true,
+      extra: `<div class="form-grid" style="margin-top:12px">${field({ id: 's_type', label: 'Separation type', type: 'select', options: ['Resignation', 'Termination by employer', 'End of contract', 'Retirement', 'Death or disability'].map(x => [x, x]), value: 'Resignation', req: true })}${field({ id: 's_day', label: 'Last working day', type: 'date', value: Kit.addDays(T, 30), req: true })}</div>`,
+      onConfirm: (reason) => {
+        const b = HR.base(v.id);
+        b.hrStatus = 'Pending separation'; b.lastWorkingDate = day; save();
+        audit('Recorded separation', 'Employee', { id: v.id, label: v.name }, [['HR status', 'Active', 'Pending separation'], ['Separation type', '', sType], ['Last working day', '', day]], { reason });
+        toast('Separation recorded'); refresh(); done();
+      } });
+  }
+  function printProfile(v) {
+    Kit.printDoc({ title: 'Employee profile', sub: v.empNo + ' · ' + v.name, html: `<h3>${esc(v.name)} <span style="font-weight:400">(${esc(v.empNo)})</span></h3>
+      <table><tbody>${[['Designation', v.designation], ['Department', HR.dept(v.deptId)], ['Branch', UI.L.bName(v.branchId)], ['Grade', v.grade], ['Join date', Kit.day(v.joinDate)], ['Contract', v.contract], ['Nationality', v.nationality], ['Civil ID', v.civilId], ['Date of birth', Kit.day(v.dob)], ['Mobile', v.mobile], ['Email', v.email], ['Bank / IBAN', bankName(v.bank) + ' / ' + v.iban], ['Gross monthly', Kit.money(HR.gross(v))]].map(([k, x]) => `<tr><td style="width:180px"><b>${esc(k)}</b></td><td>${esc(x)}</td></tr>`).join('')}</tbody></table>
+      <h3 style="margin-top:16px">Licences</h3><table><thead><tr><th>Type</th><th>Number</th><th>Expiry</th></tr></thead><tbody>${(v.licences || []).map(c => `<tr><td>${esc(c.type)}</td><td>${esc(c.number)}</td><td>${esc(Kit.day(c.expiry))}</td></tr>`).join('') || '<tr><td colspan="3">None</td></tr>'}</tbody></table>
+      <h3 style="margin-top:16px">Documents</h3><table><thead><tr><th>Document</th><th>Number</th><th>Expiry</th></tr></thead><tbody>${(v.documents || []).map(d => `<tr><td>${esc(d.type)}</td><td>${esc(d.number)}</td><td>${esc(d.expiry ? Kit.day(d.expiry) : 'No expiry')}</td></tr>`).join('')}</tbody></table>` });
+  }
+
+  const a = $('#add'); if (a) a.addEventListener('click', () => edit(null));
+  $('#exp').addEventListener('click', () => { Kit.csv('employees', ['Employee no.', 'Name', 'Designation', 'Department', 'Branch', 'Grade', 'Join date', 'Nationality', 'Civil ID', 'Gross KWD', 'Status'], HR.all().map(v => [v.empNo, v.name, v.designation, HR.dept(v.deptId), UI.L.bName(v.branchId), v.grade, v.joinDate, v.nationality, v.civilId, HR.gross(v).toFixed(3), v.hrStatus])); audit('Exported employee list', 'Employee', { id: 'list', label: 'Employees' }, [['Format', '', 'CSV']]); });
+  const qid = UI.param('id'); if (qid && HR.get(qid)) profile(qid);
+  if (UI.param('new') && can(OPT, 'add')) edit(null);
+})();
+</script>
+</body>
+</html>

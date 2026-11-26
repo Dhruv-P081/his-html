@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Patient 360 · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-reception.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/reception.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, fmtDate } = UI;
+  const Rc = window.Reception;
+  const OPT = 'reception.reg.patient';
+  let p = Kit.pt(UI.param('id'));
+  const title = p ? p.name : 'Patient 360';
+  const curIp = p ? db.encounters.find(e => e.type === 'IPD' && e.patientId === p.id && e.status !== 'Discharged') : null;
+  if (!UI.page({ opt: OPT, title, active: 'reception/patients.html', crumbs: [['Home', 'home.html'], ['Reception and ADT', 'reception/index.html'], ['Master Patient Index', 'reception/patients.html'], [title, null]],
+    subtitle: p ? `${esc(p.mrn)} · registered ${esc(Kit.day(p.registeredAt))}${p.registeredBy ? ' by ' + esc(p.registeredBy) : ''}` : 'Open a patient from the Master Patient Index or the global search.',
+    actions: p && !Rc.isMerged(p) ? `<button class="btn" id="aEdit" ${Rc.gate(OPT, 'edit')}>${icon('pencil')} ${p.alias ? 'Complete profile' : 'Edit'}</button>
+      <button class="btn" id="aBand" ${Rc.gate(OPT, 'print')}>${icon('printer')} Wristband</button><button class="btn" id="aCard" ${Rc.gate(OPT, 'print')}>${icon('id-card')} Patient card</button>
+      ${curIp ? `<a class="btn" href="${R('reception/admissions.html?tab=ip&enc=' + curIp.id)}">${icon('bed-double')} View admission</a>` : `<button class="btn" id="aAdmit" ${Rc.gate('reception.visit.adm', 'add')}>${icon('bed-double')} Admit</button>`}<button class="btn primary" id="aOpd" ${Rc.gate('reception.visit.opd', 'add')}>${icon('clipboard-plus')} New OPD visit</button>` : '' })) return;
+
+  if (!p) {
+    $('#page').innerHTML = `<div class="card"><div class="empty">${icon('user-search')}<b>No patient selected</b><span>Search the Master Patient Index to open a patient record.</span><div style="margin-top:12px"><button class="btn primary" id="find">${icon('search')} Find patient</button></div></div></div>`;
+    $('#find').addEventListener('click', () => Kit.pickPatient({ onPick: (x) => { location.href = R('reception/patient.html?id=' + x.id); } }));
+    return;
+  }
+  const merged = Rc.isMerged(p);
+  let tab = UI.param('tab') || 'profile';
+  function draw() {
+    p = Kit.pt(p.id);
+    const encs = db.encounters.filter(e => e.patientId === p.id).sort((a, b) => b.start.localeCompare(a.start));
+    const visits = encs.filter(e => e.type !== 'IPD'), adms = encs.filter(e => e.type === 'IPD');
+    const cur = adms.find(e => e.status !== 'Discharged');
+    const er = visits.find(e => e.type === 'ER' && !/Discharged|Cancelled|Admitted|Left/.test(e.status));
+    const invs = db.invoices.filter(i => i.patientId === p.id).sort((a, b) => b.date.localeCompare(a.date));
+    const due = Kit.sumBy(invs, Rc.balance);
+    const cov = Rc.coverage(p.id);
+    const docs = (db.receptionDocs || []).filter(d => d.patientId === p.id);
+    const links = (db.receptionLinks || []).filter(l => l.patientId === p.id);
+    const reqs = (db.receptionAdmRequests || []).filter(r => r.patientId === p.id && !/Admitted|Cancelled/.test(r.status));
+    const prim = cov.find(c => c.rank === 'Primary'); const cs = Rc.covState(prim);
+    const flags = [];
+    if (merged) flags.push(`<div class="banner err" style="margin-bottom:14px">${icon('git-merge')}<span class="grow">This record was merged into <b>${esc((Kit.pt(p.mergedInto) || {}).mrn || '')}</b> on ${esc(fmtDate(p.mergedAt))}. It is read only.</span><a class="btn sm" href="${R('reception/patient.html?id=' + p.mergedInto)}">Open surviving record</a></div>`);
+    if (p.alias) flags.push(`<div class="banner warn" style="margin-bottom:14px">${icon('user-round-x')}<span class="grow">Unidentified patient registered under a temporary alias. Complete the profile when identity is confirmed.</span><button class="btn sm" id="fixAlias" ${Rc.gate(OPT, 'edit')}>Complete profile</button></div>`);
+    if (p.dupFlag && p.dupFlag.length && !merged) flags.push(`<div class="banner warn" style="margin-bottom:14px">${icon('triangle-alert')}<span class="grow">Possible duplicate of ${p.dupFlag.map(id => esc((Kit.pt(id) || {}).mrn || '')).join(', ')}.</span><a class="btn sm" href="${R('reception/merge.html')}">Review duplicates</a></div>`);
+    if (UI.param('new') === '1') flags.push(`<div class="banner ok" style="margin-bottom:14px">${icon('circle-check')}<span class="grow">Patient registered with MRN <b>${esc(p.mrn)}</b>. Print the patient card or start a visit.</span></div>`);
+    $('#page').innerHTML = `${flags.join('')}${Kit.patientBanner(p, cur || er, p.vip ? '<span class="badge b-violet">VIP</span>' : '')}
+      <div class="grid g4" style="margin-bottom:16px">
+        ${Kit.kpi('Current status', cur ? 'Inpatient' : er ? 'In ER' : 'Outpatient', { icon: cur ? 'bed-double' : er ? 'siren' : 'user', foot: cur ? 'Bed ' + ((Kit.bed(cur.bedId) || {}).no || '') + ' · ' + Kit.docName(cur.attendingId || cur.doctorId) : er ? er.no + ' · ' + er.area : 'Last visit ' + (visits[0] ? Kit.day(visits[0].start) : 'none') })}
+        ${Kit.kpi('Visits', visits.length, { icon: 'clipboard-list', foot: adms.length + ' admission' + (adms.length === 1 ? '' : 's') })}
+        ${Kit.kpi('Coverage', esc(cs[0]), { icon: 'shield-check', foot: prim ? (Kit.plan(prim.planId) || {}).name + (prim.to ? ' to ' + Kit.day(prim.to) : '') : 'No payer mapped' })}
+        ${Kit.kpi('Balance due', Kit.money(due), { icon: 'wallet', foot: ((n) => n + ' open invoice' + (n === 1 ? '' : 's'))(invs.filter(i => Rc.balance(i) > 0).length) })}
+      </div>
+      <div class="card"><div id="tabs"></div><div id="tb"></div></div>`;
+    Kit.tabs($('#tabs'), [{ id: 'profile', label: 'Profile', icon: 'user' }, { id: 'visits', label: 'Visits', count: visits.length, icon: 'clipboard-list' }, { id: 'adm', label: 'Admissions', count: adms.length + reqs.length, icon: 'bed-double' },
+      { id: 'ins', label: 'Insurance', count: cov.length, icon: 'shield-check' }, { id: 'docs', label: 'Documents', count: docs.length, icon: 'folder-open' }, { id: 'bill', label: 'Billing', count: invs.length, icon: 'receipt' }], tab, (v) => { tab = v; body(); });
+    const fa = $('#fixAlias'); if (fa) fa.addEventListener('click', edit);
+    function body() {
+      const host = $('#tb');
+      if (tab === 'profile') {
+        const kv = (rows) => `<dl class="kv">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v || '<span class="mute">Not recorded</span>'}</dd>`).join('')}</dl>`;
+        host.innerHTML = `<div class="grid g2 card-pad">
+          <div class="stack"><div class="section-t">Demographics</div>${kv([['Full name', esc(p.name)], ['Arabic name', p.nameAr ? `<span dir="rtl">${esc(p.nameAr)}</span>` : ''], ['Gender', esc(p.gender)], ['Date of birth', p.dob ? esc(fmtDate(p.dob)) + ' (' + esc(Kit.age(p)) + ')' : ''], ['Nationality', esc(p.nationality)], ['Primary ID', esc(p.idType || (p.civilId ? 'Kuwait Civil ID' : ''))], ['Civil ID', `<span class="mono">${esc(p.civilId)}</span>`], ['Passport', esc(p.passportNo || '')], ['Blood group', esc(p.bloodGroup)], ['Marital status', esc(p.marital || '')], ['Preferred language', esc(p.lang)], ['Photo', p.hasPhoto ? Kit.status('Captured', 'ok') : '<span class="mute">Not captured</span>']])}</div>
+          <div class="stack"><div class="section-t">Contact</div>${kv([['Mobile', esc(p.mobile)], ['Email', esc(p.email)], ['Address', esc(p.address)]])}
+            <div class="section-t">Emergency contact</div>${kv([['Name', esc((p.emergency || {}).name)], ['Relation', esc((p.emergency || {}).relation)], ['Phone', esc((p.emergency || {}).phone)]])}
+            <div class="section-t">Clinical flags</div>${kv([['Allergies', (p.allergies || []).map(a => `<span class="badge allergy">${esc(a)}</span>`).join(' ') || 'No known allergies'], ['Chronic conditions', (p.chronic || []).map(c => `<span class="tag">${esc(c)}</span>`).join(' ')]])}
+            <div class="small muted">Allergies and conditions are recorded by clinicians in EMR. <a href="${R('emr/summary.html?pt=' + p.id)}">Open clinical summary</a></div></div>
+          <div class="span-all"><div class="section-t" style="margin-bottom:8px">Family, guarantor and dependants</div>
+            ${links.length ? `<div class="list-rows">${links.map(l => { const r = (db.receptionRelations || []).find(x => x.id === l.relationId) || {}; const o = Kit.pt(l.relatedId); return `<div>${Kit.patientCell(o)}<span class="grow small muted">${esc(l.note || '')}</span><span class="tag">${esc(r.name || '')}</span><span class="badge b-info nodot">${esc(l.role)}</span>${o ? `<a class="btn xs" href="${R('reception/patient.html?id=' + o.id)}">Open</a>` : ''}</div>`; }).join('')}</div>` : '<div class="muted small">No linked records.</div>'}</div>
+        </div>`;
+      } else if (tab === 'visits') {
+        UI.table(host, { columns: [
+          { label: 'Visit', sort: (e) => e.start, render: (e) => `<b class="mono">${esc(e.no)}</b><div class="small muted">${esc(Kit.when(e.start))}</div>` },
+          { label: 'Type', render: (e) => e.type === 'ER' ? `${Kit.triage(e.triage)} ER · ${esc(e.area || '')}` : `OPD · ${esc(e.visitType || '')}` },
+          { label: 'Doctor / clinic', render: (e) => esc(Kit.docName(e.doctorId)) + `<div class="small muted">${esc(e.clinicId ? UI.L.clName(e.clinicId) : 'Emergency department')}</div>` },
+          { label: 'Reason', render: (e) => esc(e.complaint || '') + (e.diagnosis ? `<div class="small mono muted">${esc(e.diagnosis)}</div>` : '') },
+          { label: 'Payer', render: (e) => esc(e.payer || '') },
+          { label: 'Status', render: (e) => Kit.status(e.status) },
+          { label: '', cls: 'actions', render: (e) => e.token && e.start.startsWith(db.TODAY) ? `<button class="btn xs" data-tok="${e.id}">${icon('ticket')} Token</button>` : '' }],
+          rows: visits, search: (e) => [e.no, e.complaint, Kit.docName(e.doctorId)].join(' '), searchPlaceholder: 'Search visits',
+          filters: [{ label: 'Type', options: [['OPD', 'OPD'], ['ER', 'ER']], test: (e, v) => e.type === v }], empty: 'No visits yet', emptyIcon: 'clipboard-list',
+          afterDraw: (tb) => $$('[data-tok]', tb).forEach(b => b.addEventListener('click', () => Rc.printToken(Kit.enc(b.dataset.tok)))) });
+      } else if (tab === 'adm') {
+        const tf = (db.receptionTransfers || []).filter(t => adms.some(a => a.id === t.encounterId));
+        const lv = (db.receptionLeaves || []).filter(t => adms.some(a => a.id === t.encounterId));
+        host.innerHTML = `${reqs.length ? `<div class="card-pad" style="border-bottom:1px solid var(--line)"><div class="section-t" style="margin-bottom:8px">Open admission requests</div>${reqs.map(r => `<div class="row" style="padding:6px 0"><b class="mono">${esc(r.no)}</b>${Kit.status(r.status)}<span class="grow">${esc(r.reason)} · ${esc(r.type)}</span><a class="btn xs" href="${R('reception/admissions.html?req=' + r.id)}">Open</a></div>`).join('')}</div>` : ''}
+          <div class="table-wrap"><table class="tbl"><thead><tr><th>Admission</th><th>Admitted</th><th>Ward / bed</th><th>Doctor</th><th>Reason</th><th>Length of stay</th><th>Discharge</th><th>Status</th></tr></thead><tbody>
+          ${adms.length ? adms.map(e => { const b = Kit.bed(e.bedId) || {}; const los = Math.max(1, Math.round((new Date((e.end || db.TODAY).slice(0, 10)) - new Date(e.start.slice(0, 10))) / 864e5)); return `<tr><td><b class="mono">${esc(e.no)}</b><div class="small muted">${esc(e.admissionType || '')}</div></td><td>${esc(fmtDate(e.start))}</td><td>${esc((Kit.ward(b.wardId) || {}).name || '')}<div class="small muted">${esc(b.no || '')}</div></td><td>${esc(Kit.docName(e.attendingId || e.doctorId))}</td><td>${esc(e.reason || '')}<div class="small mono muted">${esc(e.diagnosis || '')}</div></td><td>${los} day${los > 1 ? 's' : ''}</td><td class="small">${e.end ? esc(e.dischargeType || 'Routine discharge') + '<div class="muted">' + esc(fmtDate(e.end)) + '</div>' : esc('Expected ' + Kit.day(e.expectedDischarge))}</td><td>${Kit.status(e.status)}</td></tr>`; }).join('') : `<tr><td colspan="8"><div class="empty">${icon('bed-double')}<b>No admissions</b></div></td></tr>`}
+          </tbody></table></div>
+          ${tf.length || lv.length ? `<div class="card-pad"><div class="section-t" style="margin-bottom:10px">Transfers and leave</div><div class="timeline">${tf.map(t => `<div class="tl-item"><b>${esc(t.kind)} transfer</b> ${esc(t.from)} to ${esc(t.to)}<div class="meta">${esc(fmtDate(t.at))} · ${esc(t.by)} · ${esc(t.reason)}</div></div>`).concat(lv.map(l => `<div class="tl-item ${l.status === 'Returned' ? 'ok' : 'warn'}"><b>Temporary leave</b> ${Kit.status(l.status === 'Returned' ? 'Returned' : 'Leave')}<div class="meta">Left ${esc(fmtDate(l.departAt))} · expected ${esc(fmtDate(l.expectedReturn))}${l.returnedAt ? ' · returned ' + esc(fmtDate(l.returnedAt)) : ''} · ${esc(l.reason)}</div></div>`)).join('')}</div></div>` : ''}`;
+      } else if (tab === 'ins') {
+        host.innerHTML = `<div class="card-pad"><div class="grid g2">${cov.length ? cov.map(c => { const s = Rc.covState(c); const py = Kit.payer(c.payerId) || {}, pl = Kit.plan(c.planId) || {}; return `<div class="card card-pad stack tight"><div class="row"><span class="badge ${c.rank === 'Primary' ? 'b-info' : 'b-neutral'} nodot">${esc(c.rank)} payer</span><span class="grow"></span>${Kit.status(s[0], s[1])}</div>
+            <div><b style="font-size:15px">${esc(py.name)}</b><div class="small muted">${esc(py.type || '')}${py.tpa ? ' · TPA ' + esc(py.tpa) : ''}</div></div>
+            <dl class="kv tight"><dt>Plan</dt><dd>${esc(pl.name || '')} · network ${esc(pl.network || '')}</dd><dt>Policy no.</dt><dd class="mono">${esc(c.policyNo)}</dd><dt>Member no.</dt><dd class="mono">${esc(c.memberNo || '')}</dd><dt>Coverage</dt><dd>${esc(Kit.day(c.from))} to ${esc(Kit.day(c.to))}</dd>
+            <dt>Co-pay</dt><dd>${pl.copayPct || 0}% · deductible ${Kit.money(pl.deductible)} · max ${Kit.money(pl.maxCopay)}</dd><dt>Annual limit</dt><dd>${pl.limit ? Kit.money(pl.limit) : 'No limit'}</dd><dt>Last verified</dt><dd>${c.verified ? esc(c.verifiedBy) + ', ' + esc(fmtDate(c.verifiedAt)) : '<span class="mute">Not verified</span>'}</dd></dl>
+            <div class="row"><button class="btn sm" data-ver="${c.id}" ${Rc.gate(OPT, 'verify')} ${merged ? 'disabled' : ''}>${icon('shield-check')} Verify eligibility</button></div></div>`; }).join('')
+          : `<div class="note-box span-all">${icon('wallet')} Cash (self-pay). No payer is mapped.</div>`}</div>
+          <div class="row" style="margin-top:14px"><button class="btn" id="covEdit" ${Rc.gate(OPT, 'edit')} ${merged ? 'disabled' : ''}>${icon('pencil')} Change financial mapping</button>${Kit.scopeNote('Loyalty points, coupons and corporate discounts are 2nd phase')}</div></div>`;
+        $$('[data-ver]', host).forEach(b => b.addEventListener('click', () => {
+          const c = db.receptionCoverage.find(x => x.id === b.dataset.ver);
+          if (c.to && c.to < db.TODAY) { toast('Policy expired on ' + fmtDate(c.to) + '. Update the coverage dates.', 'err'); return; }
+          Object.assign(c, { verified: true, verifiedBy: Rc.myName(), verifiedAt: Rc.now() }); save();
+          audit('Verified eligibility', 'Coverage', { id: c.id, label: p.mrn + ' ' + c.policyNo }, [['Verified', 'No', 'Yes']]);
+          toast('Eligibility confirmed'); draw();
+        }));
+        const ce = $('#covEdit', host); if (ce) ce.addEventListener('click', edit);
+      } else if (tab === 'docs') {
+        const dts = db.receptionDocTypes || [];
+        UI.table(host, { columns: [
+          { label: 'Document', sort: (d) => d.name, render: (d) => `<div class="row">${icon('file-text', 'mute')}<div class="cell-main"><b>${esc((dts.find(t => t.id === d.typeId) || {}).name || 'Document')}</b><span>${esc(d.name)}</span></div></div>` },
+          { label: 'Category', render: (d) => `<span class="tag">${esc((dts.find(t => t.id === d.typeId) || {}).category || '')}</span>` },
+          { label: 'Number', render: (d) => `<span class="mono">${esc(d.ref || '')}</span>` },
+          { label: 'Expiry', sort: (d) => d.expiry, render: (d) => d.expiry ? (d.expiry < db.TODAY ? Kit.status('Expired') : esc(Kit.day(d.expiry))) : '<span class="mute">-</span>' },
+          { label: 'Added', sort: (d) => d.at, render: (d) => `<span class="small">${esc(fmtDate(d.at))}<div class="muted">${esc(d.by)}</div></span>` },
+          { label: '', cls: 'actions', render: (d) => `<button class="btn xs" data-view="${d.id}">${icon('eye')} View</button>` }],
+          rows: () => (db.receptionDocs || []).filter(d => d.patientId === p.id), search: (d) => d.name + ' ' + d.ref, searchPlaceholder: 'Search documents',
+          filters: [{ label: 'Category', options: [...new Set(dts.map(t => t.category))].map(c => [c, c]), test: (d, v) => ((dts.find(t => t.id === d.typeId) || {}).category) === v }],
+          toolbar: `<button class="btn sm primary" id="docAdd" ${Rc.gate(OPT, 'edit')} ${merged ? 'disabled' : ''}>${icon('scan-line')} Scan or upload</button>`, empty: 'No documents', emptyIcon: 'folder-open',
+          afterDraw: (tb) => $$('[data-view]', tb).forEach(b => b.addEventListener('click', () => { const d = db.receptionDocs.find(x => x.id === b.dataset.view); const t = dts.find(x => x.id === d.typeId) || {};
+            UI.drawer({ title: t.name || 'Document', sub: esc(d.name), body: `<div style="border:1px dashed var(--line-strong);border-radius:12px;height:300px;display:grid;place-items:center;background:var(--soft)" class="mute"><div style="text-align:center">${icon(/\.jpg$/.test(d.name) ? 'image' : 'file-text')}<div class="small">Preview of ${esc(d.name)}</div></div></div><dl class="kv" style="margin-top:14px"><dt>Category</dt><dd>${esc(t.category || '')}</dd><dt>Number</dt><dd>${esc(d.ref || '')}</dd><dt>Expiry</dt><dd>${esc(Kit.day(d.expiry))}</dd><dt>Added by</dt><dd>${esc(d.by)}, ${esc(fmtDate(d.at))}</dd></dl>` }); })) });
+        const da = $('#docAdd'); if (da) da.addEventListener('click', () => Rc.docDrawer(p.id, (d) => { db.receptionDocs.push(d); save(); audit('Added document', 'Patient', { id: p.id, label: p.mrn }, [['Document', '', d.name]]); toast('Document added'); draw(); }));
+      } else if (tab === 'bill') {
+        UI.table(host, { columns: [
+          { label: 'Invoice', sort: (i) => i.date, render: (i) => `<b class="mono">${esc(i.no)}</b><div class="small muted">${esc(Kit.day(i.date))} · ${esc(i.type)}</div>` },
+          { label: 'Items', render: (i) => `<span class="small">${esc((i.lines || []).map(l => l.desc).slice(0, 2).join(', '))}${(i.lines || []).length > 2 ? ' +' + ((i.lines.length) - 2) : ''}</span>` },
+          { label: 'Total', cls: 'num', render: (i) => `<span class="num">${Kit.money(i.total)}</span>` },
+          { label: 'Payer share', cls: 'num', render: (i) => `<span class="num">${Kit.money(i.payerAmount)}</span>${i.claimStatus ? `<div>${Kit.status(i.claimStatus)}</div>` : ''}` },
+          { label: 'Patient share', cls: 'num', render: (i) => `<span class="num">${Kit.money(i.patientAmount)}</span>` },
+          { label: 'Balance', cls: 'num', sort: (i) => Rc.balance(i), render: (i) => `<b class="num">${Kit.money(Rc.balance(i))}</b>` },
+          { label: 'Status', render: (i) => Kit.status(i.status) },
+          { label: '', cls: 'actions', render: (i) => Rc.balance(i) > 0 ? `<button class="btn xs primary" data-pay="${i.id}" ${Rc.gate('reception.cashier', 'add')}>${icon('banknote')} Collect</button>` : '' }],
+          rows: () => db.invoices.filter(i => i.patientId === p.id).sort((a, b) => b.date.localeCompare(a.date)), search: (i) => i.no + ' ' + (i.lines || []).map(l => l.desc).join(' '), searchPlaceholder: 'Search invoices',
+          filters: [{ label: 'Status', options: [['Paid', 'Paid'], ['Unpaid', 'Unpaid'], ['Partially paid', 'Partially paid'], ['Interim', 'Interim']], test: (i, v) => i.status === v }], empty: 'No invoices', emptyIcon: 'receipt',
+          afterDraw: (tb) => $$('[data-pay]', tb).forEach(b => b.addEventListener('click', () => Rc.collect(db.invoices.find(x => x.id === b.dataset.pay), draw))) });
+      }
+    }
+    body();
+  }
+  function edit() { Rc.registerDrawer(Kit.pt(p.id), { onSave: draw }); }
+  draw();
+  if (!merged) {
+    const on = (id, f) => { const b = $('#' + id); if (b) b.addEventListener('click', f); };
+    on('aEdit', edit);
+    on('aBand', () => { const e = db.encounters.find(x => x.patientId === p.id && (x.type === 'IPD' || x.type === 'ER') && !/Discharged|Cancelled/.test(x.status)); Rc.printWristband(p, e); });
+    on('aCard', () => Rc.printCard(p));
+    on('aOpd', () => Rc.newVisit(p, () => { tab = 'visits'; draw(); }));
+    on('aAdmit', () => { const cur = db.encounters.find(e => e.type === 'IPD' && e.patientId === p.id && e.status !== 'Discharged'); if (cur) { toast('Patient is already admitted (' + cur.no + ').', 'err'); return; } Rc.admitRequest(p, () => { tab = 'adm'; draw(); }); });
+  }
+})();
+</script>
+</body>
+</html>

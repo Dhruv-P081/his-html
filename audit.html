@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Audit Log · Tibbi Orbit</title>
+<link rel="stylesheet" href="assets/styles.css">
+<script src="assets/icons.js"></script><script src="assets/data.js"></script><script src="assets/data-core.js"></script><script src="assets/ui.js"></script>
+</head>
+<body>
+<script>
+const { db, $, $$, icon, esc, page, can, table, drawer, badge, fmtDate, audit } = UI;
+if (page({ active: 'audit.html', opt: 'admin.reports.audit', title: 'Audit Log', crumbs: [['Home', 'home.html'], ['Administration', 'admin.html'], ['Audit Log']],
+  subtitle: 'Read-only. Corrections create new events. Passwords, tokens and MFA secrets are never recorded.',
+  actions: can('admin.reports.view', 'print') ? `<button class="btn" id="exp">${icon('download')} Export</button>` : '', body: `<div class="banner info" style="margin-bottom:14px">${icon('info')}<span>Scope to be confirmed: SOW V4 places this audit log screen in the 2nd phase. Every change is still recorded.</span></div><div id="list"></div>` })) {
+  const evId = e => String(e.id).replace(/^ev_/i, 'EV-');
+  const uniq = f => Array.from(new Set(db.audit.map(f))).sort().map(x => [x, x]);
+  table($('#list'), {
+    searchPlaceholder: 'Search record, actor, action or event ID', search: e => [e.id, evId(e), e.actor, e.action, e.record, e.reason].join(' '), pageSize: 15,
+    filters: [
+      { label: 'Range', options: [['1', 'Last 24 hours'], ['7', 'Last 7 days'], ['30', 'Last 30 days']], test: (e, v) => (new Date(UI.today()) - new Date(e.at.slice(0, 10))) / 86400000 <= +v },
+      { label: 'Actor', options: uniq(e => e.actor), test: (e, v) => e.actor === v },
+      { label: 'Entity', options: uniq(e => e.entity), test: (e, v) => e.entity === v },
+      { label: 'Action', options: uniq(e => e.action), test: (e, v) => e.action === v },
+      { label: 'Outcome', options: uniq(e => e.outcome), test: (e, v) => e.outcome === v }],
+    rows: () => db.audit,
+    columns: [
+      { label: 'Time', render: e => `<span class="small">${fmtDate(e.at)}</span><br><span class="mono small muted">${esc(evId(e))}</span>`, sort: e => e.at },
+      { label: 'Actor', render: e => esc(e.actor), sort: e => e.actor },
+      { label: 'Action', render: e => `<b>${esc(e.action)}</b><br><span class="small muted">${esc(e.entity)}</span>` },
+      { label: 'Record', render: e => esc(e.record) },
+      { label: 'Scope', render: e => `<span class="small">${esc(e.scope || '—')}</span>` },
+      { label: 'Changes', render: e => e.changes.length ? `${e.changes.length} field${e.changes.length > 1 ? 's' : ''}` : '<span class="muted">—</span>' },
+      { label: 'Outcome', render: e => badge(e.outcome) },
+    ],
+    onRow: e => drawer({ title: e.action, sub: `${esc(evId(e))} · ${fmtDate(e.at)} Asia/Kuwait`, wide: true,
+      body: `<dl class="kv" style="margin-bottom:16px"><dt>Actor</dt><dd>${esc(e.actor)}</dd><dt>Entity</dt><dd>${esc(e.entity)}</dd><dt>Record</dt><dd>${esc(e.record)} <span class="mono small muted">${esc(e.recordId)}</span></dd><dt>Scope</dt><dd>${esc(e.scope || '—')}</dd><dt>Outcome</dt><dd>${badge(e.outcome)}</dd><dt>Reason</dt><dd>${esc(e.reason || '—')}</dd><dt>Source</dt><dd>${esc(e.source)}</dd><dt>Correlation</dt><dd class="mono">corr-${esc(e.id.slice(3))}-${esc(e.at.slice(11, 13))}</dd></dl>
+        ${e.changes.length ? `<div class="diff"><div class="h">Field</div><div class="h">Before</div><div class="h">After</div>${e.changes.map(c => `<div>${esc(c[0])}</div><div class="old">${esc(c[1] || '(empty)')}</div><div class="new">${esc(c[2])}</div>`).join('')}</div>` : '<div class="muted">No field changes recorded for this event.</div>'}` }),
+  });
+  const x = $('#exp'); if (x) x.addEventListener('click', () => { audit('Audit log exported', 'Report', { id: 'audit', label: 'Audit log' }, [['Rows', '', String(db.audit.length)]]); UI.toast('Opening the audit report for a filtered export.'); setTimeout(() => { location.href = 'report.html?id=RPT-07'; }, 600); });
+}
+</script>
+</body>
+</html>

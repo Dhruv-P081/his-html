@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OPD prescription queue · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-pharmacy.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/pharmacy.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, esc, icon, $, R, can } = UI;
+  const P = Pharmacy, T = db.TODAY;
+  const OPT = 'pharmacy.disp.op';
+  if (!UI.page({ opt: OPT, title: 'OPD prescription queue', subtitle: 'Outpatient prescriptions from the clinics, grouped by prescription number. Outpatient Pharmacy stock.',
+    actions: `<button class="btn" id="prQ" ${can(OPT, 'print') ? '' : 'disabled title="Needs Print permission"'}>${icon('printer')} Print queue</button>` })) return;
+
+  const TABS = [
+    { id: 'pend', label: 'To verify', test: r => r.status === 'Pending verification' },
+    { id: 'ready', label: 'Ready to dispense', test: r => /Verified|Partially dispensed/.test(r.status) },
+    { id: 'hold', label: 'On hold', test: r => r.status === 'On hold' },
+    { id: 'done', label: 'Dispensed', test: r => r.status === 'Dispensed' },
+    { id: 'can', label: 'Cancelled', test: r => r.status === 'Cancelled' },
+    { id: 'all', label: 'All', test: () => true },
+  ];
+  let tab = 'pend', all = [];
+  const load = () => { all = P.prescriptions().filter(r => r.orderedAt.startsWith(T)); };
+  load();
+  const waitingNow = all.filter(r => /Pending verification|Verified|Partially|On hold/.test(r.status));
+  const done = all.filter(r => r.status === 'Dispensed');
+  $('#page').innerHTML = `
+    <div class="grid g4" style="margin-bottom:16px">
+      ${Kit.kpi('Waiting now', waitingNow.length, { icon: 'users', foot: 'Prescriptions not yet dispensed' })}
+      ${Kit.kpi('Longest wait', P.waitLabel(Math.max(0, ...waitingNow.map(r => r.wait))), { icon: 'clock', foot: 'Target: 30 min from prescription' })}
+      ${Kit.kpi('Dispensed today', done.length, { icon: 'package-check', foot: `Average ${done.length ? Math.round(Kit.sumBy(done, r => r.wait) / done.length) : 0} min prescription to hand-over` })}
+      ${Kit.kpi('Clinical alerts', waitingNow.filter(r => r.orders.some(o => P.allergyAlerts(Kit.pt(r.patientId), Kit.item(o.itemId)).length || P.duplicateAlerts(Kit.pt(r.patientId), Kit.item(o.itemId), r.orders.map(x => x.id)).length)).length, { icon: 'triangle-alert', foot: 'Waiting prescriptions with an allergy or duplicate alert' })}
+    </div>
+    <div id="tabs" style="margin-bottom:12px"></div><div id="tbl"></div>`;
+  const drawTabs = () => Kit.tabs($('#tabs'), TABS.map(t => ({ id: t.id, label: t.label, count: all.filter(t.test).length })), tab, (id) => { tab = id; t.redraw(); });
+  drawTabs();
+  const docs = Array.from(new Set(all.map(r => r.doctorId))).map(id => [id, Kit.docName(id)]);
+  const t = UI.table($('#tbl'), {
+    columns: [
+      { label: 'Prescription', sort: r => r.token, render: r => `<div class="row" style="gap:10px;flex-wrap:nowrap"><span class="token">${esc(r.token)}</span><div><span class="mono b" style="white-space:nowrap">${esc(r.rxNo)}</span><div class="small muted">Rx ${Kit.time(r.orderedAt)}${r.arrivedAt !== r.orderedAt ? '<br>At window ' + Kit.time(r.arrivedAt) : ''}</div></div></div>` },
+      { label: 'Patient', sort: r => Kit.ptName(r.patientId), render: r => { const p = Kit.pt(r.patientId); const al = r.orders.some(o => P.allergyAlerts(p, Kit.item(o.itemId)).length), du = !/Dispensed|Cancelled/.test(r.status) && r.orders.some(o => P.duplicateAlerts(p, Kit.item(o.itemId), r.orders.map(x => x.id)).length); return '<div style="min-width:200px">' + Kit.patientCell(p, p && p.payerId ? esc((Kit.payer(p.payerId) || {}).code) : 'Cash') + '</div>' + (al ? '<span class="badge b-err" style="margin-top:4px">Allergy alert</span> ' : '') + (du ? '<span class="badge b-warn" style="margin-top:4px">Duplicate</span>' : ''); } },
+      { label: 'Prescriber', sort: r => Kit.docName(r.doctorId), render: r => `<span class="small">${esc(Kit.docName(r.doctorId).replace(/^Dr\. /, 'Dr. '))}</span>` },
+      { label: 'Medicines', render: r => r.orders.map(o => `<div class="small" style="white-space:nowrap" title="${esc(o.dose + ', ' + o.frequency)}">${esc(o.name.replace(/ (tablet|capsule|inhaler|cream|syrup)$/, ''))}${Kit.item(o.itemId) && Kit.item(o.itemId).schedule ? ' <span class="badge b-violet nodot">CD</span>' : ''}</div>`).join('') },
+      { label: 'Waiting', sort: r => r.wait, render: r => /Dispensed|Cancelled/.test(r.status) ? `<span class="small muted">${P.waitLabel(r.wait)} turnaround</span>` : P.waitCell(r.wait) },
+      { label: 'Status', sort: r => r.status, render: r => r.status === 'Pending verification' ? Kit.status('To verify', 'info') : Kit.status(r.status) },
+      { label: '', cls: 'actions', render: r => `<a class="btn xs ${/Pending|Verified|Partially/.test(r.status) ? 'primary' : ''}" href="${R('pharmacy/dispense.html?rx=' + encodeURIComponent(r.rxNo))}">${r.status === 'Pending verification' ? 'Verify' : /Verified|Partially/.test(r.status) ? 'Dispense' : 'Open'}</a>` },
+    ],
+    rows: () => all.filter(TABS.find(x => x.id === tab).test),
+    search: r => [r.rxNo, r.token, Kit.ptName(r.patientId), (Kit.pt(r.patientId) || {}).mrn, Kit.docName(r.doctorId), r.orders.map(o => o.name).join(' ')].join(' '),
+    searchPlaceholder: 'Search prescription, patient, MRN or medicine',
+    filters: [{ label: 'Prescriber', options: docs, test: (r, v) => r.doctorId === v }, { label: 'Payer', options: [['cash', 'Cash'], ['ins', 'Insurance']], test: (r, v) => !!(Kit.pt(r.patientId) || {}).payerId === (v === 'ins') }],
+    sort: 5, onRow: r => { location.href = R('pharmacy/dispense.html?rx=' + encodeURIComponent(r.rxNo)); }, empty: 'No prescriptions in this list', emptyIcon: 'list-ordered', pageSize: 10,
+  });
+  t.state.dir = -1; t.redraw();
+  $('#prQ').addEventListener('click', () => {
+    const rows = all.filter(TABS.find(x => x.id === tab).test);
+    Kit.printDoc({ title: 'OPD prescription queue', sub: `${TABS.find(x => x.id === tab).label} · ${Kit.day(T)}`,
+      html: `<table><thead><tr><th>Prescription</th><th>Patient</th><th>MRN</th><th>Prescriber</th><th>Items</th><th>Waiting</th><th>Status</th></tr></thead><tbody>${rows.map(r => `<tr><td>${esc(r.rxNo)}</td><td>${esc(Kit.ptName(r.patientId))}</td><td>${esc((Kit.pt(r.patientId) || {}).mrn)}</td><td>${esc(Kit.docName(r.doctorId))}</td><td>${r.orders.length}</td><td>${P.waitLabel(r.wait)}</td><td>${esc(r.status)}</td></tr>`).join('')}</tbody></table>` });
+  });
+})();
+</script>
+</body>
+</html>

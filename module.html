@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Module · Tibbi Orbit</title>
+<link rel="stylesheet" href="assets/styles.css">
+<script src="assets/icons.js"></script><script src="assets/data.js"></script><script src="assets/data-core.js"></script><script src="assets/ui.js"></script>
+</head>
+<body>
+<script>
+const { db, $, icon, esc, session, permsFor, page, ACTIONS, param } = UI;
+const s = session();
+const m = db.modules.find(x => x.id === param('m'));
+const perms = s && s.ctx ? permsFor(s.userId, s.ctx) : {};
+const allowed = m && m.subs.some(sb => sb.opts.some(o => (perms[o.id] || []).length));
+if (s && s.ctx && (!m || !allowed)) location.replace('access-denied.html?from=' + encodeURIComponent(m ? m.name : 'Module'));
+else if (page({ active: '', title: m.name, crumbs: [['Home', 'home.html'], [m.name]], subtitle: esc(m.desc), body: '' })) {
+  $('#page').innerHTML = `<div class="banner info" style="margin-bottom:16px">${icon('info')}<span>Module screens are outside this FRD. This page shows which screens and actions your current context allows.</span></div>
+  <div class="grid g2">${m.subs.map(sb => {
+    const opts = sb.opts.filter(o => (perms[o.id] || []).length);
+    if (!opts.length) return '';
+    return `<div class="card"><div class="card-head"><h3>${esc(sb.name)}</h3></div><div class="card-pad list-rows">${opts.map(o => `<div><span class="tile ${m.tile}" style="width:34px;height:34px;border-radius:10px;display:grid;place-items:center;color:var(--primary)">${icon('file-text')}</span><div class="grow"><b>${esc(o.name)}</b><div class="chips" style="margin-top:4px">${perms[o.id].map(a => `<span class="chip">${esc(db.ACTIONS[a])}</span>`).join('')}</div></div><button class="btn sm" onclick="UI.toast('${esc(o.name)} is specified in its own module FRD.')">Open</button></div>`).join('')}</div></div>`;
+  }).join('')}</div>`;
+}
+</script>
+</body>
+</html>

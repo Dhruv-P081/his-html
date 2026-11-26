@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Company and Branch · Tibbi Orbit</title>
+<link rel="stylesheet" href="assets/styles.css">
+<script src="assets/icons.js"></script><script src="assets/data.js"></script><script src="assets/data-core.js"></script><script src="assets/ui.js"></script>
+</head>
+<body>
+<script>
+const { db, save, $, $$, icon, esc, page, can, table, drawer, field, showErrors, badge, L, toast, audit, me, nowStamp, uid, CODE_RE, normCode, validUrl, EMAIL_RE, PHONE_RE, historyDrawer, statusToggle, lastUpdated, codeName, fmtDate } = UI;
+const OPT = 'admin.org.company';
+const canAdd = can(OPT, 'add'), canEdit = can(OPT, 'edit'), sysScope = can(OPT, 'admin');
+let tab = new URLSearchParams(location.search).get('tab') || 'companies';
+if (page({ active: 'companies.html', opt: OPT, title: 'Company and Branch Master', subtitle: 'Legal entities and hospital sites, with their contact details and default settings.', crumbs: [['Home', 'home.html'], ['Administration', 'admin.html'], ['Company and Branch']],
+  actions: `${sysScope ? `<button class="btn" id="newCo">${icon('plus')} New company</button>` : ''}${canAdd ? `<button class="btn primary" id="newBr">${icon('plus')} New branch</button>` : ''}`,
+  body: `<div class="row" style="margin-bottom:14px"><div class="tabs"><button data-t="companies">${icon('building-2')} Companies <span class="count">${db.companies.length}</span></button><button data-t="branches">${icon('hospital')} Branches <span class="count">${db.branches.length}</span></button></div><div class="grow"></div><span class="req-ref">ORG-01 to ORG-10</span></div><div id="list"></div>` })) {
+
+  const TZ = ['Asia/Kuwait', 'Asia/Riyadh', 'Asia/Dubai', 'Asia/Qatar', 'Asia/Bahrain'];
+  const LANG = ['English', 'Arabic'];
+  const SITE = ['Hospital', 'Clinic', 'Day care centre', 'Laboratory', 'Pharmacy', 'Administrative office'];
+  const PLATFORMS = ['Instagram', 'X', 'Facebook', 'LinkedIn', 'YouTube', 'TikTok', 'Snapchat', 'WhatsApp'];
+  const impactFor = (kind, id) => {
+    const brs = kind === 'company' ? db.branches.filter(b => b.companyId === id) : db.branches.filter(b => b.id === id);
+    const bIds = brs.map(b => b.id);
+    const deps = db.departments.filter(d => bIds.includes(d.branchId));
+    const whs = db.warehouses.filter(w => bIds.includes(w.branchId));
+    const asg = db.assignments.filter(a => bIds.includes(a.branchId) && a.status === 'Active');
+    const users = new Set(asg.map(a => a.userId));
+    return [kind === 'company' ? `${brs.length} branches` : null, `${deps.length} departments`, `${whs.length} warehouses`, `${asg.length} active assignments for ${users.size} users stop authorizing`, 'History, mappings and audit events are kept'].filter(Boolean);
+  };
+
+  function drawList() {
+    $$('[data-t]').forEach(b => b.classList.toggle('on', b.dataset.t === tab));
+    if (tab === 'companies') {
+      table($('#list'), {
+        searchPlaceholder: 'Search code or name', search: c => c.code + ' ' + c.name + ' ' + c.nameAr,
+        filters: [{ label: 'Status', options: [['Active', 'Active'], ['Inactive', 'Inactive']], test: (c, v) => c.status === v }],
+        rows: () => db.companies,
+        columns: [
+          { label: 'Company', render: c => codeName(c.code, c.name, `<span dir="rtl">${esc(c.nameAr)}</span>`), sort: c => c.code },
+          { label: 'Branches', render: c => { const n = db.branches.filter(b => b.companyId === c.id); return `<b>${n.length}</b> <span class="small muted">(${n.filter(b => b.status === 'Active').length} active)</span>`; } },
+          { label: 'Timezone · language', render: c => `${esc(c.timezone)}<br><span class="small muted">${esc(c.language)}</span>` },
+          { label: 'Status', render: c => badge(c.status), sort: c => c.status },
+          { label: 'Last updated', render: lastUpdated, sort: c => c.updatedAt },
+          { label: '', cls: 'actions', render: c => `<button class="btn sm ghost" data-h="${c.id}" title="History">${icon('history')}</button>` },
+        ],
+        onRow: c => openCompany(c),
+        afterDraw: tb => $$('[data-h]', tb).forEach(b => b.addEventListener('click', () => { const c = L.company(b.dataset.h); historyDrawer(c.id, c.code + ' ' + c.name); })),
+      });
+    } else {
+      table($('#list'), {
+        searchPlaceholder: 'Search code or name', search: b => b.code + ' ' + b.name + ' ' + L.cName(b.companyId),
+        filters: [
+          { label: 'Company', options: db.companies.map(c => [c.id, c.name]), test: (b, v) => b.companyId === v },
+          { label: 'Status', options: [['Active', 'Active'], ['Inactive', 'Inactive']], test: (b, v) => b.status === v }],
+        rows: () => db.branches,
+        columns: [
+          { label: 'Branch', render: b => codeName(b.code, b.name, esc(b.siteType)), sort: b => b.code },
+          { label: 'Parent company', render: b => `<span class="tag">${esc(L.company(b.companyId).code)}</span> ${esc(L.cName(b.companyId))}`, sort: b => L.cName(b.companyId) },
+          { label: 'Contact', render: b => `${esc(b.phone || '—')}<br><span class="small muted">${esc(b.email || '')}</span>` },
+          { label: 'Overrides', render: b => b.overrides.length ? `<span class="inherit inh-br">${b.overrides.length} explicit</span>` : '<span class="inherit inh-co">Inherits company</span>' },
+          { label: 'Status', render: b => badge(b.status), sort: b => b.status },
+          { label: 'Last updated', render: lastUpdated, sort: b => b.updatedAt },
+          { label: '', cls: 'actions', render: b => `<button class="btn sm ghost" data-h="${b.id}" title="History">${icon('history')}</button>` },
+        ],
+        onRow: b => openBranch(b),
+        afterDraw: tb => $$('[data-h]', tb).forEach(x => x.addEventListener('click', () => { const b = L.branch(x.dataset.h); historyDrawer(b.id, b.code + ' ' + b.name); })),
+      });
+    }
+  }
+  $$('[data-t]').forEach(b => b.addEventListener('click', () => { tab = b.dataset.t; history.replaceState(null, '', '?tab=' + tab); drawList(); }));
+  drawList();
+
+  /* ---- Detail views ---- */
+  function addrText(a) { return [a.line1, a.line2, a.city, a.region, a.postal, a.country].filter(Boolean).map(esc).join(', ') || '—'; }
+  function socialHtml(list) { return list.length ? list.map(s => `<a class="chip" href="${esc(s.url)}" target="_blank" rel="noopener">${icon('link')} ${esc(s.platform)}</a>`).join(' ') : '<span class="muted">None</span>'; }
+  function openCompany(c) {
+    const brs = db.branches.filter(b => b.companyId === c.id);
+    const d = drawer({ title: c.name, sub: `Company · <span class="mono">${esc(c.code)}</span> · version ${c.version}`, wide: true,
+      body: `<div class="row" style="margin-bottom:14px">${badge(c.status)}${c.deactivationReason ? `<span class="small muted">Deactivated ${fmtDate(c.deactivatedAt)}: ${esc(c.deactivationReason)}</span>` : ''}</div>
+      <div class="grid g2"><div class="card card-pad"><dl class="kv">
+        <dt>Arabic name</dt><dd dir="rtl" style="text-align:start">${esc(c.nameAr || '—')}</dd><dt>Legal name</dt><dd>${esc(c.legalName || '—')}</dd><dt>Registration</dt><dd>${esc(c.regRef || '—')}</dd>
+        <dt>Default timezone</dt><dd>${esc(c.timezone)}</dd><dt>Default language</dt><dd>${esc(c.language)}</dd></dl></div>
+      <div class="card card-pad"><dl class="kv"><dt>Contact</dt><dd>${esc(c.contactName || '—')}</dd><dt>Phone</dt><dd>${esc(c.phone || '—')}</dd><dt>Email</dt><dd>${esc(c.email || '—')}</dd><dt>Website</dt><dd>${c.website ? `<a href="${esc(c.website)}" target="_blank" rel="noopener">${esc(c.website)}</a>` : '—'}</dd><dt>Address</dt><dd>${addrText(c.address)}</dd><dt>Social</dt><dd>${socialHtml(c.social)}</dd></dl></div></div>
+      <div class="card" style="margin-top:16px"><div class="card-head"><h3>Branches</h3><span class="tag">${brs.length}</span><div class="actions">${canAdd && c.status === 'Active' ? `<button class="btn sm" id="addBr">${icon('plus')} Add branch</button>` : ''}</div></div>
+        <table class="tbl"><tbody>${brs.map(b => `<tr class="click" data-b="${b.id}"><td>${codeName(b.code, b.name, esc(b.siteType))}</td><td>${badge(b.status)}</td><td class="actions">${icon('chevron-right')}</td></tr>`).join('') || '<tr><td class="muted">No branches yet.</td></tr>'}</tbody></table></div>`,
+      foot: `<button class="btn ghost" id="hist">${icon('history')} History</button><span class="grow"></span>${sysScope ? `<button class="btn ${c.status === 'Active' ? 'danger' : ''}" id="tog">${c.status === 'Active' ? icon('ban') + ' Deactivate' : icon('circle-check') + ' Activate'}</button>` : ''}${canEdit ? `<button class="btn primary" id="ed">${icon('pencil')} Edit</button>` : ''}`,
+      onMount: (el, close) => {
+        $$('[data-b]', el).forEach(r => r.addEventListener('click', () => { close(); openBranch(L.branch(r.dataset.b)); }));
+        $('#hist', el).addEventListener('click', () => historyDrawer(c.id, c.code + ' ' + c.name));
+        const ab = $('#addBr', el); if (ab) ab.addEventListener('click', () => { close(); editBranch(null, c.id); });
+        const ed = $('#ed', el); if (ed) ed.addEventListener('click', () => { close(); editCompany(c); });
+        const tg = $('#tog', el); if (tg) tg.addEventListener('click', () => { close(); statusToggle({ record: c, entity: 'Company', label: c.code + ' ' + c.name, impact: impactFor('company', c.id), done: drawList }); });
+      } });
+  }
+  function openBranch(b) {
+    const c = L.company(b.companyId);
+    const eff = (k, label) => { const own = b.overrides.includes(k) || b[k] !== c[k]; return `<dt>${label}</dt><dd>${esc(b[k])} <span class="inherit ${own ? 'inh-br' : 'inh-co'}">${own ? 'Branch value' : 'Inherited from company'}</span></dd>`; };
+    drawer({ title: b.name, sub: `Branch · <span class="mono">${esc(b.code)}</span> · parent <b>${esc(c.code)} ${esc(c.name)}</b> · version ${b.version}`, wide: true,
+      body: `<div class="row" style="margin-bottom:14px">${badge(b.status)}<span class="tag">${esc(b.siteType)}</span>${b.deactivationReason ? `<span class="small muted">Deactivated ${fmtDate(b.deactivatedAt)}: ${esc(b.deactivationReason)}</span>` : ''}</div>
+      <div class="grid g2"><div class="card card-pad"><h3 style="font-size:14px;margin-bottom:12px">Effective settings <span class="req-ref">ORG-06</span></h3><dl class="kv">${eff('timezone', 'Timezone')}${eff('language', 'Language')}
+        <dt>Idle timeout</dt><dd>${esc(UI.effectiveRule('idle_timeout', b.id).value)} min <span class="inherit ${UI.effectiveRule('idle_timeout', b.id).source === 'Branch' ? 'inh-br' : UI.effectiveRule('idle_timeout', b.id).source === 'Company' ? 'inh-co' : 'inh-sys'}">${UI.effectiveRule('idle_timeout', b.id).source}</span></dd>
+        <dt>Lockout threshold</dt><dd>${esc(UI.effectiveRule('lockout_threshold', b.id).value)} attempts <span class="inherit ${UI.effectiveRule('lockout_threshold', b.id).source === 'Branch' ? 'inh-br' : 'inh-sys'}">${UI.effectiveRule('lockout_threshold', b.id).source}</span></dd></dl>
+        <a class="btn sm" style="margin-top:12px" href="entity-rules.html?scope=${b.id}">${icon('sliders-horizontal')} Open entity rules</a></div>
+      <div class="card card-pad"><dl class="kv"><dt>Arabic name</dt><dd dir="rtl" style="text-align:start">${esc(b.nameAr || '—')}</dd><dt>Registration</dt><dd>${esc(b.regRef || '—')}</dd><dt>Phone</dt><dd>${esc(b.phone || '—')}</dd><dt>Email</dt><dd>${esc(b.email || '—')}</dd><dt>Website</dt><dd>${b.website ? `<a href="${esc(b.website)}" target="_blank" rel="noopener">${esc(b.website)}</a>` : '—'}</dd><dt>Address</dt><dd>${addrText(b.address)}</dd><dt>Social</dt><dd>${socialHtml(b.social)}</dd></dl></div></div>
+      <div class="grid g3" style="margin-top:16px">
+        <div class="card stat"><span class="tile t-mint">${icon('layers')}</span><div><b>${db.departments.filter(d => d.branchId === b.id).length}</b><span>Departments</span></div></div>
+        <div class="card stat"><span class="tile t-peach">${icon('warehouse')}</span><div><b>${db.warehouses.filter(w => w.branchId === b.id).length}</b><span>Warehouses</span></div></div>
+        <div class="card stat"><span class="tile t-sky">${icon('users')}</span><div><b>${new Set(db.assignments.filter(a => a.branchId === b.id && a.status === 'Active').map(a => a.userId)).size}</b><span>Users with access</span></div></div></div>`,
+      foot: `<button class="btn ghost" id="hist">${icon('history')} History</button><span class="grow"></span>${canEdit ? `<button class="btn ${b.status === 'Active' ? 'danger' : ''}" id="tog">${b.status === 'Active' ? icon('ban') + ' Deactivate' : icon('circle-check') + ' Activate'}</button><button class="btn primary" id="ed">${icon('pencil')} Edit</button>` : ''}`,
+      onMount: (el, close) => {
+        $('#hist', el).addEventListener('click', () => historyDrawer(b.id, b.code + ' ' + b.name));
+        const ed = $('#ed', el); if (ed) ed.addEventListener('click', () => { close(); editBranch(b); });
+        const tg = $('#tog', el); if (tg) tg.addEventListener('click', () => {
+          close();
+          if (b.status !== 'Active' && c.status !== 'Active') { UI.confirm({ title: 'Parent company is inactive', body: 'Only active companies may receive active branches. Activate the company first.', tone: 'warn', confirm: 'OK' }); return; }
+          statusToggle({ record: b, entity: 'Branch', label: b.code + ' ' + b.name, impact: impactFor('branch', b.id), done: drawList });
+        });
+      } });
+  }
+
+  /* ---- Forms ---- */
+  function contactBlock(r) {
+    const a = (r && r.address) || {};
+    return `<div class="section-t">Contact information <span class="req-ref">ORG-08</span></div>
+      ${field({ id: 'fPhone', label: 'Contact number', value: r ? r.phone : '', placeholder: '+965 2222 0000', hint: 'International format allowed.' })}
+      ${field({ id: 'fEmail', label: 'Email', type: 'email', value: r ? r.email : '', placeholder: 'name@example.com' })}
+      ${field({ id: 'fWeb', label: 'Website', value: r ? r.website : '', placeholder: 'https://', full: true })}
+      ${field({ id: 'fA1', label: 'Address line 1', value: a.line1, max: 150 })}${field({ id: 'fA2', label: 'Address line 2', value: a.line2, max: 150 })}
+      ${field({ id: 'fCity', label: 'City', value: a.city, max: 80 })}${field({ id: 'fRegion', label: 'Region', value: a.region, max: 80 })}
+      ${field({ id: 'fPostal', label: 'Postal code', value: a.postal, max: 12 })}${field({ id: 'fCountry', label: 'Country', type: 'select', value: a.country || 'Kuwait', options: ['Kuwait', 'Saudi Arabia', 'United Arab Emirates', 'Qatar', 'Bahrain', 'Oman'].map(x => [x, x]), placeholder: false })}
+      <div class="section-t">Social media links <span class="req-ref">ORG-09</span></div>
+      <div class="full" id="socialRows"></div><div class="full"><button type="button" class="btn sm" id="addSoc">${icon('plus')} Add link</button></div>`;
+  }
+  function bindSocial(el, list) {
+    const rows = list.map(x => Object.assign({}, x));
+    const draw = () => {
+      $('#socialRows', el).innerHTML = rows.length ? rows.map((s, i) => `<div class="row" style="margin-bottom:8px"><select class="input" data-sp="${i}" style="width:170px">${PLATFORMS.map(p => `<option ${p === s.platform ? 'selected' : ''}>${p}</option>`).join('')}</select><input class="input grow" data-su="${i}" value="${esc(s.url)}" placeholder="https://"><button type="button" class="icon-btn" data-sx="${i}" aria-label="Remove">${icon('trash-2')}</button></div><div class="err hidden" data-err="soc${i}"></div>`).join('') : '<div class="muted small">No links. Blank values are allowed.</div>';
+      $$('[data-sp]', el).forEach(s => s.addEventListener('change', () => rows[s.dataset.sp].platform = s.value));
+      $$('[data-su]', el).forEach(s => s.addEventListener('input', () => rows[s.dataset.su].url = s.value.trim()));
+      $$('[data-sx]', el).forEach(s => s.addEventListener('click', () => { rows.splice(+s.dataset.sx, 1); draw(); }));
+    };
+    $('#addSoc', el).addEventListener('click', () => { rows.push({ platform: 'Instagram', url: '' }); draw(); });
+    draw();
+    return rows;
+  }
+  function readContact(el, errs, socials) {
+    const v = id => $('#' + id, el).value.trim();
+    if (v('fPhone') && !PHONE_RE.test(v('fPhone'))) errs.fPhone = 'Enter a valid phone number.';
+    if (v('fEmail') && !EMAIL_RE.test(v('fEmail'))) errs.fEmail = 'Enter a valid email address.';
+    if (v('fWeb') && !validUrl(v('fWeb'))) errs.fWeb = 'Website must be a full http or https address.';
+    socials.forEach((s, i) => { if (!s.url || !validUrl(s.url)) errs['soc' + i] = `${s.platform}: enter a full https link (javascript: and other schemes are rejected).`; });
+    const dup = socials.map(s => s.platform + s.url).filter((x, i, a) => a.indexOf(x) !== i);
+    if (dup.length) errs.soc0 = 'The same social link is listed twice.';
+    return { phone: v('fPhone'), email: v('fEmail'), website: v('fWeb'), address: { line1: v('fA1'), line2: v('fA2'), city: v('fCity'), region: v('fRegion'), postal: v('fPostal'), country: v('fCountry') }, social: socials.filter(s => s.url) };
+  }
+  function similar(list, name, selfId) {
+    const n = name.toLowerCase().replace(/[^a-z0-9]/g, '');
+    return list.find(x => x.id !== selfId && x.name.toLowerCase().replace(/[^a-z0-9]/g, '') === n);
+  }
+  function editCompany(c) {
+    const isNew = !c; const referenced = c && db.branches.some(b => b.companyId === c.id);
+    drawer({ title: isNew ? 'New company' : 'Edit company', sub: isNew ? 'Creating companies needs system-level permission.' : `<span class="mono">${esc(c.code)}</span> · version ${c.version}`, wide: true,
+      body: `<div class="err-summary hidden" style="margin-bottom:14px"></div><div class="banner warn hidden" id="simWarn" style="margin-bottom:14px"></div><div class="form-grid">
+        <div class="section-t">Company</div>
+        ${field({ id: 'fCode', label: 'Company code', req: true, value: c ? c.code : '', max: 30, readonly: referenced, hint: referenced ? 'Code cannot change once referenced.' : 'Letters, digits, hyphen and underscore. Unique system-wide.' })}
+        ${field({ id: 'fStatus', label: 'Status', type: 'select', value: c ? c.status : 'Active', options: [['Active', 'Active'], ['Inactive', 'Inactive']], placeholder: false, disabled: !isNew, hint: isNew ? '' : 'Use Activate or Deactivate on the record.' })}
+        ${field({ id: 'fName', label: 'Company name (English)', req: true, value: c ? c.name : '', max: 150 })}
+        ${field({ id: 'fNameAr', label: 'Company name (Arabic)', value: c ? c.nameAr : '', max: 150, attrs: 'dir="rtl"', hint: 'Pending decision C13: bilingual names.' })}
+        ${field({ id: 'fLegal', label: 'Legal name', value: c ? c.legalName : '', max: 150 })}${field({ id: 'fReg', label: 'Registration reference', value: c ? c.regRef : '', max: 50 })}
+        ${field({ id: 'fTz', label: 'Default timezone', type: 'select', req: true, value: c ? c.timezone : 'Asia/Kuwait', options: TZ.map(t => [t, t]) })}
+        ${field({ id: 'fLang', label: 'Default language', type: 'select', req: true, value: c ? c.language : 'English', options: LANG.map(t => [t, t]) })}
+        ${field({ id: 'fContact', label: 'Contact name', value: c ? c.contactName : '', max: 150 })}
+        <div class="field"><label>Logo</label><div class="upload"><div class="thumb">${c && c.logo ? '<img src="assets/brand/logo.png" style="width:100%;object-fit:contain">' : icon('image')}</div><div class="small muted">PNG or JPEG, up to 5 MB.<br><button type="button" class="btn sm" style="margin-top:6px" onclick="UI.toast('Prototype: upload is not stored.')">${icon('image')} Choose file</button></div></div></div>
+        ${contactBlock(c)}</div>`,
+      foot: `<span class="grow req-ref">ADM-02 · ORG-02 · ORG-03</span><button class="btn" data-close>Cancel</button><button class="btn primary" id="sv">${isNew ? 'Create company' : 'Save changes'}</button>`,
+      onMount: (el, close) => {
+        const socials = bindSocial(el, c ? c.social : []);
+        const nm = $('#fName', el);
+        nm.addEventListener('blur', () => { const s = similar(db.companies, nm.value, c && c.id); const w = $('#simWarn', el); w.classList.toggle('hidden', !s); if (s) w.innerHTML = icon('triangle-alert') + `<span>A company with a similar name exists: <b>${esc(s.code)} ${esc(s.name)}</b>. You can continue if this is intended.</span>`; });
+        $('#sv', el).addEventListener('click', () => {
+          const errs = {}; const code = normCode($('#fCode', el).value); const name = nm.value.trim();
+          if (!code) errs.fCode = 'Company code is required.'; else if (!CODE_RE.test(code)) errs.fCode = 'Use up to 30 letters, digits, hyphens or underscores.';
+          else if (db.companies.some(x => x.id !== (c && c.id) && normCode(x.code) === code)) errs.fCode = `Company code ${code} is already used.`;
+          if (!name) errs.fName = 'Company name is required.';
+          const contact = readContact(el, errs, socials);
+          if (!showErrors(el, errs)) return;
+          const rec = c || { id: uid('co'), version: 0, status: 'Active', logo: false };
+          const before = Object.assign({}, rec);
+          Object.assign(rec, { code, name, nameAr: $('#fNameAr', el).value.trim(), legalName: $('#fLegal', el).value.trim(), regRef: $('#fReg', el).value.trim(), timezone: $('#fTz', el).value, language: $('#fLang', el).value, contactName: $('#fContact', el).value.trim() }, contact, { updatedBy: me().displayName, updatedAt: nowStamp(), version: (rec.version || 0) + 1 });
+          if (isNew) db.companies.push(rec);
+          const ch = ['code', 'name', 'nameAr', 'timezone', 'language', 'phone', 'email', 'website'].filter(k => before[k] !== rec[k]).map(k => [k, before[k] || '', rec[k]]);
+          if (JSON.stringify(before.social || []) !== JSON.stringify(rec.social)) ch.push(['Social links', (before.social || []).map(s => s.platform).join(', '), rec.social.map(s => s.platform).join(', ')]);
+          if (!isNew && (before.timezone !== rec.timezone || before.language !== rec.language)) {
+            const inh = db.branches.filter(b => b.companyId === rec.id && !b.overrides.length);
+            inh.forEach(b => { if (before.timezone === b.timezone) b.timezone = rec.timezone; if (before.language === b.language) b.language = rec.language; });
+            toast(`${inh.length} inheriting branch${inh.length === 1 ? ' now uses' : 'es now use'} the new default.`);
+          }
+          save(); audit(isNew ? 'Company created' : 'Company edited', 'Company', { id: rec.id, label: rec.code + ' - ' + rec.name }, ch);
+          close(); toast(`Company ${rec.code} ${isNew ? 'created' : 'saved'} (version ${rec.version})`); drawList();
+        });
+      } });
+  }
+  function editBranch(b, companyId) {
+    const isNew = !b; const referenced = b && (db.departments.some(d => d.branchId === b.id) || db.assignments.some(a => a.branchId === b.id));
+    const cos = db.companies.filter(c => c.status === 'Active' || (b && c.id === b.companyId));
+    drawer({ title: isNew ? 'New branch' : 'Edit branch', sub: isNew ? 'A branch belongs to exactly one company.' : `<span class="mono">${esc(b.code)}</span> · version ${b.version}`, wide: true,
+      body: `<div class="err-summary hidden" style="margin-bottom:14px"></div><div class="banner warn hidden" id="simWarn" style="margin-bottom:14px"></div><div class="form-grid">
+        <div class="section-t">Branch</div>
+        ${field({ id: 'fCo', label: 'Parent company', type: 'select', req: true, value: b ? b.companyId : (companyId || ''), options: cos.map(c => [c.id, c.code + ' · ' + c.name]), disabled: referenced, hint: referenced ? 'A referenced branch cannot move to another company.' : 'Only active companies are listed.' })}
+        ${field({ id: 'fSite', label: 'Site type', type: 'select', value: b ? b.siteType : 'Hospital', options: SITE.map(s => [s, s]), placeholder: false })}
+        ${field({ id: 'fCode', label: 'Branch code', req: true, value: b ? b.code : '', max: 30, readonly: referenced, hint: 'Unique within the company. The same code may exist in another company.' })}
+        ${field({ id: 'fReg', label: 'Registration reference', value: b ? b.regRef : '', max: 50 })}
+        ${field({ id: 'fName', label: 'Branch name (English)', req: true, value: b ? b.name : '', max: 150 })}
+        ${field({ id: 'fNameAr', label: 'Branch name (Arabic)', value: b ? b.nameAr : '', max: 150, attrs: 'dir="rtl"' })}
+        <div class="section-t">Settings <span class="req-ref">ORG-06</span></div>
+        <div class="full banner info">${icon('info')}<span>Leave "Inherit" to use the company default. An explicit value overrides it and is not changed when the company default changes.</span></div>
+        ${field({ id: 'fTz', label: 'Timezone', type: 'select', req: true, value: b && b.overrides.includes('timezone') ? b.timezone : '__inherit', options: [['__inherit', 'Inherit from company']].concat(TZ.map(t => [t, t])), placeholder: false })}
+        ${field({ id: 'fLang', label: 'Language', type: 'select', req: true, value: b && b.overrides.includes('language') ? b.language : '__inherit', options: [['__inherit', 'Inherit from company']].concat(LANG.map(t => [t, t])), placeholder: false })}
+        ${contactBlock(b)}</div>`,
+      foot: `<span class="grow req-ref">ORG-02 · ORG-03 · ORG-04</span><button class="btn" data-close>Cancel</button><button class="btn primary" id="sv">${isNew ? 'Create branch' : 'Save changes'}</button>`,
+      onMount: (el, close) => {
+        const socials = bindSocial(el, b ? b.social : []);
+        $('#sv', el).addEventListener('click', () => {
+          const errs = {}; const coId = $('#fCo', el).value; const code = normCode($('#fCode', el).value); const name = $('#fName', el).value.trim();
+          if (!coId) errs.fCo = 'Select the parent company.';
+          if (!code) errs.fCode = 'Branch code is required.'; else if (!CODE_RE.test(code)) errs.fCode = 'Use up to 30 letters, digits, hyphens or underscores.';
+          else if (db.branches.some(x => x.id !== (b && b.id) && x.companyId === coId && normCode(x.code) === code)) errs.fCode = `Branch code ${code} already exists in this company.`;
+          if (!name) errs.fName = 'Branch name is required.';
+          const contact = readContact(el, errs, socials);
+          if (!showErrors(el, errs)) return;
+          const co = L.company(coId);
+          const rec = b || { id: uid('br'), version: 0, status: 'Active', overrides: [] };
+          const before = Object.assign({}, rec);
+          const tz = $('#fTz', el).value, lg = $('#fLang', el).value;
+          rec.overrides = (rec.overrides || []).filter(k => !['timezone', 'language'].includes(k));
+          if (tz !== '__inherit') rec.overrides.push('timezone'); if (lg !== '__inherit') rec.overrides.push('language');
+          Object.assign(rec, { companyId: coId, siteType: $('#fSite', el).value, code, name, nameAr: $('#fNameAr', el).value.trim(), regRef: $('#fReg', el).value.trim(), timezone: tz === '__inherit' ? co.timezone : tz, language: lg === '__inherit' ? co.language : lg }, contact, { updatedBy: me().displayName, updatedAt: nowStamp(), version: (rec.version || 0) + 1 });
+          if (isNew) db.branches.push(rec);
+          save(); audit(isNew ? 'Branch created' : 'Branch edited', 'Branch', { id: rec.id, label: rec.code + ' - ' + rec.name }, ['code', 'name', 'phone', 'email', 'website', 'timezone', 'language'].filter(k => before[k] !== rec[k]).map(k => [k, before[k] || '', rec[k]]));
+          close(); toast(`Branch ${rec.code} ${isNew ? 'created' : 'saved'}`); tab = 'branches'; drawList();
+        });
+      } });
+  }
+  const nc = $('#newCo'); if (nc) nc.addEventListener('click', () => editCompany(null));
+  const nb = $('#newBr'); if (nb) nb.addEventListener('click', () => editBranch(null));
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pharmacy overview · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-pharmacy.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/pharmacy.js"></script>
+<style>.tbl .mono { white-space: nowrap; } .tbl .cell-main b { white-space: nowrap; }</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, esc, icon, $, R } = UI;
+  const P = Pharmacy, T = db.TODAY;
+  if (!UI.page({ module: 'pharmacy', title: 'Pharmacy overview', subtitle: 'Prescription queues, dispensing, counter sales and stock alerts for today (SOW V4 Module 7).',
+    actions: `<a class="btn" href="${R('pharmacy/counter.html')}">${icon('shopping-cart')} Counter sale</a><a class="btn primary" href="${R('pharmacy/opd-queue.html')}">${icon('list-ordered')} OPD queue</a>` })) return;
+
+  const rx = P.prescriptions().filter(r => r.orderedAt.startsWith(T));
+  const waiting = rx.filter(r => /Pending verification|Verified|Partially dispensed|On hold/.test(r.status));
+  const ipd = P.ipdOrders();
+  const ipdVerify = ipd.filter(o => P.ipdState(o) === 'To verify');
+  const ipdDue = ipd.filter(o => P.ipdState(o) === 'Due for supply');
+  const disp = db.pharmacyDispenses.filter(d => d.at.startsWith(T) && d.status !== 'Voided');
+  const sales = db.pharmacySales.filter(s => s.at.startsWith(T) && s.status === 'Completed');
+  const doneRx = rx.filter(r => r.status === 'Dispensed');
+  const avgTat = doneRx.length ? Math.round(doneRx.reduce((s, r) => s + r.wait, 0) / doneRx.length) : 0;
+
+  const whs = ['wh_02', 'wh_03'];
+  const batches = db.stock.filter(s => whs.includes(s.warehouseId) && Number(s.qty) > 0);
+  const expired = batches.filter(s => s.expiry <= T);
+  const near = batches.filter(s => s.expiry > T && P.daysTo(s.expiry) <= 90);
+  const drugs = db.items.filter(i => i.type === 'Drug' && i.status !== 'Inactive');
+  const below = [];
+  drugs.forEach(it => whs.forEach(w => { const q = P.available(it.id, w); if (q < it.min) below.push({ it, w, q }); }));
+  const revenue = Kit.sumBy(disp, d => d.total) + Kit.sumBy(sales, s => s.total);
+
+  const hours = Array.from({ length: 11 }, (_, i) => 8 + i);
+  const byHour = hours.map(h => disp.filter(d => +d.at.slice(11, 13) === h).length + sales.filter(s => +s.at.slice(11, 13) === h).length);
+  const st = (n) => rx.filter(r => r.status === n).length;
+
+  $('#page').innerHTML = `
+    <div class="grid g4" style="margin-bottom:16px">
+      ${Kit.kpi('OPD prescriptions waiting', waiting.length, { icon: 'list-ordered', foot: `${st('Pending verification')} to verify · ${st('Verified')} ready`, href: R('pharmacy/opd-queue.html') })}
+      ${Kit.kpi('IPD orders to work', ipdVerify.length + ipdDue.length, { icon: 'bed', foot: `${ipdVerify.length} to verify · ${ipdDue.length} due for supply`, href: R('pharmacy/ipd-queue.html') })}
+      ${Kit.kpi('Dispensed today', disp.length + sales.length, { icon: 'package-check', foot: `Average OPD turnaround ${avgTat} min · ${Kit.money(revenue)}` })}
+      ${Kit.kpi('Stock alerts', expired.length + near.length + below.length, { icon: 'package-x', foot: `${expired.length} expired · ${near.length} near expiry · ${below.length} below minimum`, href: R('pharmacy/stock.html') })}
+    </div>
+    <div class="grid g2" style="margin-bottom:16px">
+      <div class="card"><div class="card-head"><h3>${icon('chart-column')} Dispensing and counter sales by hour</h3><div class="actions"><span class="small muted">Today, both pharmacies</span></div></div><div class="card-pad">
+        ${Kit.barChart({ labels: hours.map(h => h + ':00'), values: byHour, color: '#0E9F6E', height: 220, title: 'Dispensing by hour' })}</div></div>
+      <div class="card"><div class="card-head"><h3>${icon('list-ordered')} OPD prescriptions today</h3><div class="actions"><a class="btn sm" href="${R('pharmacy/opd-queue.html')}">OPD queue ${icon('arrow-right')}</a></div></div><div class="card-pad">
+        <div class="grid" style="align-items:center;gap:20px 24px;grid-template-columns:repeat(auto-fit,minmax(280px,1fr))">
+        ${Kit.donut([['Pending verification', st('Pending verification'), '#2F6BC5'], ['Verified, ready', st('Verified') + st('Partially dispensed'), '#0891B2'], ['On hold', st('On hold'), '#E0670E'], ['Dispensed', st('Dispensed'), '#0E9F6E'], ['Cancelled', st('Cancelled'), '#8794A7']], { centerLabel: 'Prescriptions' })}
+          <div><div class="section-t" style="margin:0 0 10px">Today by source</div><dl class="kv" style="margin:0;grid-template-columns:1fr auto">
+            <dt>OPD dispenses</dt><dd class="num">${disp.filter(d => d.setting === 'OPD').length}</dd>
+            <dt>IPD supplies</dt><dd class="num">${disp.filter(d => d.setting === 'IPD').length}</dd>
+            <dt>Counter sales</dt><dd class="num">${sales.length}</dd>
+            <dt>Average OPD turnaround</dt><dd class="num">${avgTat} min</dd>
+            <dt>Revenue</dt><dd class="num">${Kit.money(revenue)}</dd>
+          </dl></div>
+        </div></div></div>
+    </div>
+    <div class="grid g-side">
+      <div class="card"><div class="card-head"><h3>${icon('clock')} Waiting longest</h3><div class="actions"><a class="btn sm" href="${R('pharmacy/opd-queue.html')}">Open OPD queue ${icon('arrow-right')}</a></div></div>
+        <div class="table-wrap"><table class="tbl"><thead><tr><th>Prescription</th><th>Patient</th><th>Waiting</th><th>Status</th></tr></thead><tbody>
+        ${waiting.sort((a, b) => b.wait - a.wait).slice(0, 8).map(r => `<tr class="click" onclick="location.href='${R('pharmacy/dispense.html?rx=' + encodeURIComponent(r.rxNo))}'"><td><span class="mono b">${esc(r.rxNo)}</span><div class="small muted">${esc(Kit.docName(r.doctorId))} · ${r.orders.length} item${r.orders.length > 1 ? 's' : ''}</div></td><td>${Kit.patientCell(Kit.pt(r.patientId))}</td><td>${P.waitCell(r.wait)}</td><td>${Kit.status(r.status)}</td></tr>`).join('') || `<tr><td colspan="4"><div class="empty">${icon('circle-check')}<b>No prescriptions waiting</b></div></td></tr>`}
+        </tbody></table></div></div>
+      <div class="card"><div class="card-head"><h3>${icon('package-x')} Stock alerts</h3><div class="actions"><a class="btn sm" href="${R('pharmacy/stock.html')}">Stock ${icon('arrow-right')}</a></div></div>
+        <div class="card-pad"><div class="list-rows">
+        ${expired.slice(0, 2).map(s => `<div>${icon('octagon-alert')}<div class="grow"><b>${esc(Kit.item(s.itemId).name)}</b><div class="small muted">Batch ${esc(s.batch)} · ${esc(P.WH_NAME[s.warehouseId])} · ${s.qty} units</div></div>${Kit.status('Expired')}</div>`).join('')}
+        ${below.slice(0, 2).map(b => `<div>${icon('package-minus')}<div class="grow"><b>${esc(b.it.name)}</b><div class="small muted">${esc(P.WH_NAME[b.w])} · ${b.q} left, minimum ${b.it.min}</div></div>${Kit.status('Low stock')}</div>`).join('')}
+        ${near.sort((a, b) => a.expiry.localeCompare(b.expiry)).slice(0, 2).map(s => `<div>${icon('calendar-clock')}<div class="grow"><b>${esc(Kit.item(s.itemId).name)}</b><div class="small muted">Batch ${esc(s.batch)} · expires in ${P.daysTo(s.expiry)} days</div></div>${Kit.status('Expiring')}</div>`).join('')}
+        </div></div></div>
+    </div>`;
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EMR reports · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-emr.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/emr.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, $ } = UI;
+  if (!UI.page({ opt: 'emr.reports', title: 'EMR reports', subtitle: 'Clinical activity, orders, CDSS and documentation reports (SOW V4 Annexure B).' })) return;
+  const d10 = (s) => String(s || '').slice(0, 10);
+  const inRange = (s, v) => (!v.from || d10(s) >= v.from) && (!v.to || d10(s) <= v.to);
+  const from = { id: 'from', label: 'From', type: 'date' }, to = { id: 'to', label: 'To', type: 'date' };
+  const docOpts = EMR.clinicalDoctors().map(d => [d.id, d.name]);
+  const specOpts = Array.from(new Set(EMR.clinicalDoctors().map(d => d.specialty))).map(s => [s, s]);
+  const hrs = (a, b) => (new Date(String(b).replace(' ', 'T')) - new Date(String(a).replace(' ', 'T'))) / 36e5;
+  const enc = (id) => Kit.enc(id) || {};
+  Kit.reportCatalog($('#page'), { opt: 'emr.reports', reports: [
+    { id: 'r1', title: 'Consultations by doctor', purpose: 'OPD visits, notes signed and pending per doctor.', filters: [from, to, { id: 'spec', label: 'Specialty', type: 'select', options: specOpts }],
+      columns: ['Doctor', 'Specialty', 'Visits', 'Signed notes', 'Draft notes', 'Not started'],
+      rows: (v) => EMR.clinicalDoctors().filter(d => !v.spec || d.specialty === v.spec).map(d => { const es = db.encounters.filter(e => e.type === 'OPD' && e.doctorId === d.id && inRange(e.start, v)); const ns = es.map(e => EMR.noteFor(e.id));
+        return [d.name, d.specialty, es.length, ns.filter(n => n && n.status === 'Signed').length, ns.filter(n => n && n.status === 'Draft').length, ns.filter(n => !n).length]; }).filter(r => r[2] > 0),
+      totals: (rows) => ['Total', '', Kit.sumBy(rows, r => r[2]), Kit.sumBy(rows, r => r[3]), Kit.sumBy(rows, r => r[4]), Kit.sumBy(rows, r => r[5])] },
+    { id: 'r2', title: 'Diagnosis frequency (ICD-10)', purpose: 'Most frequent diagnoses coded in signed notes and admissions.', filters: [from, to, { id: 'kind', label: 'Diagnosis type', type: 'select', options: [['p', 'Primary only'], ['a', 'Primary and secondary']] }],
+      columns: ['ICD-10', 'Description', 'Outpatient', 'Inpatient', 'Total'],
+      rows: (v) => { const m = {}; db.emrNotes.filter(n => n.status === 'Signed' && inRange(enc(n.encounterId).start, v)).forEach(n => n.diagnoses.filter(d => v.kind === 'a' || d.primary).forEach(d => { m[d.code] = m[d.code] || [d.code, d.name, 0, 0]; m[d.code][2]++; }));
+        db.encounters.filter(e => e.type === 'IPD' && e.diagnosis && inRange(e.start, v)).forEach(e => { const x = db.icd10.find(i => i.code === e.diagnosis) || {}; m[e.diagnosis] = m[e.diagnosis] || [e.diagnosis, x.name || '', 0, 0]; m[e.diagnosis][3]++; });
+        return Object.values(m).map(r => r.concat([r[2] + r[3]])).sort((a, b) => b[4] - a[4]); },
+      totals: (rows) => ['Total', '', Kit.sumBy(rows, r => r[2]), Kit.sumBy(rows, r => r[3]), Kit.sumBy(rows, r => r[4])] },
+    { id: 'r3', title: 'Orders by type and status', purpose: 'CPOE volume by order type and current status.', filters: [from, to, { id: 'type', label: 'Order type', type: 'select', options: Object.entries(EMR.TYPE_LABEL) }, { id: 'pri', label: 'Priority', type: 'select', options: [['STAT', 'STAT'], ['Urgent', 'Urgent'], ['Routine', 'Routine']] }],
+      columns: ['Order type', 'Status', 'Orders', 'Urgent or STAT'],
+      rows: (v) => { const m = {}; db.orders.filter(o => inRange(o.orderedAt, v) && (!v.type || o.type === v.type) && (!v.pri || o.priority === v.pri)).forEach(o => { const k = o.type + '|' + o.status; m[k] = m[k] || [EMR.TYPE_LABEL[o.type], o.status, 0, 0]; m[k][2]++; if (o.priority !== 'Routine') m[k][3]++; }); return Object.values(m).sort((a, b) => a[0].localeCompare(b[0]) || b[2] - a[2]); },
+      totals: (rows) => ['Total', '', Kit.sumBy(rows, r => r[2]), Kit.sumBy(rows, r => r[3])] },
+    { id: 'r4', title: 'Laboratory turnaround time', purpose: 'Order to result time per test against the catalogue TAT.', filters: [from, to, { id: 'test', label: 'Test', type: 'select', options: db.labTests.map(t => [t.code, t.name]) }],
+      columns: ['Test', 'Resulted', 'Average hours', 'Target hours', 'Within target'],
+      rows: (v) => db.labTests.filter(t => !v.test || t.code === v.test).map(t => { const os = db.orders.filter(o => o.type === 'lab' && o.code === t.code && o.resultedAt && inRange(o.orderedAt, v)); if (!os.length) return null; const h = os.map(o => Math.max(0, hrs(o.orderedAt, o.resultedAt)));
+        return [t.name, os.length, +(Kit.sumBy(h, x => x) / h.length).toFixed(1), t.tatHours, Math.round(100 * h.filter(x => x <= t.tatHours).length / h.length) + '%']; }).filter(Boolean) },
+    { id: 'r5', title: 'Critical results and acknowledgement', purpose: 'Critical values flagged and whether the doctor acknowledged them.', filters: [from, to, { id: 'ack', label: 'Acknowledged', type: 'select', options: [['y', 'Acknowledged'], ['n', 'Not acknowledged']] }],
+      columns: ['Patient', 'MRN', 'Test', 'Critical value', 'Resulted', 'Acknowledged by', 'Acknowledged at'],
+      rows: (v) => db.orders.filter(o => EMR.isCritical(o) && inRange(o.resultedAt, v)).filter(o => !v.ack || (v.ack === 'y') === !!EMR.ackOf(o.id)).map(o => { const a = EMR.ackOf(o.id) || {}; const r = o.results.find(x => x.critical); return [Kit.ptName(o.patientId), (Kit.pt(o.patientId) || {}).mrn, o.name, r.value + ' ' + r.unit, UI.fmtDate(o.resultedAt), a.by || 'Not acknowledged', a.at ? UI.fmtDate(a.at) : '']; }) },
+    { id: 'r6', title: 'Prescriptions by medicine', purpose: 'Prescribed lines and quantities per drug, with controlled drugs.', filters: [from, to, { id: 'cat', label: 'Drug class', type: 'select', options: Array.from(new Set(db.items.filter(i => i.type === 'Drug').map(i => i.category))).map(c => [c, c]) }, { id: 'set', label: 'Setting', type: 'select', options: [['OPD', 'Outpatient'], ['IPD', 'Inpatient']] }],
+      columns: ['Medicine', 'Drug class', 'Schedule', 'Lines', 'Quantity', 'Value (KWD)'],
+      rows: (v) => { const m = {}; db.orders.filter(o => o.type === 'med' && o.status !== 'Cancelled' && inRange(o.orderedAt, v) && (!v.set || o.setting === v.set)).forEach(o => { const it = Kit.item(o.itemId) || {}; if (v.cat && it.category !== v.cat) return; m[o.itemId] = m[o.itemId] || [it.name || o.name, it.category || '', it.schedule || '', 0, 0, 0]; m[o.itemId][3]++; m[o.itemId][4] += +o.qty || 0; m[o.itemId][5] = +(m[o.itemId][5] + (+o.qty || 0) * (it.price || 0)).toFixed(3); }); return Object.values(m).sort((a, b) => b[3] - a[3]); },
+      totals: (rows) => ['Total', '', '', Kit.sumBy(rows, r => r[3]), Kit.sumBy(rows, r => r[4]), +Kit.sumBy(rows, r => r[5]).toFixed(3)] },
+    { id: 'r7', title: 'CDSS alerts and overrides', purpose: 'Allergy, duplicate order and critical value alerts with the outcome and reason.', filters: [from, to, { id: 'type', label: 'Alert type', type: 'select', options: [['Allergy', 'Allergy'], ['Duplicate order', 'Duplicate order'], ['Critical value', 'Critical value']] }, { id: 'out', label: 'Outcome', type: 'select', options: [['Overridden', 'Overridden'], ['Order removed', 'Order removed'], ['Acknowledged', 'Acknowledged']] }],
+      columns: ['Date', 'Alert', 'Patient', 'Detail', 'Outcome', 'Reason', 'User'],
+      rows: (v) => db.emrAlertLog.filter(a => inRange(a.at, v) && (!v.type || a.type === v.type) && (!v.out || a.outcome === v.out)).map(a => [UI.fmtDate(a.at), a.type, Kit.ptName(a.patientId), a.text, a.outcome, a.reason, a.by]) },
+    { id: 'r8', title: 'Referrals and transfers', purpose: 'Referrals, consultation requests and transfers with response time.', filters: [from, to, { id: 'type', label: 'Type', type: 'select', options: [['Referral', 'Referral'], ['Consultation', 'Consultation'], ['Transfer', 'Transfer']] }, { id: 'st', label: 'Status', type: 'select', options: ['Pending', 'Accepted', 'Declined', 'Completed', 'Cancelled'].map(s => [s, s]) }],
+      columns: ['Number', 'Type', 'Patient', 'From', 'To specialty', 'Urgency', 'Status', 'Response hours'],
+      rows: (v) => db.emrReferrals.filter(r => inRange(r.createdAt, v) && (!v.type || r.type === v.type) && (!v.st || r.status === v.st)).map(r => [r.no, r.type, Kit.ptName(r.patientId), Kit.docName(r.fromDoctorId), r.toSpecialty, r.urgency, r.status, r.respondedAt ? +Math.max(0, hrs(r.createdAt, r.respondedAt)).toFixed(1) : '']) },
+    { id: 'r9', title: 'Unsigned clinical documentation', purpose: 'Draft consultation and progress notes and unsigned discharges (record validation).', filters: [{ id: 'doc', label: 'Doctor', type: 'select', options: docOpts }, { id: 'kind', label: 'Document', type: 'select', options: [['c', 'Consultation note'], ['p', 'Progress note'], ['d', 'Discharge summary']] }],
+      columns: ['Document', 'Patient', 'Visit', 'Doctor', 'Last updated', 'Age (days)'],
+      rows: (v) => [].concat(
+        (!v.kind || v.kind === 'c') ? db.emrNotes.filter(n => n.status === 'Draft' && (!v.doc || n.doctorId === v.doc)).map(n => ['Consultation note', Kit.ptName(n.patientId), enc(n.encounterId).no, Kit.docName(n.doctorId), UI.fmtDate(n.updatedAt || n.createdAt), Math.max(0, Math.round((new Date(db.TODAY) - new Date(d10(n.updatedAt || n.createdAt))) / 864e5))]) : [],
+        (!v.kind || v.kind === 'p') ? db.emrProgressNotes.filter(n => n.status === 'Draft' && (!v.doc || n.doctorId === v.doc)).map(n => ['Progress note', Kit.ptName(n.patientId), enc(n.encounterId).no, Kit.docName(n.doctorId), UI.fmtDate(n.at), Math.max(0, Math.round((new Date(db.TODAY) - new Date(d10(n.at))) / 864e5))]) : [],
+        (!v.kind || v.kind === 'd') ? db.emrDischarges.filter(n => n.status !== 'Signed' && (!v.doc || n.doctorId === v.doc)).map(n => ['Discharge summary', Kit.ptName(n.patientId), enc(n.encounterId).no, Kit.docName(n.doctorId), UI.fmtDate(n.createdAt), Math.max(0, Math.round((new Date(db.TODAY) - new Date(d10(n.createdAt))) / 864e5))]) : []) },
+    { id: 'r10', title: 'Inpatient census and discharges', purpose: 'Admitted patients by ward with length of stay and discharge status.', filters: [{ id: 'ward', label: 'Ward', type: 'select', options: db.wards.map(w => [w.id, w.name]) }, { id: 'doc', label: 'Attending doctor', type: 'select', options: docOpts }],
+      columns: ['Ward', 'Bed', 'Patient', 'Attending', 'Diagnosis', 'Length of stay', 'Discharge'],
+      rows: (v) => db.encounters.filter(e => e.type === 'IPD' && e.status !== 'Discharged' && (!v.doc || e.doctorId === v.doc)).map(e => ({ e, b: Kit.bed(e.bedId) || {} })).filter(x => !v.ward || x.b.wardId === v.ward)
+        .map(({ e, b }) => { const dc = db.emrDischarges.find(d => d.encounterId === e.id); return [(Kit.ward(b.wardId) || {}).name || '', b.no || '', Kit.ptName(e.patientId), Kit.docName(e.doctorId), e.diagnosis + ' ' + e.reason, Math.max(0, Math.round((new Date(db.TODAY) - new Date(d10(e.start))) / 864e5)) + 1, dc ? (dc.status === 'Signed' ? 'Ordered ' + Kit.day(dc.plannedDate) : 'Draft') : e.status]; }) },
+  ] });
+})();
+</script>
+</body>
+</html>

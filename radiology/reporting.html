@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Radiology reporting · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-radiology.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/lab.js"></script><script src="../assets/radiology.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, nowStamp } = UI;
+  const OPT = 'radiology.exam.report';
+  if (!UI.page({ opt: OPT, title: 'Reporting', subtitle: 'Radiologist worklist: write the report from a template, verify, and approve with an electronic signature. No self-approval.',
+    actions: '<div id="mode"></div>' })) return;
+  const canAdd = can(OPT, 'add'), canEdit = can(OPT, 'edit'), canVerify = can(OPT, 'verify'), canApprove = can(OPT, 'approve'), canPrint = can(OPT, 'print');
+  const TABS = [['report', 'To report', o => Rad.stageKey(o) === 'performed'], ['verify', 'To verify', o => Rad.stageKey(o) === 'reported'], ['approve', 'To approve', o => Rad.stageKey(o) === 'verified'], ['done', 'Approved', o => o.status === 'Approved']];
+  let mode = 'single', tab = 'report', cur = null, mod = '';
+  Kit.seg($('#mode'), [['single', 'Individual', 'user'], ['batch', 'Batch', 'rows-3']], mode, (m) => { mode = m; render(); });
+  const render = () => (mode === 'single' ? single() : batch());
+  const list = () => Rad.orders().filter(TABS.find(t => t[0] === tab)[2]).filter(o => !mod || Rad.exam(o.code).modality === mod).sort((a, b) => ({ STAT: 0, Urgent: 1 }[a.priority] ?? 2) - ({ STAT: 0, Urgent: 1 }[b.priority] ?? 2) || (a.orderedAt < b.orderedAt ? -1 : 1));
+  function follow(o) { const t = TABS.find(x => x[2](o)); if (t) tab = t[0]; cur = o.id; drawList(); drawBody(); }
+
+  function single() {
+    $('#page').innerHTML = `<div class="split"><div class="card list-pane"><div style="padding:12px 14px 0" id="lTabs"></div><div style="padding:10px 14px"><select class="input" id="lMod" aria-label="Modality"><option value="">All modalities</option>${[...new Set(db.radExams.map(x => x.modality))].map(m => `<option ${m === mod ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select></div><div id="lList"></div></div><div id="lBody"></div></div>`;
+    $('#lMod').addEventListener('change', (e) => { mod = e.target.value; cur = null; drawList(); drawBody(); });
+    drawList(); drawBody();
+  }
+  function drawList() {
+    Kit.tabs($('#lTabs'), TABS.map(([id, label, f]) => ({ id, label, count: Rad.orders().filter(f).length })), tab, (t) => { tab = t; cur = null; drawList(); drawBody(); });
+    const rows = list();
+    if (!cur || !rows.find(o => o.id === cur)) cur = rows[0] ? rows[0].id : null;
+    $('#lList').innerHTML = rows.length ? rows.map(o => { const p = Kit.pt(o.patientId) || {}; return `<div class="qitem ${o.id === cur ? 'on' : ''}" data-o="${o.id}"><div class="grow" style="min-width:0"><b style="font-size:13px">${esc(o.name)}</b><div class="xs muted">${esc(p.name)} · ${esc(p.mrn)}</div><div class="xs muted">${esc(Rad.exam(o.code).modality)} · performed ${esc(Kit.when(o.performedAt))}</div></div><div style="text-align:end">${o.priority !== 'Routine' ? Kit.priority(o.priority) : ''}${o.report && o.report.critical ? '<div><span class="flag-c">Critical</span></div>' : ''}${o.report && o.report.draft && o.status === 'Performed' ? '<div><span class="badge b-neutral nodot">Draft</span></div>' : ''}</div></div>`; }).join('')
+      : `<div class="empty">${icon('inbox')}<b>Nothing in this list</b></div>`;
+    $$('[data-o]', $('#lList')).forEach(n => n.addEventListener('click', () => { cur = n.dataset.o; drawList(); drawBody(); }));
+  }
+  function drawBody() {
+    const host = $('#lBody'), o = cur && db.orders.find(x => x.id === cur);
+    if (!o) { host.innerHTML = `<div class="card"><div class="empty">${icon('file-pen-line')}<b>Select an exam</b><span>Pick a study from the worklist.</span></div></div>`; return; }
+    const p = Kit.pt(o.patientId), e = Kit.enc(o.encounterId), ex = Rad.exam(o.code), k = Rad.stageKey(o), r = o.report || {};
+    const editable = k === 'performed' && (canAdd || canEdit);
+    const tpls = Rad.templatesFor(o);
+    host.innerHTML = `${Kit.patientBanner(p, e)}
+      <div class="card" style="margin-bottom:16px"><div class="card-head"><div class="grow"><h3>${icon('scan-line')} ${esc(ex.name)}${Rad.side(o) ? ' (' + esc(Rad.side(o)) + ')' : ''} ${Rad.stageBadge(o)}</h3>
+        <div class="small muted" style="margin-top:2px"><span class="mono">${esc(Rad.acc(o))}</span> · ${esc(ex.modality)} · performed ${esc(Kit.when(o.performedAt))} by ${esc(o.performedBy || '')} · ${esc(o.room || '')} · referred by ${esc(Kit.docName(o.by))}</div></div>
+        <div class="actions"><button class="btn sm" disabled title="2nd phase: PACS integration">${icon('monitor')} Open in PACS viewer</button></div></div>
+        <div class="card-pad"><div class="row wrap" style="gap:16px"><div class="grow"><b class="small muted">Clinical information or visit reason</b><div>${esc(o.notes || (e && e.complaint) || 'Not given')}</div></div>${ex.contrast ? `<div><b class="small muted">Contrast</b><div>${esc(typeof o.contrastGiven === 'string' ? o.contrastGiven : 'Given')}</div></div>` : ''}${(o.repeats || []).length ? `<div><b class="small muted">Repeats</b><div>${o.repeats.map(x => esc(x.reason)).join(', ')}</div></div>` : ''}<div><b class="small muted">Report TAT</b><div style="width:160px">${Rad.tatCell(o)}</div></div></div>
+        <div style="margin-top:10px">${Kit.scopeNote('PACS viewer launch, DICOM worklist, EMR image links and speech-to-text are 2nd phase (SOW V4).')}</div></div></div>
+      <div class="card" style="margin-bottom:16px"><div class="card-head"><h3>${icon('file-text')} Report</h3><div class="actions">${editable ? `<select class="input" id="tpl" style="width:260px" aria-label="Report template"><option value="">Apply a template</option>${tpls.map(t => `<option value="${t.id}" ${t.id === r.templateId ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>` : ''}</div></div>
+        <div class="card-pad"><div class="err-summary hidden"></div><div class="form-grid">
+          <div class="field full"><label for="rTech">Technique</label><textarea class="input" id="rTech" rows="2" maxlength="1000" ${editable ? '' : 'readonly'}>${esc(r.technique || '')}</textarea></div>
+          <div class="field full"><label for="rFind">Findings<span class="req">*</span></label><textarea class="input" id="rFind" rows="6" maxlength="4000" ${editable ? '' : 'readonly'}>${esc(r.findings || '')}</textarea><div class="err hidden" data-err="rFind"></div></div>
+          <div class="field full"><label for="rImp">Impression<span class="req">*</span></label><textarea class="input" id="rImp" rows="3" maxlength="1500" ${editable ? '' : 'readonly'}>${esc(r.impression || '')}</textarea><div class="err hidden" data-err="rImp"></div></div>
+          <label class="check full"><input type="checkbox" id="rCrit" ${r.critical ? 'checked' : ''} ${editable ? '' : 'disabled'}> Critical finding: needs urgent telephone notification</label>
+          <div class="field full ${r.critical ? '' : 'hidden'}" id="rCritW"><label for="rCritT">Critical finding<span class="req">*</span></label><input class="input" id="rCritT" value="${esc(r.criticalText || '')}" ${editable ? '' : 'readonly'} placeholder="for example Pneumothorax, right, large"><div class="err hidden" data-err="rCritT"></div></div>
+        </div><div id="upl" style="margin-top:12px"></div></div></div>
+      <div class="card"><div class="card-head"><h3>${icon('shield-check')} Validation</h3></div><div class="card-pad" id="wf"></div><div class="card-foot" id="wfFoot"></div></div>`;
+    // Template and placeholders
+    const tplSel = $('#tpl', host);
+    if (tplSel) tplSel.addEventListener('change', () => {
+      const t = (db.radiologyTemplates || []).find(x => x.id === tplSel.value); if (!t) return;
+      const apply = () => { $('#rTech', host).value = t.technique; $('#rFind', host).value = t.findings; $('#rImp', host).value = t.impression; r.templateId = t.id; chk(); };
+      if ($('#rFind', host).value.trim()) UI.confirm({ title: 'Replace the report text?', tone: 'warn', confirm: 'Replace', body: 'The technique, findings and impression are replaced with the template.', onConfirm: apply }); else apply();
+    });
+    $('#rCrit', host).addEventListener('change', (ev) => { $('#rCritW', host).classList.toggle('hidden', !ev.target.checked); chk(); });
+    // Upload
+    const drawUpl = () => {
+      $('#upl', host).innerHTML = r.attachment ? `<div class="upload"><div class="thumb">${icon('file-text')}</div><div class="grow"><b>${esc(r.attachment.name)}</b><div class="small muted">${esc(r.attachment.size)} · ${esc(r.attachment.by)} ${esc(Kit.when(r.attachment.at))}</div></div>${editable ? `<button class="btn sm danger" id="uRm">${icon('trash-2')} Remove</button>` : ''}</div>`
+        : `<div class="upload"><div class="thumb">${icon('upload')}</div><div class="grow"><b>Upload a report or document</b><div class="small muted">PDF, for example an outside report or a dictated report. Up to 10 MB.</div></div><label class="btn sm ${editable ? '' : 'disabled'}">${icon('paperclip')} Choose file<input type="file" id="uIn" accept="application/pdf,.pdf" hidden ${editable ? '' : 'disabled'}></label></div><div class="err hidden" data-err="uIn"></div>`;
+      const inp = $('#uIn', host);
+      if (inp) inp.addEventListener('change', () => { const f = inp.files[0]; if (!f) return; if (!/\.pdf$/i.test(f.name)) { UI.showErrors(host, { uIn: 'Only PDF files can be uploaded.' }); return; } o.report = Object.assign(o.report || {}, { attachment: { name: f.name, size: Math.max(1, Math.round(f.size / 1024)) + ' KB', by: Lab.meName(), at: nowStamp() } }); save(); audit('Radiology report file uploaded', 'Radiology order', { id: o.id, label: o.no }, [['Attachment', '', f.name]]); drawBody(); });
+      const rm = $('#uRm', host); if (rm) rm.addEventListener('click', () => { delete o.report.attachment; save(); drawBody(); });
+    };
+    drawUpl();
+    // Workflow
+    const steps = [['Reported by', r.author, r.authoredAt], ['Verified by', r.verifiedBy, r.verifiedAt], ['Approved by', r.approvedBy, r.approvedAt]];
+    $('#wf', host).innerHTML = `<div class="grid g3">${steps.map(([l, by, at]) => `<div class="note-box"><div class="small muted">${esc(l)}</div><b>${by ? esc(by) : '<span class="mute">Pending</span>'}</b>${at ? `<div class="xs muted">${esc(UI.fmtDate(at))}</div>` : ''}</div>`).join('')}</div>
+      ${k === 'reported' && Lab.isMe(r.author) ? `<div class="banner warn" style="margin-top:12px">${icon('user-x')}<span>You wrote this report. Another radiologist must verify it.</span></div>` : ''}
+      ${k === 'verified' && (Lab.isMe(r.author) || Lab.isMe(r.verifiedBy)) ? `<div class="banner warn" style="margin-top:12px">${icon('user-x')}<span>No self-approval: you wrote or verified this report, so another radiologist must approve it.</span></div>` : ''}
+      ${r.returnNote && k === 'performed' ? `<div class="banner info" style="margin-top:12px">${icon('undo-2')}<span>Returned for correction: ${esc(r.returnNote)}</span></div>` : ''}`;
+    const foot = $('#wfFoot', host), np = (x) => `disabled title="Needs ${x} permission"`;
+    if (editable) foot.innerHTML = `<span class="small muted grow">Drafts are visible only to radiology.</span><button class="btn" id="wfDraft">${icon('save')} Save draft</button><button class="btn primary" id="wfSubmit" ${canAdd ? '' : np('Add')}>${icon('send')} Submit report</button>`;
+    else if (k === 'reported') foot.innerHTML = `<button class="btn danger" id="wfReturn" ${canVerify ? '' : np('Verify')}>${icon('undo-2')} Return for correction</button><span class="grow"></span><button class="btn primary" id="wfVerify" ${!canVerify ? np('Verify') : Lab.isMe(r.author) ? 'disabled title="You wrote this report"' : ''}>${icon('check-check')} Verify report</button>`;
+    else if (k === 'verified') foot.innerHTML = `<button class="btn danger" id="wfReturn" ${canApprove || canVerify ? '' : np('Approve')}>${icon('undo-2')} Return for correction</button><span class="grow"></span><button class="btn primary" id="wfApprove" ${!canApprove ? np('Approve') : Lab.isMe(r.author) || Lab.isMe(r.verifiedBy) ? 'disabled title="No self-approval"' : ''}>${icon('signature')} Approve and sign</button>`;
+    else foot.innerHTML = `<span class="grow small muted">Approved and released to the EMR.</span><button class="btn" id="wfPrint" ${canPrint ? '' : np('Print')}>${icon('printer')} Print report</button><a class="btn primary" href="${R('radiology/dispatch.html')}">${icon('send')} E-send</a>`;
+    function chk() { const b = $('#wfSubmit', host); if (b) b.disabled = !canAdd || !$('#rFind', host).value.trim() || !$('#rImp', host).value.trim() || ($('#rCrit', host).checked && !$('#rCritT', host).value.trim()); }
+    $$('textarea, #rCritT', host).forEach(i => i.addEventListener('input', chk)); chk();
+    const take = () => Object.assign(o.report || {}, { technique: $('#rTech', host).value.trim(), findings: $('#rFind', host).value.trim(), impression: $('#rImp', host).value.trim(), critical: $('#rCrit', host).checked, criticalText: $('#rCrit', host).checked ? $('#rCritT', host).value.trim() : '', templateId: r.templateId || '' });
+    const on = (id, f) => { const b = $('#' + id, host); if (b) b.addEventListener('click', f); };
+    on('wfDraft', () => { o.report = Object.assign(take(), { draft: true, author: Lab.meName(), authoredAt: nowStamp() }); save(); audit('Radiology report draft saved', 'Radiology order', { id: o.id, label: o.no }, []); toast('Draft saved'); follow(o); });
+    on('wfSubmit', () => {
+      const v = take(); const errs = {};
+      if (!v.findings) errs.rFind = 'Enter the findings.'; if (!v.impression) errs.rImp = 'Enter the impression.'; if (v.critical && !v.criticalText) errs.rCritT = 'Describe the critical finding.';
+      if (/\[ \]/.test(v.findings + v.impression)) errs.rFind = 'Fill in the template blanks marked [ ].';
+      if (!UI.showErrors(host, errs)) return;
+      const go = () => { o.report = Object.assign(v, { draft: false, author: Lab.meName(), authoredAt: nowStamp() }); delete o.report.verifiedBy; delete o.report.verifiedAt; delete o.report.returnNote; o.status = 'Reported'; save(); audit('Radiology report submitted', 'Radiology order', { id: o.id, label: o.no }, [['Status', 'Performed', 'Reported']].concat(v.critical ? [['Critical', '', v.criticalText]] : [])); toast(v.critical ? 'Report submitted. Critical finding sent to the critical findings console.' : 'Report submitted for verification'); follow(o); };
+      if (v.critical) UI.confirm({ title: 'Submit with a critical finding?', tone: 'danger', icon: 'siren', confirm: 'Submit report', body: `<b>${esc(v.criticalText)}</b>. The finding goes to the critical findings console. Phone the referring team now and log the call.`, onConfirm: go }); else go();
+    });
+    on('wfVerify', () => UI.confirm({ title: 'Verify this report?', tone: 'primary', icon: 'check-check', confirm: 'Verify', body: 'You confirm the report matches the images and the clinical question. A consultant approves next.', onConfirm: () => { Object.assign(o.report, { verifiedBy: Lab.meName(), verifiedAt: nowStamp() }); save(); audit('Radiology report verified', 'Radiology order', { id: o.id, label: o.no }, [['Stage', 'To verify', 'To approve']]); toast('Verified. Waiting for approval.'); follow(o); } }));
+    on('wfApprove', () => Lab.esign({ title: 'Approve and sign the report', body: `${esc(ex.name)} for ${esc(p.name)} (${esc(Rad.acc(o))}). After approval the report is released to the EMR, the patient app and the referring doctor.`, role: 'Consultant Radiologist', entity: 'Radiology order', recordId: o.id, label: o.no,
+      onOk: (sig) => { Object.assign(o.report, { approvedBy: Lab.meName(), approvedAt: nowStamp(), signature: sig }); o.status = 'Approved'; save(); audit('Radiology report approved (e-signature)', 'Radiology order', { id: o.id, label: o.no }, [['Status', 'Reported', 'Approved'], ['Signed by', '', sig]]); toast('Approved, signed and released'); follow(o); } }));
+    on('wfReturn', () => UI.confirm({ title: 'Return for correction?', reason: true, confirm: 'Return', body: 'The report goes back to the author as a draft.', onConfirm: (reason) => { o.status = 'Performed'; Object.assign(o.report, { draft: true, returnNote: reason }); delete o.report.verifiedBy; delete o.report.verifiedAt; save(); audit('Radiology report returned for correction', 'Radiology order', { id: o.id, label: o.no }, [['Status', 'Reported', 'Performed']], { reason }); toast('Returned for correction'); follow(o); } }));
+    on('wfPrint', () => { Kit.printDoc({ title: 'Radiology report · ' + ex.name, sub: 'Radiology report', html: Rad.reportHtml(o) }); (db.radiologyDispatch = db.radiologyDispatch || []).push({ id: UI.uid('snd'), orderId: o.id, channel: 'Printed', to: 'Printer', at: nowStamp(), by: Lab.meName(), status: 'Printed', note: '' }); save(); });
+  }
+
+  /* ---------- Batch: report normal studies from templates, approve with one signature ---------- */
+  function batch() {
+    const perf = Rad.orders().filter(TABS[0][2]), ver = Rad.orders().filter(TABS[2][2]);
+    $('#page').innerHTML = `<div class="card" style="margin-bottom:16px"><div class="card-head"><div><h3>${icon('rows-3')} Batch reporting</h3><div class="small muted" style="margin-top:2px">For normal studies: pick a template for each exam and submit them together.</div></div><div class="actions"><button class="btn primary sm" id="bSub" ${canAdd ? '' : 'disabled title="Needs Add permission"'}>${icon('send')} Submit selected reports</button></div></div>
+        ${perf.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th></th><th>Patient</th><th>Exam</th><th>Performed</th><th>Template</th></tr></thead><tbody>${perf.map(o => { const t = Rad.templatesFor(o); return `<tr><td><input type="checkbox" data-s="${o.id}" aria-label="Select"></td><td>${Kit.patientCell(Kit.pt(o.patientId))}</td><td><b>${esc(o.name)}</b><div class="small muted">${esc(Rad.exam(o.code).modality)} · <span class="mono">${esc(Rad.acc(o))}</span></div></td><td>${esc(Kit.when(o.performedAt))}</td><td><select class="input" data-t="${o.id}" aria-label="Template">${t.map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select></td></tr>`; }).join('')}</tbody></table></div>` : `<div class="empty">${icon('inbox')}<b>No performed exams waiting for a report</b></div>`}</div>
+      <div class="card"><div class="card-head"><h3>${icon('signature')} Batch approval</h3><div class="actions"><button class="btn primary sm" id="bApp" ${canApprove ? '' : 'disabled title="Needs Approve permission"'}>${icon('signature')} Approve and sign selected</button></div></div>
+        ${ver.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th></th><th>Patient</th><th>Exam</th><th>Impression</th><th>Reported and verified by</th></tr></thead><tbody>${ver.map(o => { const own = Lab.isMe(o.report.author) || Lab.isMe(o.report.verifiedBy); return `<tr><td><input type="checkbox" data-a="${o.id}" ${own ? 'disabled title="No self-approval"' : ''} aria-label="Select"></td><td>${Kit.patientCell(Kit.pt(o.patientId))}</td><td><b>${esc(o.name)}</b>${o.report.critical ? ' <span class="flag-c">Critical</span>' : ''}</td><td class="small">${esc(o.report.impression)}</td><td class="small">${esc(o.report.author)}<br>${esc(o.report.verifiedBy)}${own ? '<div class="xs muted">Your own work</div>' : ''}</td></tr>`; }).join('')}</tbody></table></div>` : `<div class="empty">${icon('inbox')}<b>No verified reports waiting for approval</b></div>`}</div>`;
+    const bs = $('#bSub'); bs.addEventListener('click', () => {
+      const ids = $$('[data-s]:checked').map(c => c.dataset.s); if (!ids.length) { toast('Select at least one exam.', 'err'); return; }
+      const blanks = ids.filter(id => { const t = db.radiologyTemplates.find(x => x.id === $(`[data-t="${id}"]`).value); return !t || /\[ \]/.test(t.findings + t.impression); });
+      if (blanks.length) { toast('Templates with blanks [ ] must be reported one by one.', 'err'); return; }
+      UI.confirm({ title: `Submit ${ids.length} report${ids.length > 1 ? 's' : ''}?`, tone: 'primary', confirm: 'Submit', body: 'Each exam is reported with its template text and goes for verification.', onConfirm: () => {
+        ids.forEach(id => { const o = db.orders.find(x => x.id === id), t = db.radiologyTemplates.find(x => x.id === $(`[data-t="${id}"]`).value);
+          o.report = { templateId: t.id, technique: t.technique, findings: t.findings, impression: t.impression, critical: false, criticalText: '', author: Lab.meName(), authoredAt: nowStamp() }; o.status = 'Reported';
+          audit('Radiology report submitted (batch)', 'Radiology order', { id: o.id, label: o.no }, [['Status', 'Performed', 'Reported']]); });
+        save(); toast(ids.length + ' reports submitted'); batch(); } });
+    });
+    $('#bApp').addEventListener('click', () => {
+      const ids = $$('[data-a]:checked').map(c => c.dataset.a); if (!ids.length) { toast('Select at least one report.', 'err'); return; }
+      Lab.esign({ title: `Approve ${ids.length} report${ids.length > 1 ? 's' : ''}`, body: 'One signature approves and releases every selected report.', role: 'Consultant Radiologist', entity: 'Radiology order', recordId: 'batch', label: ids.length + ' reports',
+        onOk: (sig) => { ids.forEach(id => { const o = db.orders.find(x => x.id === id); Object.assign(o.report, { approvedBy: Lab.meName(), approvedAt: nowStamp(), signature: sig }); o.status = 'Approved'; audit('Radiology report approved (batch e-signature)', 'Radiology order', { id: o.id, label: o.no }, [['Status', 'Reported', 'Approved']]); }); save(); toast(ids.length + ' approved and released'); batch(); } });
+    });
+  }
+  const id = UI.param('id');
+  if (id) { const o = db.orders.find(x => x.id === id && x.type === 'rad'); if (o) { const t = TABS.find(x => x[2](o)); if (t) tab = t[0]; cur = o.id; } }
+  render();
+})();
+</script>
+</body>
+</html>

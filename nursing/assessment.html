@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nursing assessments · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-nursing.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/nursing.js"></script>
+<style>
+  .score-box { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px; background: var(--raised); border: 1px solid var(--line); margin: 6px 0 14px; }
+  .score-box b.sc { font-size: 22px; font-weight: 800; min-width: 34px; }
+  .dx-row { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; margin-bottom: 8px; }
+  .dx-row.on { border-color: var(--primary-light); background: var(--sel); }
+  .sum-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, can, toast, audit, field, showErrors } = UI;
+  const OPT = 'nursing.assess';
+  if (!UI.page({ opt: OPT, title: 'Nursing assessments', subtitle: 'Admission assessment, fall risk, pain, skin and pressure, nutrition screening, nursing diagnosis and care plan.', actions: Nursing.wardSelect() })) return;
+  const canAdd = can(OPT, 'add'), canEdit = can(OPT, 'edit'), canPrint = can(OPT, 'print');
+  let tab = 'list';
+
+  const MORSE = [['history', 'History of falling (last 3 months)', [[0, 'No'], [25, 'Yes']]], ['secondary', 'Secondary diagnosis', [[0, 'No'], [15, 'Yes']]], ['aid', 'Ambulatory aid', [[0, 'None, bed rest or nurse assists'], [15, 'Crutches, cane or walker'], [30, 'Holds on to furniture']]],
+    ['iv', 'IV therapy or heparin lock', [[0, 'No'], [20, 'Yes']]], ['gait', 'Gait', [[0, 'Normal, bed rest or wheelchair'], [10, 'Weak'], [20, 'Impaired']]], ['mental', 'Mental status', [[0, 'Oriented to own ability'], [15, 'Overestimates or forgets limits']]]];
+  const BRADEN = [['sensory', 'Sensory perception', ['Completely limited', 'Very limited', 'Slightly limited', 'No impairment']], ['moisture', 'Moisture', ['Constantly moist', 'Very moist', 'Occasionally moist', 'Rarely moist']], ['activity', 'Activity', ['Bedfast', 'Chairfast', 'Walks occasionally', 'Walks frequently']],
+    ['mobility', 'Mobility', ['Completely immobile', 'Very limited', 'Slightly limited', 'No limitation']], ['nutrition', 'Nutrition', ['Very poor', 'Probably inadequate', 'Adequate', 'Excellent']], ['friction', 'Friction and shear', ['Problem', 'Potential problem', 'No apparent problem']]];
+  const tpl = (id) => db.nursingTemplates.find(t => t.id === id) || {};
+  const dxOf = (id) => db.nursingDiagnoses.find(d => d.id === id) || {};
+
+  const api = Nursing.patientPage({
+    meta: (e) => { const m = Nursing.lastWith(e.id, 'morseScore'), b = Nursing.lastWith(e.id, 'bradenScore'); return (Nursing.admissionDone(e.id) ? '' : '<span class="badge b-warn">Admission assessment due</span>') + (m ? Nursing.scoreBadge('Morse', m.morseScore, Nursing.morseLevel(m.morseScore)) : '') + (b ? Nursing.scoreBadge('Braden', b.bradenScore, Nursing.bradenLevel(b.bradenScore)) : ''); },
+    render,
+  });
+
+  function render(e, host) {
+    const p = Kit.pt(e.patientId);
+    const list = db.nursingAssessments.filter(a => a.encounterId === e.id).sort((a, b) => b.at.localeCompare(a.at));
+    const m = Nursing.lastWith(e.id, 'morseScore'), b = Nursing.lastWith(e.id, 'bradenScore'), pa = Nursing.lastWith(e.id, 'pain');
+    const plan = carePlan(e);
+    const tile = (label, val, lvl, sub) => `<div class="vital ${lvl && lvl[1] === 'err' ? 'abn' : ''}"><span>${label}</span><b>${val}</b><div class="xs muted">${sub || ''}</div></div>`;
+    const admDone = Nursing.admissionDone(e.id);
+    host.innerHTML = `${Kit.patientBanner(p, e)}
+      ${admDone ? '' : `<div class="banner warn" style="margin-bottom:14px">${icon('clock')}<span>Admission nursing assessment is due within 4 hours of admission (admitted ${Kit.when(e.start)}).</span></div>`}
+      <div class="sum-tiles">
+        ${tile('Fall risk (Morse)', m ? m.morseScore : '-', m && Nursing.morseLevel(m.morseScore), m ? Nursing.morseLevel(m.morseScore)[0] + ' · ' + Kit.when(m.at) : 'Not assessed')}
+        ${tile('Pressure risk (Braden)', b ? b.bradenScore : '-', b && Nursing.bradenLevel(b.bradenScore), b ? Nursing.bradenLevel(b.bradenScore)[0] + ' · ' + Kit.when(b.at) : 'Not assessed')}
+        ${tile('Pain', pa ? pa.pain.score + '<small>/10</small>' : '-', pa && pa.pain.score >= 4 ? [0, 'err'] : null, pa ? esc(pa.pain.scale) + ' · ' + esc(pa.pain.location || '') : 'Not assessed')}
+        ${tile('Care plan', plan.filter(x => x.c.status === 'Active').length + '<small>active</small>', null, plan.filter(x => x.c.status === 'Resolved').length + ' resolved')}
+      </div>
+      <div class="card"><div id="tabs"></div><div id="tb"></div></div>`;
+    Kit.tabs($('#tabs', host), [{ id: 'list', label: 'Assessments and forms', icon: 'clipboard-check', count: list.length }, { id: 'plan', label: 'Diagnosis and care plan', icon: 'target', count: plan.filter(x => x.c.status === 'Active').length }, { id: 'nor', label: 'Nursing orders', icon: 'list-todo', count: db.nursingNurseOrders.filter(n => n.encounterId === e.id && n.status === 'Active').length }], tab, (t) => { tab = t; drawTab(e); });
+    drawTab(e);
+  }
+  function drawTab(e) { const b = $('#tb'); if (tab === 'list') listTab(e, b); else if (tab === 'plan') planTab(e, b); else norTab(e, b); }
+  function carePlan(e) { return db.nursingAssessments.filter(a => a.encounterId === e.id && a.status === 'Completed').reduce((l, a) => l.concat((a.carePlan || []).map(c => ({ a, c }))), []); }
+
+  function listTab(e, b) {
+    const admDone = Nursing.admissionDone(e.id);
+    const isPed = Nursing.wardOf(e).id === 'wd_03';
+    b.innerHTML = `<div class="card-pad row wrap" style="gap:8px;border-bottom:1px solid var(--line)"><span class="small muted grow">Choose a form. Templates come from the Nursing Assessment Template master.</span>
+      <select class="input" id="tplSel" style="width:auto;min-width:300px" aria-label="Assessment form">${db.nursingTemplates.filter(t => t.status !== 'Inactive').map(t => `<option value="${t.id}" ${t.id === (admDone ? 'nt_07' : isPed ? 'nt_02' : 'nt_01') ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>
+      <button class="btn primary" id="newA" ${canAdd ? '' : 'disabled title="Needs Add permission"'}>${icon('plus')} Start form</button></div><div id="aTbl"></div>`;
+    $('#newA', b).addEventListener('click', () => openForm(e, $('#tplSel', b).value, null));
+    UI.table($('#aTbl', b), {
+      columns: [{ label: 'Date', sort: a => a.at, render: a => `<span class="mono">${Kit.when(a.at)}</span><div class="xs muted">${esc(a.no)}</div>` }, { label: 'Form', render: a => `<b>${esc(tpl(a.templateId).name)}</b><div class="xs muted">${esc(tpl(a.templateId).type)}</div>` },
+        { label: 'Scores', render: a => [a.morseScore != null ? Nursing.scoreBadge('Morse', a.morseScore, Nursing.morseLevel(a.morseScore)) : '', a.bradenScore != null ? Nursing.scoreBadge('Braden', a.bradenScore, Nursing.bradenLevel(a.bradenScore)) : '', a.pain ? Nursing.scoreBadge('Pain', a.pain.score, Nursing.painLevel(a.pain.score)) : '', a.nutrition ? Nursing.scoreBadge('MST', a.nutrition.weightLoss + a.nutrition.appetite, a.nutrition.weightLoss + a.nutrition.appetite >= 2 ? ['At risk', 'warn'] : ['Low risk', 'ok']) : ''].join(' ') },
+        { label: 'By', render: a => `<span class="small">${esc(a.by)}</span>` }, { label: 'Status', sort: a => a.status, render: a => Kit.status(a.status) },
+        { label: '', cls: 'actions', render: a => a.status === 'Draft' ? `<button class="btn xs" data-cont="${a.id}" ${canEdit ? '' : 'disabled title="Needs Edit permission"'}>${icon('pencil')} Continue</button>` : `<button class="btn xs ghost" data-view="${a.id}">${icon('eye')} View</button>` }],
+      rows: () => db.nursingAssessments.filter(a => a.encounterId === e.id).sort((x, y) => y.at.localeCompare(x.at)), search: a => [tpl(a.templateId).name, a.by, a.no].join(' '), searchPlaceholder: 'Search forms', pageSize: 8,
+      filters: [{ label: 'Status', options: [['Completed', 'Completed'], ['Draft', 'Draft']], test: (a, v) => a.status === v }],
+      empty: 'No assessments yet', emptyIcon: 'clipboard-check',
+      afterDraw: (tb) => { $$('[data-cont]', tb).forEach(x => x.addEventListener('click', () => { const a = db.nursingAssessments.find(r => r.id === x.dataset.cont); openForm(e, a.templateId, a); })); $$('[data-view]', tb).forEach(x => x.addEventListener('click', () => view(e, db.nursingAssessments.find(r => r.id === x.dataset.view)))); },
+    });
+  }
+
+  /* ---------- Assessment form ---------- */
+  function openForm(e, tplId, rec) {
+    const t = tpl(tplId), secs = String(t.sections || '').split(',');
+    const p = Kit.pt(e.patientId), isPed = Nursing.wardOf(e).id === 'wd_03';
+    const g = (rec && rec.general) || {};
+    const sel = (id, label, opts, val, req) => field({ id, label, type: 'select', req, value: val == null ? '' : val, options: opts });
+    const sections = {
+      general: `<div class="section-t">General admission details</div><div class="form-grid c3">
+        ${sel('g_arrival', 'Arrived by', ['Walking', 'Wheelchair', 'Stretcher', 'Stretcher from ER', 'Carried by parent'].map(x => [x, x]), g.arrival, true)}${sel('g_accompanied', 'Accompanied by', ['Alone', 'Spouse', 'Son', 'Daughter', 'Mother', 'Father', 'Other relative'].map(x => [x, x]), g.accompanied)}
+        ${sel('g_mobility', 'Mobility', ['Independent', 'Needs assistance', 'Bed bound'].map(x => [x, x]), g.mobility, true)}
+        ${field({ id: 'g_height', label: 'Height (cm)', type: 'number', value: g.height, attrs: 'min="40" max="220"' })}${field({ id: 'g_weight', label: 'Weight (kg)', type: 'number', value: g.weight, req: true, attrs: 'min="1" max="300" step="0.1"' })}
+        ${sel('g_communication', 'Preferred language', ['Arabic', 'English', 'Hindi', 'Urdu', 'Tagalog', 'Malayalam'].map(x => [x, x]), g.communication || p.lang)}
+        ${sel('g_valuables', 'Valuables', ['None', 'Handed to family', 'Kept in safe', 'With patient (signed waiver)'].map(x => [x, x]), g.valuables)}${sel('g_isolation', 'Isolation', ['None', 'Contact precautions', 'Droplet precautions', 'Airborne precautions'].map(x => [x, x]), g.isolation || 'None')}
+        <div class="field"><label>Checks</label><div class="stack tight"><label class="check"><input type="checkbox" id="g_orientation" ${g.orientation ? 'checked' : ''}> Oriented to ward and call bell</label><label class="check"><input type="checkbox" id="g_idBand" ${g.idBand ? 'checked' : ''}> ID wristband applied</label><label class="check"><input type="checkbox" id="g_allergiesChecked" ${g.allergiesChecked ? 'checked' : ''}> Allergies verified: ${esc((p.allergies || []).join(', ') || 'none known')}</label></div></div>
+        ${field({ id: 'g_notes', label: 'Other findings', type: 'textarea', full: true, value: g.notes, max: 500 })}</div>`,
+      morse: `<div class="section-t">Fall risk: Morse Fall Scale</div><div class="form-grid c3">${MORSE.map(([k, l, o]) => sel('m_' + k, l, o.map(([v, x]) => [v, `${x} (${v})`]), rec && rec.morse ? rec.morse[k] : '', true)).join('')}</div>
+        <div class="score-box" id="mBox"></div>`,
+      pain: `<div class="section-t">Pain assessment</div><div class="form-grid c3">${sel('p_scale', 'Pain scale', db.nursingPainScales.filter(s => s.status !== 'Inactive').map(s => [s.code, s.name]), rec && rec.pain ? rec.pain.scale : (isPed ? 'FACES' : Nursing.wardOf(e).id === 'wd_04' ? 'CPOT' : 'NRS'), true)}
+        ${sel('p_score', 'Score', Array.from({ length: 11 }, (_, i) => [i, String(i)]), rec && rec.pain ? rec.pain.score : '', true)}${field({ id: 'p_location', label: 'Location', value: rec && rec.pain ? rec.pain.location : '', max: 60 })}
+        ${sel('p_character', 'Character', ['Aching', 'Sharp', 'Dull', 'Burning', 'Throbbing', 'Cramping'].map(x => [x, x]), rec && rec.pain ? rec.pain.character : '')}${sel('p_onset', 'Onset', ['Since admission', 'Sudden, today', 'Gradual', 'Chronic (over 3 months)'].map(x => [x, x]), rec && rec.pain ? rec.pain.onset : '')}</div>`,
+      braden: `<div class="section-t">Skin and pressure injury risk: Braden Scale</div><div class="form-grid c3">${BRADEN.map(([k, l, o]) => sel('b_' + k, l, o.map((x, i) => [i + 1, `${i + 1}. ${x}`]), rec && rec.braden ? rec.braden[k] : '', true)).join('')}</div>
+        <div class="score-box" id="bBox"></div><div class="form-grid c3">${sel('b_skin', 'Existing skin damage', ['None', 'Redness, blanching', 'Pressure injury stage 1', 'Pressure injury stage 2', 'Pressure injury stage 3 or 4', 'Surgical wound', 'Other wound'].map(x => [x, x]), rec && rec.skin ? rec.skin : 'None')}${field({ id: 'b_site', label: 'Site', value: rec && rec.skinSite || '', max: 60, placeholder: 'For example sacrum' })}</div>`,
+      nutrition: `<div class="section-t">Nutrition screening: Malnutrition Screening Tool (MST)</div><div class="form-grid c3">${sel('n_weightLoss', 'Recent weight loss without trying', [[0, 'No (0)'], [1, 'Unsure (1)'], [2, 'Yes (2)']], rec && rec.nutrition ? rec.nutrition.weightLoss : '', true)}${sel('n_appetite', 'Eating poorly because of decreased appetite', [[0, 'No (0)'], [1, 'Yes (1)']], rec && rec.nutrition ? rec.nutrition.appetite : '', true)}<div class="score-box" id="nBox" style="margin:22px 0 0"></div></div>`,
+    };
+    UI.drawer({ title: t.name, sub: `${esc(p.name)} · Bed ${esc(Nursing.bedNo(e))} · ${esc(t.code)} · ${esc(t.frequency)}`, wide: true,
+      body: `<div class="err-summary hidden"></div>${secs.map(s => sections[s] || '').join('')}
+        <div class="section-t">Nursing diagnosis and care plan</div><div class="small muted" style="margin-bottom:8px">Suggestions follow the scores. Selected diagnoses start a care plan; tick "Add to worklist" to create a nursing order.</div><div id="dxList"></div>`,
+      foot: `<span class="grow small muted" id="reqNote"></span><button class="btn" data-close>Cancel</button><button class="btn" id="fDraft">Save draft</button><button class="btn primary" id="fDone" disabled>Complete assessment</button>`,
+      onMount: (el, close) => {
+        const chosen = new Set(), toOrder = new Set();
+        const v = (id) => { const x = $('#' + id, el); return x ? x.value : ''; };
+        const score = () => {
+          const out = {};
+          if (secs.includes('morse')) { const vals = MORSE.map(([k]) => v('m_' + k)); out.morse = vals.every(x => x !== '') ? vals.reduce((s, x) => s + +x, 0) : null; }
+          if (secs.includes('braden')) { const vals = BRADEN.map(([k]) => v('b_' + k)); out.braden = vals.every(x => x !== '') ? vals.reduce((s, x) => s + +x, 0) : null; }
+          if (secs.includes('pain')) out.pain = v('p_score') === '' ? null : +v('p_score');
+          if (secs.includes('nutrition')) out.mst = v('n_weightLoss') === '' || v('n_appetite') === '' ? null : +v('n_weightLoss') + +v('n_appetite');
+          return out;
+        };
+        const suggest = (s) => { const l = []; if (s.morse >= 45) l.push('ndx_01'); if (s.braden != null && s.braden <= 18) l.push('ndx_02'); if (s.pain >= 4) l.push('ndx_03'); if (s.mst >= 2) l.push('ndx_06'); return l; };
+        let auto = new Set();
+        const drawDx = () => {
+          const s = score(), sug = suggest(s);
+          sug.forEach(d => { if (!auto.has(d)) { auto.add(d); chosen.add(d); } });
+          const already = carePlan(e).filter(x => x.c.status === 'Active').map(x => x.c.diagnosisId);
+          $('#dxList', el).innerHTML = db.nursingDiagnoses.filter(d => d.status !== 'Inactive').map(d => `<div class="dx-row ${chosen.has(d.id) ? 'on' : ''}"><input type="checkbox" data-dx="${d.id}" ${chosen.has(d.id) ? 'checked' : ''} aria-label="${esc(d.name)}" style="margin-top:3px">
+            <div class="grow"><b>${esc(d.name)}</b> <span class="xs muted mono">${esc(d.code)}</span> ${sug.includes(d.id) ? '<span class="badge b-info nodot">Suggested</span>' : ''} ${already.includes(d.id) ? '<span class="badge b-neutral nodot">Already in care plan</span>' : ''}<div class="xs muted">Goal: ${esc(d.goal)}</div>${chosen.has(d.id) ? `<div class="xs" style="margin-top:3px">${esc(d.interventions)}</div>` : ''}</div>
+            ${chosen.has(d.id) ? `<label class="check xs" style="white-space:nowrap"><input type="checkbox" data-ord="${d.id}" ${toOrder.has(d.id) ? 'checked' : ''}> Add to worklist (${esc(d.frequency)})</label>` : ''}</div>`).join('');
+          $$('[data-dx]', el).forEach(c => c.addEventListener('change', () => { c.checked ? chosen.add(c.dataset.dx) : (chosen.delete(c.dataset.dx), toOrder.delete(c.dataset.dx)); drawDx(); }));
+          $$('[data-ord]', el).forEach(c => c.addEventListener('change', () => { c.checked ? toOrder.add(c.dataset.ord) : toOrder.delete(c.dataset.ord); }));
+        };
+        const upd = () => {
+          const s = score();
+          if ($('#mBox', el)) { const l = s.morse != null ? Nursing.morseLevel(s.morse) : null; $('#mBox', el).innerHTML = `<span class="small muted">Morse score</span><b class="sc">${s.morse != null ? s.morse : '-'}</b>${l ? `<span class="badge b-${l[1]}">${l[0]}</span><span class="small muted">0-24 low · 25-44 moderate · 45 and over high</span>` : '<span class="small muted">Answer all six items</span>'}`; }
+          if ($('#bBox', el)) { const l = s.braden != null ? Nursing.bradenLevel(s.braden) : null; $('#bBox', el).innerHTML = `<span class="small muted">Braden score</span><b class="sc">${s.braden != null ? s.braden : '-'}</b>${l ? `<span class="badge b-${l[1]}">${l[0]}</span><span class="small muted">18 or less is at risk · 12 or less high risk</span>` : '<span class="small muted">Answer all six items</span>'}`; }
+          if ($('#nBox', el)) $('#nBox', el).innerHTML = `<span class="small muted">MST score</span><b class="sc">${s.mst != null ? s.mst : '-'}</b>${s.mst != null ? (s.mst >= 2 ? '<span class="badge b-warn">At risk: refer to dietitian</span>' : '<span class="badge b-ok">Low risk</span>') : ''}`;
+          const missing = $$('select.input, input.input', el).filter(i => i.closest('.field') && i.closest('.field').querySelector('.req') && !i.value);
+          $('#fDone', el).disabled = !!missing.length || !canAdd;
+          $('#reqNote', el).textContent = missing.length ? missing.length + ' required field' + (missing.length > 1 ? 's' : '') + ' left' : 'Ready to complete';
+          drawDx();
+        };
+        $$('select,input', el).forEach(i => { if (!i.dataset.dx && !i.dataset.ord) { i.addEventListener('change', upd); i.addEventListener('input', upd); } });
+        if (rec && rec.carePlan) rec.carePlan.forEach(c => { chosen.add(c.diagnosisId); auto.add(c.diagnosisId); });
+        upd();
+        const collect = (status) => {
+          const s = score(), r = rec || { id: UI.uid('na'), no: Kit.nextNo('NA-26-', db.nursingAssessments), encounterId: e.id, patientId: e.patientId };
+          Object.assign(r, { templateId: tplId, at: Nursing.now(), by: Nursing.myName(), status });
+          if (secs.includes('general')) r.general = { arrival: v('g_arrival'), accompanied: v('g_accompanied'), mobility: v('g_mobility'), height: v('g_height') ? +v('g_height') : '', weight: v('g_weight') ? +v('g_weight') : '', communication: v('g_communication'), valuables: v('g_valuables'), isolation: v('g_isolation'), orientation: $('#g_orientation', el).checked, idBand: $('#g_idBand', el).checked, allergiesChecked: $('#g_allergiesChecked', el).checked, notes: v('g_notes').trim() };
+          if (secs.includes('morse')) { r.morse = {}; MORSE.forEach(([k]) => r.morse[k] = v('m_' + k) === '' ? '' : +v('m_' + k)); r.morseScore = s.morse; }
+          if (secs.includes('braden')) { r.braden = {}; BRADEN.forEach(([k]) => r.braden[k] = v('b_' + k) === '' ? '' : +v('b_' + k)); r.bradenScore = s.braden; r.skin = v('b_skin'); r.skinSite = v('b_site').trim(); }
+          if (secs.includes('pain')) r.pain = { scale: v('p_scale'), score: s.pain, location: v('p_location').trim(), character: v('p_character'), onset: v('p_onset') };
+          if (secs.includes('nutrition')) r.nutrition = { weightLoss: +v('n_weightLoss'), appetite: +v('n_appetite') };
+          const already = carePlan(e).filter(x => x.c.status === 'Active' && x.a !== r).map(x => x.c.diagnosisId);
+          r.carePlan = Array.from(chosen).filter(d => !already.includes(d)).map(d => ({ diagnosisId: d, goal: dxOf(d).goal, status: 'Active', evaluation: '', at: r.at }));
+          if (!rec) db.nursingAssessments.push(r);
+          return r;
+        };
+        $('#fDraft', el).addEventListener('click', () => { if (!canAdd) return; const r = collect('Draft'); save(); audit('Nursing assessment saved as draft', 'Nursing assessment', { id: r.id, label: r.no + ' ' + p.name }, []); close(); toast('Draft saved'); api.refresh(); });
+        $('#fDone', el).addEventListener('click', () => {
+          const errs = {};
+          if (v('g_weight') && (+v('g_weight') <= 0 || +v('g_weight') > 300)) errs.g_weight = 'Weight must be between 1 and 300 kg.';
+          if (v('g_height') && (+v('g_height') < 40 || +v('g_height') > 220)) errs.g_height = 'Height must be between 40 and 220 cm.';
+          if ($('#g_idBand', el) && !$('#g_idBand', el).checked) errs.g_idBand = 'Confirm the ID wristband is applied.';
+          if (!showErrors(el, errs)) { if (errs.g_idBand) toast(errs.g_idBand, 'err'); return; }
+          const r = collect('Completed');
+          const orders = Array.from(toOrder).filter(d => chosen.has(d));
+          const fMap = { 'Every shift': 'Every shift', 'Every 2 hours': 'Every 2 hours', 'Every 4 hours': 'Every 4 hours', 'Before meals': 'Before meals and at bedtime', 'Once daily': 'Once daily' };
+          orders.forEach(d => { const x = dxOf(d); db.nursingNurseOrders.push({ id: UI.uid('nno'), no: Kit.nextNo('NOR-26-', db.nursingNurseOrders), encounterId: e.id, patientId: e.patientId, name: x.interventions.split(';').slice(0, 2).join(';').trim(), frequency: fMap[x.frequency] || 'Every shift', source: 'Care plan: ' + x.name, status: 'Active', at: r.at, by: r.by }); });
+          save(); audit('Nursing assessment completed', 'Nursing assessment', { id: r.id, label: r.no + ' ' + p.name }, [['Morse', '', String(r.morseScore != null ? r.morseScore : '-')], ['Braden', '', String(r.bradenScore != null ? r.bradenScore : '-')], ['Care plan diagnoses', '', String(r.carePlan.length)], ['Nursing orders', '', String(orders.length)]]);
+          close(); toast('Assessment completed' + (orders.length ? `, ${orders.length} nursing order${orders.length > 1 ? 's' : ''} added to the worklist` : '')); api.refresh();
+        });
+      } });
+  }
+  function view(e, a) {
+    const p = Kit.pt(e.patientId), t = tpl(a.templateId);
+    const html = `<dl class="kv"><dt>Form</dt><dd>${esc(t.name)} (${esc(t.code)})</dd><dt>Number</dt><dd>${esc(a.no)}</dd><dt>Completed</dt><dd>${Kit.when(a.at)} by ${esc(a.by)}</dd>
+      ${a.general && a.general.arrival ? `<dt>Arrival</dt><dd>${esc(a.general.arrival)}, accompanied by ${esc(a.general.accompanied || '-')}</dd><dt>Height / weight</dt><dd>${esc(a.general.height || '-')} cm / ${esc(a.general.weight || '-')} kg</dd><dt>Isolation</dt><dd>${esc(a.general.isolation || 'None')}</dd><dt>Valuables</dt><dd>${esc(a.general.valuables || '-')}</dd>` : ''}
+      ${a.general && a.general.mobility ? `<dt>Mobility</dt><dd>${esc(a.general.mobility)}</dd>` : ''}
+      ${a.morseScore != null ? `<dt>Morse fall scale</dt><dd>${Nursing.scoreBadge('Score', a.morseScore, Nursing.morseLevel(a.morseScore))} ${MORSE.map(([k, l]) => `${esc(l)}: ${a.morse[k]}`).join(' · ')}</dd>` : ''}
+      ${a.bradenScore != null ? `<dt>Braden scale</dt><dd>${Nursing.scoreBadge('Score', a.bradenScore, Nursing.bradenLevel(a.bradenScore))} ${BRADEN.map(([k, l]) => `${esc(l)}: ${a.braden[k]}`).join(' · ')}${a.skin && a.skin !== 'None' ? `<br>Skin: ${esc(a.skin)} ${esc(a.skinSite || '')}` : ''}</dd>` : ''}
+      ${a.pain ? `<dt>Pain</dt><dd>${esc(a.pain.scale)} ${a.pain.score}/10 ${esc(a.pain.location || '')} ${esc(a.pain.character || '')}</dd>` : ''}
+      ${a.nutrition ? `<dt>Nutrition (MST)</dt><dd>${a.nutrition.weightLoss + a.nutrition.appetite}${a.nutrition.weightLoss + a.nutrition.appetite >= 2 ? ' (at risk, dietitian referral)' : ' (low risk)'}</dd>` : ''}
+      ${(a.carePlan || []).length ? `<dt>Nursing diagnoses</dt><dd>${a.carePlan.map(c => esc(dxOf(c.diagnosisId).name)).join('; ')}</dd>` : ''}</dl>`;
+    UI.drawer({ title: t.name, sub: esc(p.name) + ' · ' + esc(a.no), wide: true, body: html,
+      foot: `<button class="btn" data-close>Close</button><button class="btn primary" id="vPr" ${canPrint ? '' : 'disabled title="Needs Print permission"'}>${icon('printer')} Print</button>`,
+      onMount: (el) => $('#vPr', el).addEventListener('click', () => Kit.printDoc({ title: t.name, sub: `${p.name} · ${p.mrn} · Bed ${Nursing.bedNo(e)} · ${e.no}`, html: html.replace(/<span class="badge[^>]*>/g, '<b>').replace(/<\/span>/g, '</b>') })) });
+  }
+
+  /* ---------- Care plan ---------- */
+  function planTab(e, b) {
+    const items = carePlan(e);
+    b.innerHTML = `<div class="card-pad row" style="border-bottom:1px solid var(--line)"><span class="small muted grow">Diagnoses come from the Nursing Diagnosis / Care Plan master. Evaluate each shift; resolve when the goal is met.</span><button class="btn primary" id="addDx" ${canAdd && Nursing.admissionDone(e.id) ? '' : 'disabled title="' + (canAdd ? 'Complete the admission assessment first' : 'Needs Add permission') + '"'}>${icon('plus')} Add diagnosis</button></div>
+      ${items.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>Nursing diagnosis</th><th>Goal</th><th>Interventions</th><th>Status</th><th></th></tr></thead><tbody>${items.map((x, i) => { const d = dxOf(x.c.diagnosisId); return `<tr><td><b>${esc(d.name)}</b><div class="xs muted">${esc(d.code)} · ${esc(d.domain)} · since ${Kit.day(x.c.at)}</div></td><td class="small">${esc(x.c.goal)}</td><td class="small">${esc(d.interventions).split(';').map(s => '• ' + s.trim()).join('<br>')}</td><td>${Kit.status(x.c.status === 'Resolved' ? 'Completed' : 'Active', x.c.status === 'Resolved' ? 'ok' : 'info').replace('Completed', 'Resolved')}${x.c.evaluation ? `<div class="xs muted" style="margin-top:4px;max-width:220px">${esc(x.c.evaluation)}</div>` : ''}</td>
+        <td class="actions">${x.c.status === 'Active' ? `<button class="btn xs" data-ev="${i}" ${canEdit ? '' : 'disabled title="Needs Edit permission"'}>${icon('notebook-pen')} Evaluate</button>` : ''}</td></tr>`; }).join('')}</tbody></table></div>` : `<div class="empty">${icon('target')}<b>No care plan yet</b><span>Complete the admission assessment to start the care plan.</span></div>`}`;
+    $$('[data-ev]', b).forEach(bt => bt.addEventListener('click', () => evaluate(e, items[+bt.dataset.ev])));
+    $('#addDx', b).addEventListener('click', () => {
+      const active = items.filter(x => x.c.status === 'Active').map(x => x.c.diagnosisId);
+      UI.drawer({ title: 'Add nursing diagnosis', sub: esc(Kit.ptName(e.patientId)),
+        body: `<div class="err-summary hidden"></div><div class="form-grid">${field({ id: 'dxS', label: 'Diagnosis', type: 'select', req: true, full: true, options: db.nursingDiagnoses.filter(d => d.status !== 'Inactive' && !active.includes(d.id)).map(d => [d.id, `${d.name} (${d.code})`]) })}${field({ id: 'dxG', label: 'Goal', type: 'textarea', req: true, max: 300 })}<label class="check full"><input type="checkbox" id="dxO"> Add interventions to the order worklist</label></div>`,
+        foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="dxSave" disabled>Add to care plan</button>`,
+        onMount: (el, close) => {
+          const s = $('#dxS', el), g = $('#dxG', el), ok = $('#dxSave', el);
+          s.addEventListener('change', () => { g.value = dxOf(s.value).goal || ''; ok.disabled = !(s.value && g.value.trim()); });
+          g.addEventListener('input', () => { ok.disabled = !(s.value && g.value.trim()); });
+          ok.addEventListener('click', () => {
+            const a = db.nursingAssessments.filter(x => x.encounterId === e.id && x.status === 'Completed').sort((x, y) => y.at.localeCompare(x.at))[0];
+            a.carePlan = a.carePlan || []; a.carePlan.push({ diagnosisId: s.value, goal: g.value.trim(), status: 'Active', evaluation: '', at: Nursing.now() });
+            const d = dxOf(s.value);
+            if ($('#dxO', el).checked) db.nursingNurseOrders.push({ id: UI.uid('nno'), no: Kit.nextNo('NOR-26-', db.nursingNurseOrders), encounterId: e.id, patientId: e.patientId, name: d.interventions.split(';').slice(0, 2).join(';').trim(), frequency: { 'Every 2 hours': 'Every 2 hours', 'Every 4 hours': 'Every 4 hours', 'Before meals': 'Before meals and at bedtime', 'Once daily': 'Once daily' }[d.frequency] || 'Every shift', source: 'Care plan: ' + d.name, status: 'Active', at: Nursing.now(), by: Nursing.myName() });
+            save(); audit('Care plan diagnosis added', 'Care plan', { id: a.id, label: d.name + ', ' + Kit.ptName(e.patientId) }, [['Diagnosis', '', d.name]]); close(); toast('Added to the care plan'); api.refresh();
+          });
+        } });
+    });
+  }
+  function evaluate(e, x) {
+    const d = dxOf(x.c.diagnosisId);
+    UI.drawer({ title: 'Evaluate care plan', sub: esc(d.name) + ' · ' + esc(Kit.ptName(e.patientId)),
+      body: `<div class="note-box" style="margin-bottom:12px"><b>Goal</b><div class="small">${esc(x.c.goal)}</div></div><div class="err-summary hidden"></div><div class="form-grid">${field({ id: 'evO', label: 'Outcome', type: 'select', req: true, full: true, options: [['Progressing', 'Goal progressing, continue plan'], ['Met', 'Goal met, resolve diagnosis'], ['Not met', 'Goal not met, revise interventions']] })}${field({ id: 'evN', label: 'Evaluation note', type: 'textarea', req: true, max: 400 })}</div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="evSave" disabled>Save evaluation</button>`,
+      onMount: (el, close) => {
+        const o = $('#evO', el), n = $('#evN', el), ok = $('#evSave', el); const chk = () => { ok.disabled = !(o.value && n.value.trim().length >= 3); }; o.addEventListener('change', chk); n.addEventListener('input', chk);
+        ok.addEventListener('click', () => {
+          const before = x.c.status; x.c.evaluation = `${Kit.day(db.TODAY)} ${Nursing.nowTime()}: ${o.options[o.selectedIndex].text}. ${n.value.trim()} (${Nursing.myName()})`;
+          if (o.value === 'Met') { x.c.status = 'Resolved'; db.nursingNurseOrders.filter(no => no.encounterId === e.id && no.status === 'Active' && no.source === 'Care plan: ' + d.name).forEach(no => { no.status = 'Stopped'; no.stoppedAt = Nursing.now(); }); }
+          save(); audit('Care plan evaluated', 'Care plan', { id: x.a.id, label: d.name + ', ' + Kit.ptName(e.patientId) }, [['Status', before, x.c.status]]); close(); toast(o.value === 'Met' ? 'Diagnosis resolved' : 'Evaluation saved'); api.refresh();
+        });
+      } });
+  }
+
+  /* ---------- Nursing orders ---------- */
+  function norTab(e, b) {
+    b.innerHTML = `<div class="card-pad small muted" style="border-bottom:1px solid var(--line)">Nurse-initiated orders from the care plan. They appear on the order worklist at the scheduled times.</div><div id="nTbl"></div>`;
+    UI.table($('#nTbl', b), {
+      columns: [{ label: 'Order', render: n => `<b>${esc(n.name)}</b><div class="xs muted">${esc(n.no)} · ${esc(n.source)}</div>` }, { label: 'Frequency', render: n => esc(n.frequency) + `<div class="xs muted">${esc(Nursing.timesOf(n.frequency).join(', '))}</div>` }, { label: 'Started', sort: n => n.at, render: n => `${Kit.when(n.at)}<div class="xs muted">${esc(n.by)}</div>` }, { label: 'Status', render: n => Kit.status(n.status === 'Stopped' ? 'Completed' : 'Active').replace('Completed', 'Stopped') },
+        { label: '', cls: 'actions', render: n => n.status === 'Active' ? `<button class="btn xs danger" data-stop="${n.id}" ${canEdit ? '' : 'disabled title="Needs Edit permission"'}>${icon('circle-stop')} Stop</button>` : '' }],
+      rows: () => db.nursingNurseOrders.filter(n => n.encounterId === e.id), search: n => n.name + ' ' + n.source, pageSize: 8, empty: 'No nursing orders', emptyIcon: 'list-todo',
+      afterDraw: (tb) => $$('[data-stop]', tb).forEach(bt => bt.addEventListener('click', () => { const n = db.nursingNurseOrders.find(x => x.id === bt.dataset.stop);
+        UI.confirm({ title: 'Stop nursing order?', body: esc(n.name) + '. Future tasks are removed from the worklist.', reason: true, confirm: 'Stop order', onConfirm: (reason) => { n.status = 'Stopped'; n.stoppedAt = Nursing.now(); n.stopReason = reason; save(); audit('Nursing order stopped', 'Nursing order', { id: n.id, label: n.no }, [['Status', 'Active', 'Stopped']], { reason }); toast('Nursing order stopped'); api.refresh(); } }); })),
+    });
+  }
+})();
+</script>
+</body>
+</html>

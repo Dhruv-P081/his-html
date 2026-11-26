@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Progress notes · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-nursing.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/nursing.js"></script>
+<style>
+  .day-h { font-size: 12px; font-weight: 800; color: var(--mute); text-transform: uppercase; letter-spacing: .05em; margin: 18px 0 8px; }
+  .day-h:first-child { margin-top: 0; }
+  .nnote { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin-bottom: 10px; background: var(--card); }
+  .nnote .dar { display: grid; grid-template-columns: 90px 1fr; gap: 4px 12px; margin-top: 8px; font-size: 13px; }
+  .nnote .dar span { font-size: 11px; font-weight: 800; color: var(--mute); text-transform: uppercase; letter-spacing: .06em; padding-top: 2px; }
+  .nnote .add { margin-top: 8px; padding: 8px 10px; border-radius: 8px; background: var(--raised); font-size: 12.5px; }
+</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, can, toast, audit, field, showErrors } = UI;
+  const OPT = 'nursing.notes';
+  if (!UI.page({ opt: OPT, title: 'Nursing progress notes', subtitle: 'Daily notes per patient per shift in Data, Action, Response format.', actions: Nursing.wardSelect() })) return;
+  const canAdd = can(OPT, 'add'), canEdit = can(OPT, 'edit'), canPrint = can(OPT, 'print');
+  let shiftF = 'all';
+  const TYPES = ['Shift progress', 'Event', 'Patient education', 'Family communication', 'Procedure', 'Transfer'];
+  const notesOf = (e) => db.nursingNotes.filter(n => n.encounterId === e.id).sort((a, b) => b.at.localeCompare(a.at));
+  const curShift = Nursing.shiftOf(), curDay = Nursing.shiftDay();
+
+  const api = Nursing.patientPage({
+    meta: (e) => { const has = db.nursingNotes.some(n => n.encounterId === e.id && n.date === curDay && n.shift === curShift); return has ? `<span class="badge b-ok">${curShift} note done</span>` : `<span class="badge b-warn">${curShift} note due</span>`; },
+    render,
+  });
+
+  function render(e, host) {
+    const p = Kit.pt(e.patientId), all = notesOf(e);
+    const list = all.filter(n => shiftF === 'all' || n.shift === shiftF);
+    const groups = Kit.groupBy(list, n => n.date);
+    const has = all.some(n => n.date === curDay && n.shift === curShift);
+    host.innerHTML = `${Kit.patientBanner(p, e)}
+      ${has ? '' : `<div class="banner warn" style="margin-bottom:14px">${icon('clock')}<span>No ${curShift.toLowerCase()} shift note yet for ${Kit.day(curDay)}.</span></div>`}
+      <div class="card"><div class="card-head"><div id="sf"></div><div class="actions"><button class="btn" id="prN" ${canPrint ? '' : 'disabled title="Needs Print permission"'}>${icon('printer')} Print notes</button><button class="btn primary" id="addN" ${canAdd ? '' : 'disabled title="Needs Add permission"'}>${icon('plus')} Add note</button></div></div>
+        <div class="card-pad">${list.length ? Object.keys(groups).sort().reverse().map(d => `<div class="day-h">${Kit.day(d)}${d === curDay ? ' · current nursing day' : ''}</div>${groups[d].map(noteHtml).join('')}`).join('') : `<div class="empty">${icon('notebook-pen')}<b>No notes</b><span>Add the first progress note for this shift.</span></div>`}</div></div>`;
+    Kit.seg($('#sf', host), [['all', 'All shifts'], ['Morning', 'Morning'], ['Evening', 'Evening'], ['Night', 'Night']], shiftF, (v) => { shiftF = v; render(e, host); });
+    $('#addN', host).addEventListener('click', () => edit(e, null));
+    $('#prN', host).addEventListener('click', () => Kit.printDoc({ title: 'Nursing progress notes', sub: `${p.name} · ${p.mrn} · Bed ${Nursing.bedNo(e)} · ${e.no}`, html: all.map(n => `<div style="border-bottom:1px solid #ddd;padding:8px 0"><b>${esc(Kit.day(n.date))} · ${esc(n.shift)} shift · ${esc(n.type)}</b> <span style="color:#555">${esc(n.at)} · ${esc(n.by)}</span><div><b>D:</b> ${esc(n.data)}</div>${n.action ? `<div><b>A:</b> ${esc(n.action)}</div>` : ''}${n.response ? `<div><b>R:</b> ${esc(n.response)}</div>` : ''}${(n.addenda || []).map(a => `<div style="color:#555"><i>Addendum ${esc(a.at)} ${esc(a.by)}:</i> ${esc(a.text)}</div>`).join('')}</div>`).join('') }));
+    $$('[data-edit]', host).forEach(b => b.addEventListener('click', () => edit(e, db.nursingNotes.find(n => n.id === b.dataset.edit))));
+    $$('[data-add]', host).forEach(b => b.addEventListener('click', () => addendum(e, db.nursingNotes.find(n => n.id === b.dataset.add))));
+  }
+  function noteHtml(n) {
+    const mine = n.by === Nursing.myName() && n.date === curDay && n.shift === curShift;
+    return `<div class="nnote"><div class="row wrap"><span class="tag">${icon(n.shift === 'Night' ? 'moon' : n.shift === 'Evening' ? 'sunset' : 'sun')} ${esc(n.shift)}</span><b>${esc(n.type)}</b>${n.type === 'Event' ? ' <span class="badge b-warn nodot">Event</span>' : ''}<span class="grow"></span><span class="small muted">${Kit.when(n.at)} · ${esc(n.by)}${n.editedAt ? ' · edited ' + Kit.time(n.editedAt) : ''}</span>
+      ${mine ? `<button class="btn xs ghost" data-edit="${n.id}" ${canEdit ? '' : 'disabled title="Needs Edit permission"'}>${icon('pencil')} Edit</button>` : `<button class="btn xs ghost" data-add="${n.id}" ${canAdd ? '' : 'disabled title="Needs Add permission"'}>${icon('plus')} Addendum</button>`}</div>
+      <div class="dar"><span>Data</span><div>${esc(n.data)}</div>${n.action ? `<span>Action</span><div>${esc(n.action)}</div>` : ''}${n.response ? `<span>Response</span><div>${esc(n.response)}</div>` : ''}</div>
+      ${(n.addenda || []).map(a => `<div class="add"><b>Addendum</b> · ${Kit.when(a.at)} · ${esc(a.by)}<div>${esc(a.text)}</div></div>`).join('')}</div>`;
+  }
+  function edit(e, n) {
+    const isNew = !n;
+    const v = Nursing.latestVitals(e.id);
+    UI.drawer({ title: isNew ? 'Add progress note' : 'Edit progress note', sub: esc(Kit.ptName(e.patientId)) + ' · Bed ' + esc(Nursing.bedNo(e)) + (isNew ? '' : ' · notes can be edited by the author during the same shift'), wide: true,
+      body: `<div class="err-summary hidden"></div><div class="form-grid c3">
+        ${field({ id: 'nDay', label: 'Nursing day', type: 'date', req: true, value: n ? n.date : curDay, attrs: `max="${db.TODAY}" min="${e.start.slice(0, 10)}"`, disabled: !isNew })}
+        ${field({ id: 'nShift', label: 'Shift', type: 'select', req: true, value: n ? n.shift : curShift, placeholder: false, options: ['Morning', 'Evening', 'Night'].map(x => [x, x]), disabled: !isNew })}
+        ${field({ id: 'nType', label: 'Note type', type: 'select', req: true, value: n ? n.type : 'Shift progress', placeholder: false, options: TYPES.map(x => [x, x]) })}
+        ${field({ id: 'nData', label: 'Data (observations and assessment)', type: 'textarea', req: true, full: true, max: 1500, value: n ? n.data : '' })}
+        ${field({ id: 'nAction', label: 'Action (care given)', type: 'textarea', full: true, max: 1000, value: n ? n.action : '' })}
+        ${field({ id: 'nResp', label: 'Response (outcome)', type: 'textarea', full: true, max: 1000, value: n ? n.response : '' })}</div>
+        ${isNew ? `<div class="row wrap" style="margin-top:4px"><span class="small muted">Insert:</span><button class="btn xs" id="insV" ${v ? '' : 'disabled'}>${icon('activity')} Latest vitals</button><button class="btn xs" id="insIO">${icon('droplets')} Fluid balance</button><button class="btn xs" id="insT">${icon('list-todo')} Tasks not done</button></div>` : ''}`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="nSave" disabled>${isNew ? 'Sign and save' : 'Save changes'}</button>`,
+      onMount: (el, close) => {
+        const ta = $('#nData', el), ok = $('#nSave', el);
+        const chk = () => { ok.disabled = ta.value.trim().length < 10; };
+        ta.addEventListener('input', chk); chk();
+        const ins = (txt) => { ta.value = (ta.value.trim() ? ta.value.trim() + ' ' : '') + txt; chk(); };
+        if (isNew) {
+          $('#insV', el).addEventListener('click', () => ins(`Vital signs ${Kit.time(v.at)}: T ${v.temp}, HR ${v.hr}, BP ${v.sbp}/${v.dbp}, RR ${v.rr}, SpO2 ${v.spo2}%.`));
+          $('#insIO', el).addEventListener('click', () => { const t = Nursing.ioTotals(Nursing.ioOf(e.id, curDay)); ins(`Fluid balance so far today: intake ${t.intake} mL, output ${t.output} mL, balance ${Nursing.signed(t.balance)}.`); });
+          $('#insT', el).addEventListener('click', () => { const nd = Nursing.tasks([e]).filter(t => t.state === 'Not done' || t.state === 'Overdue'); ins(nd.length ? 'Outstanding: ' + nd.map(t => t.name + ' (' + Kit.time(t.due) + ')').join('; ') + '.' : 'All tasks up to date.'); });
+        }
+        ok.addEventListener('click', () => {
+          const errs = {}, day = $('#nDay', el).value;
+          if (!day) errs.nDay = 'Nursing day is required.'; else if (day > db.TODAY) errs.nDay = 'Date cannot be in the future.'; else if (day < e.start.slice(0, 10)) errs.nDay = 'Date is before the admission.';
+          if (ta.value.trim().length < 10) errs.nData = 'Write at least 10 characters.';
+          if (!showErrors(el, errs)) return;
+          if (isNew) { n = { id: UI.uid('nn'), encounterId: e.id, patientId: e.patientId, date: day, shift: $('#nShift', el).value, at: Nursing.now(), by: Nursing.myName(), status: 'Signed' }; db.nursingNotes.push(n); }
+          const before = n.data;
+          Object.assign(n, { type: $('#nType', el).value, data: ta.value.trim(), action: $('#nAction', el).value.trim(), response: $('#nResp', el).value.trim() });
+          if (!isNew) n.editedAt = Nursing.now();
+          save(); audit(isNew ? 'Nursing note signed' : 'Nursing note edited', 'Nursing note', { id: n.id, label: `${Kit.ptName(e.patientId)} ${n.date} ${n.shift}` }, isNew ? [['Type', '', n.type]] : [['Data', (before || '').slice(0, 60), n.data.slice(0, 60)]]);
+          close(); toast(isNew ? 'Note signed and saved' : 'Note updated'); api.refresh();
+        });
+      } });
+  }
+  function addendum(e, n) {
+    UI.drawer({ title: 'Add addendum', sub: `${esc(n.shift)} note of ${Kit.day(n.date)} by ${esc(n.by)}. The original note is not changed.`,
+      body: `<div class="note-box" style="margin-bottom:12px">${esc(n.data)}</div><div class="err-summary hidden"></div>${field({ id: 'adT', label: 'Addendum', type: 'textarea', req: true, max: 800 })}`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="adS" disabled>Sign addendum</button>`,
+      onMount: (el, close) => { const t = $('#adT', el), ok = $('#adS', el); t.addEventListener('input', () => { ok.disabled = t.value.trim().length < 5; });
+        ok.addEventListener('click', () => { n.addenda = n.addenda || []; n.addenda.push({ at: Nursing.now(), by: Nursing.myName(), text: t.value.trim() }); save(); audit('Nursing note addendum', 'Nursing note', { id: n.id, label: Kit.ptName(e.patientId) }, [['Addendum', '', t.value.trim().slice(0, 60)]]); close(); toast('Addendum signed'); api.refresh(); }); } });
+  }
+})();
+</script>
+</body>
+</html>

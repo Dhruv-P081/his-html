@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sample receiving · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-lab.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/lab.js"></script>
+<style>.scan-in{height:52px;font-size:18px;font-weight:700;letter-spacing:.04em;padding-inline-start:46px}.scan-wrap{position:relative}.scan-wrap .ico{position:absolute;inset-inline-start:14px;top:15px;width:22px;height:22px;color:var(--mute)}</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, nowStamp } = UI;
+  const OPT = 'lab.accession';
+  if (!UI.page({ opt: OPT, title: 'Sample receiving', subtitle: 'Scan or type the barcode to accession samples into the laboratory, assign a rack position or reject the sample.',
+    actions: `<a class="btn" href="${R('lab/collection.html')}">${icon('test-tube')} Collection worklist</a><a class="btn primary" href="${R('lab/results.html')}">${icon('microscope')} Result entry</a>` })) return;
+  const canAdd = can(OPT, 'add'), canCancel = can(OPT, 'cancel');
+  const STABILITY = { K: 240, GLU: 120, BMP: 240, TROP: 240, PT: 240, UCS: 120, UA: 120 };   // minutes before the sample is too old
+  const session = [];
+  let tab = 'transit';
+  $('#page').innerHTML = `
+    <div class="card" style="margin-bottom:16px"><div class="card-pad">
+      <div class="row wrap" style="gap:14px;align-items:flex-end">
+        <div class="field grow" style="min-width:320px"><label for="scan">Barcode, accession or order number</label><div class="scan-wrap">${icon('scan-barcode')}<input class="input scan-in mono" id="scan" placeholder="Scan the label, for example L70128" autocomplete="off"></div></div>
+        <button class="btn primary" id="find" style="height:52px">${icon('search')} Find</button>
+        <label class="check" style="height:52px"><input type="checkbox" id="auto"> Receive on scan (batch mode)</label>
+      </div>
+      <div id="found" style="margin-top:14px"></div>
+      <div id="sess"></div>
+    </div></div>
+    <div class="card"><div class="card-head"><div id="rTabs" class="grow"></div></div><div id="rBody"></div></div>`;
+  const scan = $('#scan');
+  setTimeout(() => scan.focus(), 50);
+  const lookup = (v) => { v = v.trim().toUpperCase(); return Lab.orders().find(o => Lab.acc(o) === v || o.no === v || 'L' + v === Lab.acc(o) || o.no === 'ORD-' + v); };
+  const rackFor = (o) => {
+    const sec = Lab.test(o.code).section, pre = { Chemistry: 'CH', Haematology: 'HE', Coagulation: 'CO', Immunology: 'IM', Microbiology: 'MI', 'Clinical Pathology': 'CP' }[sec] || 'GN';
+    const n = Lab.orders().filter(x => x.receivedAt && x.receivedAt.startsWith(db.TODAY) && Lab.test(x.code).section === sec).length;
+    return `${pre}-${String(1 + Math.floor(n / 40)).padStart(2, '0')} / ${'ABCDE'[Math.floor(n / 8) % 5]}${n % 8 + 1}`;
+  };
+  const transit = (o) => String(o.collectedAt).slice(0, 10) === db.TODAY ? Lab.waitMins(o.collectedAt, 90) : Lab.clockMins(o.collectedAt);
+  function receive(list) {
+    list.forEach(o => {
+      const rack = rackFor(o);
+      Object.assign(o, { status: 'Received', receivedAt: nowStamp(), receivedBy: Lab.meName(), rack });
+      audit('Sample received', 'Lab order', { id: o.id, label: o.no }, [['Status', 'Collected', 'Received'], ['Rack', '', rack]]);
+      session.unshift(o);
+    });
+    save(); drawSession(); draw();
+  }
+  function rejectSample(o, after) {
+    Lab.reasonConfirm({ title: 'Reject this sample?', confirm: 'Reject sample', label: 'Sample rejection reason (master)', icon: 'test-tube-diagonal',
+      body: `${esc(o.name)} · <span class="mono">${esc(Lab.acc(o))}</span> for ${esc(Kit.ptName(o.patientId))}.`,
+      impact: ['The ward or clinic is told to recollect (or the order is cancelled when the reason says so).', 'The rejection is counted in the sample rejection report.'],
+      reasons: (db.labRejectReasons || []).filter(r => r.status !== 'Inactive' && /Sample|Both/.test(r.appliesTo)),
+      onConfirm: (code, name, text) => {
+        const r = db.labRejectReasons.find(x => x.code === code) || {};
+        const rec = { id: UI.uid('lsr'), orderId: o.id, code, reason: name, at: nowStamp(), by: Lab.meName(), note: text };
+        (db.labSampleRejects = db.labSampleRejects || []).push(rec);
+        const before = o.status;
+        if (/Cancel/.test(r.action || '')) Object.assign(o, { status: 'Cancelled', cancelCode: code, cancelReason: text, cancelledBy: Lab.meName(), cancelledAt: nowStamp() });
+        else { o.status = 'Ordered'; o.sampleRejected = { code, reason: name, at: rec.at, by: rec.by, note: text }; ['collectedAt', 'collectedBy', 'collectSite'].forEach(k => delete o[k]); }
+        save(); audit('Sample rejected', 'Lab order', { id: o.id, label: o.no }, [['Status', before, o.status], ['Reason code', '', code]], { reason: text });
+        toast(o.status === 'Cancelled' ? 'Sample rejected and order cancelled' : 'Sample rejected. Recollection requested.'); after && after(); draw();
+      } });
+  }
+  function showFound(o) {
+    const host = $('#found');
+    if (!o) { host.innerHTML = `<div class="banner err">${icon('circle-x')}<span>No sample found for this barcode. Check the label or type the accession number.</span></div>`; return; }
+    const p = Kit.pt(o.patientId), t = Lab.test(o.code);
+    if (o.status !== 'Collected') {
+      host.innerHTML = `<div class="banner ${o.status === 'Ordered' ? 'warn' : 'info'}">${icon('info')}<span><span class="mono">${esc(Lab.acc(o))}</span> · ${esc(o.name)} for ${esc(p.name)}: ${o.status === 'Ordered' ? 'the sample has not been collected yet.' : o.receivedAt ? 'already received on ' + esc(UI.fmtDate(o.receivedAt)) + (o.rack ? ' (rack ' + esc(o.rack) + ')' : '') + '.' : 'order is ' + esc(o.status.toLowerCase()) + '.'}</span> <a class="btn xs" href="${R('lab/orders.html?id=' + o.id)}">Open order</a></div>`;
+      return;
+    }
+    const tr = transit(o), lim = STABILITY[o.code];
+    host.innerHTML = `<div class="card" style="box-shadow:none"><div class="card-pad row wrap" style="gap:18px;align-items:flex-start">
+      <div style="width:240px">${Lab.barcode(Lab.acc(o), 40)}<div class="mono b" style="text-align:center;margin-top:4px">${esc(Lab.acc(o))}</div></div>
+      <div class="grow">${Kit.patientCell(p)}<dl class="kv tight" style="margin-top:10px"><dt>Test</dt><dd>${esc(t.name)} ${Kit.priority(o.priority)}</dd><dt>Container</dt><dd>${Lab.tube(t.container)} · ${esc(t.specimen)}</dd>
+        <dt>Collected</dt><dd>${esc(Kit.when(o.collectedAt))} by ${esc(o.collectedBy || '')}</dd><dt>In transit</dt><dd><span class="badge ${lim && tr > lim ? 'b-err' : tr > 60 ? 'b-warn' : 'b-ok'}">${esc(Lab.dur(tr))}</span>${lim && tr > lim ? ' <span class="small flag-h">Over stability limit (' + Lab.dur(lim) + '). Consider rejecting.</span>' : ''}</dd>
+        <dt>Rack position</dt><dd class="mono">${esc(rackFor(o))} <span class="small muted">(suggested)</span></dd></dl></div>
+      <div class="stack" style="gap:8px;min-width:180px"><button class="btn primary" id="fRecv" ${canAdd ? '' : 'disabled title="Needs Add permission"'}>${icon('check')} Receive sample</button><button class="btn danger" id="fRej" ${canCancel ? '' : 'disabled title="Needs Cancel permission"'}>${icon('ban')} Reject sample</button></div>
+    </div></div>`;
+    $('#fRecv').addEventListener('click', () => { receive([o]); host.innerHTML = `<div class="banner ok">${icon('circle-check')}<span>${esc(Lab.acc(o))} received. Rack ${esc(o.rack)}.</span></div>`; scan.value = ''; scan.focus(); });
+    $('#fRej').addEventListener('click', () => rejectSample(o, () => { host.innerHTML = ''; scan.value = ''; scan.focus(); }));
+  }
+  function go() {
+    const v = scan.value; if (!v.trim()) return;
+    const o = lookup(v);
+    if (o && o.status === 'Collected' && $('#auto').checked && canAdd) { receive([o]); $('#found').innerHTML = `<div class="banner ok">${icon('circle-check')}<span>${esc(Lab.acc(o))} · ${esc(o.name)} received. Rack ${esc(o.rack)}. Scan the next sample.</span></div>`; scan.value = ''; scan.focus(); return; }
+    showFound(o);
+  }
+  $('#find').addEventListener('click', go);
+  scan.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+  function drawSession() {
+    $('#sess').innerHTML = session.length ? `<div class="section-t" style="margin:16px 0 8px">Received in this session (${session.length})</div><div class="chips">${session.map(o => `<span class="chip">${icon('check')} <span class="mono">${esc(Lab.acc(o))}</span> ${esc(o.code)} · ${esc(o.rack)}</span>`).join('')}</div>` : '';
+  }
+  function draw() {
+    const inT = Lab.orders().filter(o => o.status === 'Collected');
+    const recT = Lab.orders().filter(o => o.receivedAt && o.receivedAt.startsWith(db.TODAY));
+    const rej = db.labSampleRejects || [];
+    Kit.tabs($('#rTabs'), [{ id: 'transit', label: 'In transit', count: inT.length, icon: 'truck' }, { id: 'recv', label: 'Received today', count: recT.length, icon: 'inbox' }, { id: 'rej', label: 'Rejected samples', count: rej.length, icon: 'ban' }], tab, (t) => { tab = t; draw(); });
+    const b = $('#rBody');
+    if (tab === 'rej') {
+      UI.table(b, { columns: [
+        { label: 'Time', sort: r => r.at, render: r => esc(UI.fmtDate(r.at)) },
+        { label: 'Patient', render: r => { const o = r.orderId && db.orders.find(x => x.id === r.orderId); const p = Kit.pt(o ? o.patientId : r.patientId); return p ? `<b>${esc(p.name)}</b><div class="small mono">${esc(p.mrn)}</div>` : '-'; } },
+        { label: 'Test', render: r => { const o = r.orderId && db.orders.find(x => x.id === r.orderId); return esc(o ? o.name : Lab.test(r.test).name); } },
+        { label: 'Reason', sort: r => r.reason, render: r => `<span class="badge b-err nodot">${esc(r.code)}</span> ${esc(r.reason)}${r.note && r.note !== r.reason ? `<div class="small muted">${esc(r.note)}</div>` : ''}` },
+        { label: 'Rejected by', sort: r => r.by, render: r => esc(r.by) },
+      ], rows: () => rej.slice().sort((a, c) => (a.at < c.at ? 1 : -1)), search: r => [r.reason, r.by, r.code, r.note].join(' '), searchPlaceholder: 'Search rejections',
+      filters: [{ label: 'Reason', options: (db.labRejectReasons || []).filter(x => /Sample|Both/.test(x.appliesTo)).map(x => [x.code, x.name]), test: (r, v) => r.code === v }] });
+      return;
+    }
+    const rows = tab === 'transit' ? inT : recT;
+    UI.table(b, { columns: [
+      tab === 'transit' ? { label: '', render: o => `<input type="checkbox" data-sel="${o.id}" aria-label="Select">` } : { label: 'Rack', sort: o => o.rack, render: o => `<span class="mono b">${esc(o.rack || '')}</span>` },
+      { label: 'Accession', sort: o => Lab.acc(o), render: o => `<span class="mono b">${esc(Lab.acc(o))}</span>` },
+      { label: 'Patient', sort: o => Kit.ptName(o.patientId), render: o => Kit.patientCell(Kit.pt(o.patientId)) },
+      { label: 'Test', sort: o => o.name, render: o => `<b>${esc(o.name)}</b><div class="small">${Lab.tube(Lab.test(o.code).container)}</div>` },
+      { label: 'Priority', render: o => Kit.priority(o.priority) },
+      { label: 'Collected', sort: o => o.collectedAt, render: o => `${esc(Kit.when(o.collectedAt))}<div class="small muted">${esc(o.collectedBy || '')}</div>` },
+      tab === 'transit' ? { label: 'In transit', sort: o => transit(o), render: o => { const tr = transit(o), lim = STABILITY[o.code]; return `<span class="badge ${lim && tr > lim ? 'b-err' : tr > 60 ? 'b-warn' : 'b-ok'}">${esc(Lab.dur(tr))}</span>`; } }
+        : { label: 'Received', sort: o => o.receivedAt, render: o => `${esc(Kit.time(o.receivedAt))}<div class="small muted">${esc(o.receivedBy || '')}</div>` },
+      { label: '', cls: 'actions', render: o => tab === 'transit' ? `<div class="btn-group"><button class="btn sm" data-r="${o.id}" ${canAdd ? '' : 'disabled title="Needs Add permission"'}>${icon('check')} Receive</button><button class="btn sm danger" data-x="${o.id}" ${canCancel ? '' : 'disabled title="Needs Cancel permission"'}>${icon('ban')} Reject</button></div>` : Lab.stageBadge(o) },
+    ], rows: () => rows.slice().sort((a, c) => (a.collectedAt < c.collectedAt ? -1 : 1)), search: o => [Lab.acc(o), o.name, Kit.ptName(o.patientId), (Kit.pt(o.patientId) || {}).mrn].join(' '), searchPlaceholder: 'Accession, patient or test',
+      filters: [{ label: 'Section', options: [...new Set(db.labTests.map(t => t.section))].map(s => [s, s]), test: (o, v) => Lab.test(o.code).section === v }],
+      toolbar: tab === 'transit' ? `<button class="btn sm primary" id="rSel" ${canAdd ? '' : 'disabled title="Needs Add permission"'}>${icon('check-check')} Receive selected</button>` : '',
+      empty: tab === 'transit' ? 'No samples in transit' : 'No samples received today',
+      afterDraw: (tb) => {
+        $$('[data-r]', tb).forEach(x => x.addEventListener('click', () => { receive([db.orders.find(o => o.id === x.dataset.r)]); toast('Sample received'); }));
+        $$('[data-x]', tb).forEach(x => x.addEventListener('click', () => rejectSample(db.orders.find(o => o.id === x.dataset.x))));
+      } });
+    const rs = $('#rSel', b);
+    if (rs) rs.addEventListener('click', () => { const l = $$('[data-sel]:checked', b).map(c => db.orders.find(o => o.id === c.dataset.sel)); if (!l.length) { toast('Select at least one sample.', 'err'); return; } receive(l); toast(l.length + ' samples received'); });
+  }
+  draw();
+  const a = UI.param('acc'); if (a) { scan.value = a; go(); }
+})();
+</script>
+</body>
+</html>

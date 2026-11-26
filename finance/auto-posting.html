@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Auto-posting monitor · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<style>.nw{white-space:nowrap}.pgrid{display:grid;grid-template-columns:200px repeat(7,minmax(0,1fr));gap:6px;align-items:center}.pgrid .cell{border:1px solid var(--line);border-radius:10px;padding:8px;text-align:center;font-size:12px;cursor:pointer;background:var(--card)}.pgrid .cell:hover{background:var(--hover)}.pgrid .cell.ok{border-color:var(--success)}.pgrid .cell.err{border-color:var(--error);background:var(--error-bg)}.pgrid .cell.wait{border-style:dashed}.pgrid .h{font-size:11px;font-weight:700;color:var(--sub);text-align:center}</style>
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-finance.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/finance.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, drawer, confirm, field, nowStamp } = UI;
+  const OPT = 'finance.posting';
+  if (!UI.page({ opt: OPT, title: 'Auto-posting monitor', subtitle: 'Daily posting batches from Billing, Pharmacy and MMIS (Material Management): the journal each batch produced, and errors with fix and retry.' })) return;
+  const T = Fin.T;
+  const B = () => db.financeBatches;
+  const SRC = [['Billing', 'br_01', 'Billing, Salmiya'], ['Billing', 'br_02', 'Billing, Hawalli'], ['Pharmacy', 'br_01', 'Pharmacy, Salmiya'], ['MMIS', 'br_01', 'MMIS, Salmiya']];
+  const srcIcon = { Billing: 'receipt-text', Pharmacy: 'pill', MMIS: 'boxes' };
+  $('#page').innerHTML = `<div class="grid g4" id="kp" style="margin-bottom:16px"></div>
+    <div class="card" style="margin-bottom:16px"><div class="card-head"><h3>${icon('calendar-range')} Last 7 days by source</h3><div class="actions"><span class="small muted">Click a day to open the batch</span></div></div><div class="card-pad" id="grid"></div></div>
+    <div id="tbl"></div>`;
+  function kpis() {
+    const td = B().filter(b => b.date === T), wk = B().filter(b => Fin.days(b.date) <= 7);
+    $('#kp').innerHTML = Kit.kpi('Batches today', td.length, { icon: 'workflow', foot: td.filter(b => b.status === 'Posted').length + ' posted' })
+      + Kit.kpi('Failed', B().filter(b => b.status === 'Failed').length, { icon: 'circle-x', foot: 'Need a mapping fix and retry' })
+      + Kit.kpi('Waiting to run', B().filter(b => b.status === 'Pending').length, { icon: 'clock', foot: 'Night run at 23:00' })
+      + Kit.kpi('Posted last 7 days', Fin.money(Kit.sumBy(wk.filter(b => b.status === 'Posted'), b => b.amount)), { icon: 'book-check', foot: wk.filter(b => b.status === 'Posted').length + ' batches' });
+  }
+  function grid() {
+    const days = Array.from({ length: 7 }, (_, i) => Kit.addDays(T, i - 6));
+    $('#grid').innerHTML = `<div class="pgrid"><div></div>${days.map(d => `<div class="h">${esc(Kit.day(d).slice(0, 6))}</div>`).join('')}
+      ${SRC.map(([s, br, label]) => `<div class="row" style="gap:8px">${icon(srcIcon[s])}<b class="small">${esc(label)}</b></div>${days.map(d => { const b = B().find(x => x.source === s && x.branchId === br && x.date === d); if (!b) return `<div class="cell wait" style="cursor:default"><span class="muted">${new Date(d + 'T00:00:00').getDay() === 5 && br === 'br_02' ? 'Closed' : '-'}</span></div>`; const cls = b.status === 'Posted' ? 'ok' : b.status === 'Failed' ? 'err' : 'wait'; return `<div class="cell ${cls}" data-b="${b.id}" title="${esc(b.no)}">${icon(b.status === 'Posted' ? 'circle-check' : b.status === 'Failed' ? 'circle-x' : 'clock')}<div class="xs b">${b.status === 'Posted' ? Fin.amt(b.amount).replace(/\.\d+$/, '') : esc(b.status)}</div></div>`; }).join('')}`).join('')}</div>`;
+    $$('[data-b]', $('#grid')).forEach(c => c.addEventListener('click', () => openB(B().find(b => b.id === c.dataset.b))));
+  }
+  const t = UI.table($('#tbl'), {
+    columns: [
+      { label: 'Batch', sort: b => b.date + b.no, render: b => `<div class="cell-main"><b class="mono nw">${esc(b.no)}</b><span>${esc(Kit.day(b.date))}</span></div>` },
+      { label: 'Source', sort: b => b.source, render: b => `<span class="row" style="gap:6px">${icon(srcIcon[b.source] || 'workflow', 'mute')}<b>${esc(b.source)}</b></span><div class="xs muted">${esc(Fin.brShort(b.branchId))}</div>` },
+      { label: 'Documents', cls: 'num', render: b => b.status === 'Pending' && b.live ? '<span class="muted">At run</span>' : b.docs },
+      { label: 'Amount', cls: 'num', sort: b => b.amount, render: b => b.amount ? Fin.amt(b.amount) : '<span class="muted">-</span>' },
+      { label: 'Run', render: b => `<span class="small">${esc(b.runAt ? Kit.when(b.runAt) : 'Scheduled ' + Kit.time(b.scheduled || ''))}</span>` },
+      { label: 'Journal', render: b => b.journalId ? `<a class="mono small" href="${R('finance/journals.html?id=' + b.journalId)}">${esc((Fin.J(b.journalId) || {}).no || '')}</a>` : '<span class="muted">-</span>' },
+      { label: 'Status', sort: b => b.status, render: b => Kit.status(b.status) + (b.status === 'Failed' ? `<div class="xs" style="color:var(--error)">${Fin.batchErrors(b).length} error${Fin.batchErrors(b).length === 1 ? '' : 's'}</div>` : '') },
+    ],
+    rows: () => B().slice().sort((a, b) => ((a.status === 'Posted' ? 1 : 0) - (b.status === 'Posted' ? 1 : 0)) || (b.date + b.source).localeCompare(a.date + a.source)),
+    search: b => [b.no, b.source, (Fin.J(b.journalId) || {}).no].join(' '), searchPlaceholder: 'Batch or journal number',
+    filters: [{ label: 'Source', options: [['Billing', 'Billing'], ['Pharmacy', 'Pharmacy'], ['MMIS', 'MMIS']], test: (b, v) => b.source === v },
+      { label: 'Status', options: [['Posted', 'Posted'], ['Failed', 'Failed'], ['Pending', 'Pending']], test: (b, v) => b.status === v },
+      { label: 'Branch', options: Fin.brOpts(), test: (b, v) => b.branchId === v }],
+    onRow: b => openB(b), empty: 'No batches', pageSize: 12,
+  });
+  function refresh() { kpis(); grid(); t.redraw(); }
+
+  function openB(b) {
+    const d = drawer({ title: 'Batch ' + b.no, sub: esc(b.source + ' · ' + Fin.brName(b.branchId) + ' · ' + Kit.day(b.date)), wide: true, body: '<div id="bB"></div>', foot: '<div id="bF" class="row grow" style="gap:8px"></div>' });
+    const el = d.el;
+    const render = () => {
+      if (b.live && b.status !== 'Posted') Fin.buildBilling(b);
+      const errs = Fin.batchErrors(b), j = Fin.J(b.journalId);
+      const ent = (b.entries || []).map(e => Object.assign({ r: Fin.resolveEntry(e) }, e));
+      const dr = Kit.sumBy(ent.filter(e => e.side === 'Dr'), e => e.amount), cr = Kit.sumBy(ent.filter(e => e.side === 'Cr'), e => e.amount);
+      $('#bB', el).innerHTML = `<div class="grid g4" style="margin-bottom:14px">
+          <div class="card card-pad"><div class="xs muted b">Status</div>${Kit.status(b.status)}</div>
+          <div class="card card-pad"><div class="xs muted b">Source documents</div><b>${b.docs}</b> <span class="small muted">${b.source === 'Billing' ? 'invoices' : b.source === 'Pharmacy' ? 'dispenses and sales' : 'issues and GRNs'}</span></div>
+          <div class="card card-pad"><div class="xs muted b">Amount</div><b>${Fin.money(b.amount)}</b></div>
+          <div class="card card-pad"><div class="xs muted b">Journal</div>${j ? `<a class="mono b" href="${R('finance/journals.html?id=' + j.id)}">${esc(j.no)}</a>` : '<span class="muted">Not produced</span>'}</div></div>
+        ${b.status === 'Pending' ? `<div class="banner info" style="margin-bottom:12px">${icon('clock')}<span>Scheduled for ${esc(Kit.time(b.scheduled || '') || '23:00')}. ${b.live ? 'The preview below is built from the invoices finalized today so far.' : ''} You can run it now.</span></div>` : ''}
+        ${errs.length ? `<div class="banner err" style="margin-bottom:12px">${icon('circle-x')}<div class="grow"><b>${errs.length} error${errs.length > 1 ? 's' : ''} stop this batch from posting</b><ul style="margin:6px 0 0;padding-inline-start:18px">${errs.map((x, i) => `<li style="margin-bottom:6px">${esc(x.msg)} ${Fin.btn({ cls: 'xs', attrs: `data-fix="${i}"`, icon: 'wrench', label: 'Fix mapping', gate: Fin.gate('finance.masters', 'edit') })}</li>`).join('')}</ul></div></div>` : b.status === 'Failed' ? `<div class="banner ok" style="margin-bottom:12px">${icon('circle-check')}<span>All errors are fixed. Retry the batch to post it.</span></div>` : ''}
+        ${ent.length ? `<div class="card"><div class="card-head"><h3>${icon('list')} ${j ? 'Journal lines produced' : 'Lines to post'}</h3><div class="actions">${Math.abs(dr - cr) < 0.0005 ? '<span class="badge b-ok">Balanced</span>' : `<span class="badge b-err">Difference ${Fin.amt(dr - cr)}</span>`}</div></div><div class="table-wrap"><table class="tbl compact"><thead><tr><th>Account</th><th>Cost center</th><th>Memo</th><th class="num">Debit</th><th class="num">Credit</th></tr></thead><tbody>
+          ${ent.map(e => `<tr${e.r.errs.length ? ' style="background:var(--error-bg)"' : ''}><td>${e.r.accountId ? `<b class="mono">${esc(Fin.A(e.r.accountId).code)}</b> ${esc(Fin.A(e.r.accountId).name)}` : `<span style="color:var(--error)">${icon('circle-alert')} Unmapped: ${esc(e.map.kind)} "${esc(Fin.keyLabel(e.map.kind, e.map.key))}"</span>`}</td><td class="small">${e.r.ccId ? esc(Fin.ccName(e.r.ccId)) : e.ccMap ? `<span style="color:var(--error)">Unmapped ${esc(Fin.keyLabel(e.ccMap.kind, e.ccMap.key))}</span>` : ''}</td><td class="small">${esc(e.memo || '')}</td><td class="num">${e.side === 'Dr' ? Fin.amt(e.amount) : ''}</td><td class="num">${e.side === 'Cr' ? Fin.amt(e.amount) : ''}</td></tr>`).join('')}
+          </tbody><tfoot><tr><td colspan="3">Total</td><td class="num">${Fin.amt(dr)}</td><td class="num">${Fin.amt(cr)}</td></tr></tfoot></table></div></div>`
+        : j ? `<div class="card"><div class="card-head"><h3>${icon('book-open')} Journal ${esc(j.no)}</h3><div class="actions"><span class="badge b-ok">Balanced</span></div></div><div class="table-wrap"><table class="tbl compact"><thead><tr><th>Account</th><th>Cost center</th><th>Memo</th><th class="num">Debit</th><th class="num">Credit</th></tr></thead><tbody>${j.lines.map(l => `<tr><td><b class="mono">${esc(Fin.A(l.accountId).code)}</b> ${esc(Fin.A(l.accountId).name)}</td><td class="small">${esc(Fin.ccName(l.ccId))}</td><td class="small">${esc(l.memo || '')}</td><td class="num">${l.debit ? Fin.amt(l.debit) : ''}</td><td class="num">${l.credit ? Fin.amt(l.credit) : ''}</td></tr>`).join('')}</tbody><tfoot><tr><td colspan="3">Total</td><td class="num">${Fin.amt(Fin.jDr(j))}</td><td class="num">${Fin.amt(Fin.jCr(j))}</td></tr></tfoot></table></div></div>`
+        : `<div class="empty">${icon('inbox')}<b>No finalized documents yet</b><span>Invoices finalized today appear here before the run.</span></div>`}
+        <div class="section-t" style="margin-top:16px">Run log</div><div class="timeline">${(b.log || []).map(x => `<div class="tl-item ${/fail/i.test(x.text) ? '' : 'ok'}"><b>${esc(x.text)}</b><div class="meta">${esc(Kit.when(x.at))}</div></div>`).join('') || (b.runAt ? `<div class="tl-item ok"><b>Posted by the night run</b><div class="meta">${esc(Kit.when(b.runAt))}</div></div>` : '<span class="muted small">Not run yet</span>')}</div>`;
+      const canRun = Fin.gate(OPT, 'approve');
+      $('#bF', el).innerHTML = (j ? `<a class="btn" href="${R('finance/journals.html?id=' + j.id)}">${icon('book-open')} Open journal</a>` : '') + '<span class="grow"></span>'
+        + (b.status === 'Failed' ? Fin.btn({ cls: 'primary', attrs: 'id="bRun"', icon: 'rotate-cw', label: 'Retry posting', gate: errs.length ? { ok: false, why: 'Fix the errors first' } : canRun }) : '')
+        + (b.status === 'Pending' ? Fin.btn({ cls: 'primary', attrs: 'id="bRun"', icon: 'play', label: 'Run now', gate: canRun }) : '');
+      $$('[data-fix]', el).forEach(x => x.addEventListener('click', () => fix(errs[+x.dataset.fix], render)));
+      const rb = $('#bRun', el); if (rb) rb.addEventListener('click', () => {
+        const res = Fin.runBatch(b); save();
+        if (res.ok) { audit('Auto-posting batch posted', 'Posting batch', { id: b.id, label: b.no }, [['Status', 'Failed or pending', 'Posted'], ['Journal', '', res.j.no]]); toast(b.no + ' posted as ' + res.j.no); }
+        else { audit('Auto-posting batch failed', 'Posting batch', { id: b.id, label: b.no }, [['Errors', '', String(res.errs.length)]], { outcome: 'Failure' }); toast(res.errs[0].msg, 'err'); }
+        render(); refresh();
+      });
+    };
+    render();
+  }
+  function fix(e, done) {
+    const isAcc = e.need === 'account';
+    const opts = isAcc ? Fin.acctOpts().filter(([id]) => e.kind === 'Receivable' || /^fa_4/.test(id)) : db.financeCostCenters.filter(c => c.status === 'Active').map(c => [c.code, c.code + ' ' + c.name]);
+    drawer({ title: 'Fix posting rule', sub: esc(e.kind),
+      body: `<div class="banner err" style="margin-bottom:14px">${icon('circle-alert')}<span>${esc(e.msg)}</span></div>
+        <div class="form-grid">${field({ id: 'xKey', label: e.kind, value: Fin.keyLabel(e.kind, e.key), readonly: true, full: true })}${field({ id: 'xVal', label: isAcc ? 'Post to account' : 'Charge to cost center', type: 'select', options: opts, req: true, full: true })}
+        ${field({ id: 'xNote', label: 'Note', type: 'textarea', full: true, placeholder: 'Why this mapping' })}</div>
+        <div class="banner info" style="margin-top:12px">${icon('info')}<span>The rule is saved in Finance masters (Posting account mapping) and applies to every future batch.</span></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="xGo" disabled>Save mapping</button>`,
+      onMount: (el, close) => {
+        $('#xVal', el).addEventListener('change', () => { $('#xGo', el).disabled = !$('#xVal', el).value; });
+        $('#xGo', el).addEventListener('click', () => {
+          const v = $('#xVal', el).value;
+          let m = db.financeChargeMap.find(x => x.kind === e.kind && x.key === e.key);
+          const before = m ? (isAcc ? m.account : m.cc) : '';
+          if (!m) { m = { id: UI.uid('cm'), code: 'MAP-' + Fin.pad(db.financeChargeMap.length + 1, 3), kind: e.kind, key: e.key, account: '', cc: '', status: 'Active' }; db.financeChargeMap.push(m); }
+          if (isAcc) m.account = Fin.A(v).code; else m.cc = v;
+          save(); audit('Posting rule mapped', 'Posting rule', { id: m.id, label: e.kind + ': ' + e.key }, [[isAcc ? 'Account' : 'Cost center', before, isAcc ? m.account : m.cc]], { reason: $('#xNote', el).value.trim() });
+          close(); toast('Mapping saved. Retry the batch.'); done();
+        });
+      } });
+  }
+  kpis(); grid();
+  const q = UI.param('id'); if (q) { const b = B().find(x => x.id === q); if (b) openB(b); }
+})();
+</script>
+</body>
+</html>

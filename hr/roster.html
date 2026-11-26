@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Duty Roster · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-hr.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/hr.js"></script>
+<style>
+  .ros th, .ros td { text-align: center; }
+  .ros th:first-child, .ros td:first-child { text-align: start; min-width: 200px; }
+  .ros th.we { color: var(--mute); }
+  .ros tfoot td { font-size: 11.5px; color: var(--sub); white-space: nowrap; }
+  .shift-pop { position: absolute; z-index: 60; background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow-lg); padding: 10px; width: 280px; }
+  .shift-pop .opts { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+  .shift-pop button.sopt { display: flex; gap: 8px; align-items: center; text-align: start; border: 1px solid var(--line); background: var(--card); color: var(--ink); border-radius: 8px; padding: 6px 8px; cursor: pointer; font: inherit; font-size: 12px; }
+  .shift-pop button.sopt:hover { background: var(--hover); }
+  .shift-pop button.sopt.sel { border-color: var(--primary-light); background: var(--sel); }
+</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, confirm, field } = UI;
+  const OPT = 'hr.roster';
+  if (!UI.page({ opt: OPT, title: 'Duty Roster', subtitle: 'Weekly shift schedule by department, from the shift master. Publish needs approval.',
+    actions: `<button class="btn" id="print" ${can(OPT, 'print') || can(OPT, 'view') ? '' : 'disabled'}>${icon('printer')} Print</button>` })) return;
+  const T = db.TODAY, me = UI.me();
+  let week = UI.param('week') || HR.weekStart(T), deptId = UI.param('dept') || 'dp_03';
+  const depts = HR.deptsInUse();
+  const rosterOf = (d, w) => db.hrRosters.filter(r => r.deptId === d && r.weekStart === w && r.status !== 'Superseded').sort((a, b) => b.version - a.version)[0] || null;
+  const staffOf = (d, r) => { const ids = new Set(HR.active().filter(v => v.deptId === d).map(v => v.id)); if (r) Object.keys(r.cells).forEach(id => ids.add(id)); return Array.from(ids).map(HR.get).filter(Boolean).sort((a, b) => String(b.grade).localeCompare(String(a.grade)) || a.name.localeCompare(b.name)); };
+  const days = () => Array.from({ length: 7 }, (_, k) => Kit.addDays(week, k));
+
+  $('#page').innerHTML = `
+    <div class="card card-pad" style="margin-bottom:14px">
+      <div class="row wrap" style="gap:12px;align-items:flex-end">
+        <div class="field" style="margin:0;min-width:240px"><label for="dept">Department</label><select class="input" id="dept">${depts.map(([id, n]) => `<option value="${id}" ${id === deptId ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></div>
+        <div class="field" style="margin:0"><label>Week</label><div class="btn-group"><button class="btn" id="wPrev" aria-label="Previous week">${icon('chevron-left')}</button><button class="btn" id="wNow">This week</button><button class="btn" id="wNext" aria-label="Next week">${icon('chevron-right')}</button></div></div>
+        <div class="grow"></div><div class="row wrap" id="acts" style="gap:8px"></div>
+      </div>
+      <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)"><b id="wLabel" style="font-size:15px"></b><div id="wMeta" class="small muted" style="margin-top:2px"></div></div>
+    </div>
+    <div id="body"></div>`;
+
+  function draw() {
+    const r = rosterOf(deptId, week);
+    const prev = rosterOf(deptId, Kit.addDays(week, -7));
+    const ds = days();
+    $('#wLabel').innerHTML = `${esc(HR.dept(deptId))}, week of ${esc(Kit.day(week))} ${r ? Kit.status(r.status, r.status === 'Published' ? 'ok' : r.status === 'Pending approval' ? 'warn' : 'info') : '<span class="badge b-neutral">Not started</span>'}`;
+    $('#wMeta').textContent = r ? `${r.no} · version ${r.version} · created by ${r.createdBy}${r.submittedBy ? ' · submitted by ' + r.submittedBy : ''}${r.approvedBy ? ' · approved by ' + r.approvedBy + ' ' + Kit.day(r.approvedAt) : ''}` : `${Kit.day(ds[0])} to ${Kit.day(ds[6])}`;
+    const acts = $('#acts');
+    const editable = r && r.status === 'Draft' && can(OPT, 'edit');
+    if (!r) acts.innerHTML = '';
+    else if (r.status === 'Draft') acts.innerHTML = `${HR.btn(OPT, 'edit', 'Copy last week', 'id="aCopy"', '', 'copy')}${HR.btn(OPT, 'edit', 'Clear', 'id="aClear"', 'ghost', 'eraser')}${HR.btn(OPT, 'edit', 'Submit for approval', 'id="aSubmit"', 'primary', 'send')}`;
+    else if (r.status === 'Pending approval') { const self = r.submittedBy === me.displayName; acts.innerHTML = `${HR.btn(OPT, 'approve', 'Return to draft', 'id="aReturn"', 'danger', 'undo-2')}${can(OPT, 'approve') && self ? `<button class="btn primary" disabled title="You submitted this roster. Another approver must publish it (no self-approval).">${icon('badge-check')} Approve and publish</button>` : HR.btn(OPT, 'approve', 'Approve and publish', 'id="aApprove"', 'primary', 'badge-check')}`; }
+    else acts.innerHTML = `${HR.btn(OPT, 'edit', 'Revise roster', 'id="aRevise"', '', 'pencil')}`;
+    const body = $('#body');
+    if (!r) {
+      const staff = staffOf(deptId, null);
+      body.innerHTML = `<div class="card"><div class="empty" style="padding:48px 20px">${icon('calendar-range')}<b>No roster for this week yet</b><span>${staff.length} staff in ${esc(HR.dept(deptId))}. Start from the default shift pattern, copy last week, or start blank.</span>
+        <div class="row" style="margin-top:14px;gap:8px;justify-content:center">${HR.btn(OPT, 'add', 'Default pattern', 'data-new="pattern"', 'primary', 'wand-sparkles')}${prev ? HR.btn(OPT, 'add', 'Copy last week', 'data-new="copy"', '', 'copy') : ''}${HR.btn(OPT, 'add', 'Blank roster', 'data-new="blank"', '', 'file-plus')}</div></div></div>`;
+      $$('[data-new]', body).forEach(b => b.addEventListener('click', () => create(b.dataset.new, prev, staff)));
+      return;
+    }
+    const staff = staffOf(deptId, r);
+    staff.forEach(v => { if (!r.cells[v.id]) r.cells[v.id] = Array(7).fill(''); });
+    const issues = HR.rosterIssues(r, prev);
+    const issueAt = (id, k) => issues.filter(i => i.empId === id && (i.day === k));
+    const cover = (k, code) => staff.filter(v => HR.shiftCodes(r.cells[v.id][k]).includes(code)).length;
+    const workCodes = db.hrShifts.filter(s => s.type === 'Work').map(s => s.code).filter(c => ds.some((_, k) => cover(k, c)));
+    body.innerHTML = `
+      ${r.status === 'Published' ? `<div class="banner ok" style="margin-bottom:12px">${icon('badge-check')}<span>Published roster. Staff and the attendance module use these shifts. Use <b>Revise roster</b> to change it; the revision needs approval again.</span></div>` : r.status === 'Pending approval' ? `<div class="banner warn" style="margin-bottom:12px">${icon('hourglass')}<span>Waiting for approval. The roster is locked until it is approved or returned to draft.</span></div>` : `<div class="banner info" style="margin-bottom:12px">${icon('mouse-pointer-click')}<span>Click a cell to set the shift. Conflicts are checked as you go: double shift, rest under ${HR.SET.minRestHours} hours, over ${HR.SET.maxWeeklyHours} hours a week and shifts on approved leave.</span></div>`}
+      <div class="stack">
+        <div class="card"><div class="table-wrap"><table class="tbl compact ros"><thead><tr><th>Staff</th>${ds.map((d, k) => `<th class="${HR.dow(d) >= 5 ? 'we' : ''} ${d === T ? 'today' : ''}">${HR.DAYS[k]}<div class="xs muted" style="font-weight:600">${d.slice(8)}/${d.slice(5, 7)}</div></th>`).join('')}<th>Hours</th></tr></thead>
+          <tbody>${staff.map(v => { const cells = r.cells[v.id]; const h = HR.weekHours(cells); return `<tr><td><div class="cell-main"><b>${esc(v.name)}</b><span>${esc(v.designation)}</span>${(v.licences || []).some(c => c.type === 'MOH professional licence' && HR.credBand(c).band === 'Expired') ? ` <a href="${R('hr/credentials.html?emp=' + v.id)}" class="badge b-err nodot" title="MOH licence expired">${icon('id-card')} Licence expired</a>` : ''}</div></td>${cells.map((c, k) => { const iss = issueAt(v.id, k); const lv = HR.onLeave(v.id, ds[k]); return `<td class="cell ${iss.length ? 'issue' : ''} ${editable ? '' : 'locked'} ${ds[k] === T ? 'today' : ''}" data-e="${v.id}" data-k="${k}" title="${esc(iss.map(i => i.kind + ': ' + i.msg).join('\n') || (lv ? 'Approved leave ' + lv.no : ''))}">${c ? HR.shiftChip(c) : lv ? `<span class="xs" style="color:var(--violet)">${esc(lv.type)} leave</span>` : '<span class="muted xs">-</span>'}</td>`; }).join('')}<td class="num ${h > HR.SET.maxWeeklyHours ? 'b' : ''}" style="${h > HR.SET.maxWeeklyHours ? 'color:var(--error)' : ''}">${h}</td></tr>`; }).join('')}</tbody>
+          <tfoot><tr><td><b>Cover</b></td>${ds.map((_, k) => `<td>${workCodes.filter(c => cover(k, c)).map(c => `<span class="nw">${esc(c)}&nbsp;<b>${cover(k, c)}</b></span>`).join(' · ') || '<span class="muted">-</span>'}</td>`).join('')}<td class="num">${Kit.sumBy(staff, v => HR.weekHours(r.cells[v.id]))}</td></tr></tfoot></table></div></div>
+        <div class="grid g2">
+          <div class="card"><div class="card-head"><h3>${icon('triangle-alert')} Conflicts</h3><div class="actions"><span class="badge ${issues.length ? 'b-warn' : 'b-ok'}">${issues.length}</span></div></div>
+            <div class="list-rows pad">${issues.length ? issues.map(i => `<div><div class="grow"><b class="small">${esc(i.kind)}</b> · <span class="small">${esc(HR.name(i.empId))}${i.day != null ? ', ' + HR.DAYS[i.day] + ' ' + ds[i.day].slice(8) : ''}</span><div class="xs muted">${esc(i.msg)}</div></div></div>`).join('') : `<div class="empty" style="padding:24px">${icon('circle-check')}<b>No conflicts found</b><span>Double shifts, rest hours, weekly hours and approved leave are all checked.</span></div>`}</div></div>
+          <div class="card"><div class="card-head"><h3>${icon('palette')} Shift codes</h3><div class="actions"><a class="btn xs" href="${R('hr/masters.html')}">Shift master</a></div></div><div class="card-pad" style="display:grid;grid-template-columns:1fr 1fr;gap:8px 18px">
+            ${db.hrShifts.filter(s => s.status !== 'Inactive').map(s => `<div class="row small" style="gap:8px">${HR.shiftChip(s.code)}<span class="grow">${esc(s.name)}</span><span class="muted">${s.start ? esc(s.start + '-' + s.end) : ''}</span></div>`).join('')}</div></div>
+        </div>
+      </div>`;
+    if (editable) $$('td.cell', body).forEach(td => td.addEventListener('click', (e) => pop(td, r)));
+    wire(r, prev, issues, staff);
+  }
+
+  function create(mode, prev, staff) {
+    const cells = {};
+    staff.forEach(v => {
+      cells[v.id] = Array.from({ length: 7 }, (_, k) => {
+        const d = Kit.addDays(week, k), lv = HR.onLeave(v.id, d);
+        if (lv) return lv.type === 'ML' ? 'ML' : 'AL';
+        if (mode === 'copy' && prev && prev.cells[v.id]) { const c = prev.cells[v.id][k]; return c === 'AL' || c === 'ML' ? '' : c; }
+        if (mode === 'pattern') return HR.dow(d) >= 5 ? 'O' : v.shift || 'D';
+        return '';
+      });
+    });
+    const r = { id: UI.uid('hro'), no: 'ROS-' + ((db.departments.find(x => x.id === deptId) || {}).code || 'DEP') + '-' + week.replace(/-/g, ''), deptId, weekStart: week, status: 'Draft', version: 1, cells, createdBy: me.displayName, createdAt: UI.nowStamp(), submittedBy: '', submittedAt: '', approvedBy: '', approvedAt: '', note: '' };
+    db.hrRosters.push(r); save();
+    audit('Created duty roster', 'Roster', { id: r.id, label: r.no }, [['Start', '', mode === 'copy' ? 'Copied last week' : mode === 'pattern' ? 'Default pattern' : 'Blank']]);
+    toast('Roster created'); draw();
+  }
+
+  let popEl = null;
+  function closePop() { if (popEl) { popEl.remove(); popEl = null; document.removeEventListener('mousedown', outside); } }
+  function outside(e) { if (popEl && !popEl.contains(e.target)) closePop(); }
+  function pop(td, r) {
+    closePop();
+    const id = td.dataset.e, k = +td.dataset.k, cur = HR.shiftCodes(r.cells[id][k]);
+    const rect = td.getBoundingClientRect();
+    popEl = document.createElement('div'); popEl.className = 'shift-pop';
+    popEl.innerHTML = `<div class="row" style="margin-bottom:8px"><b class="small grow">${esc(HR.name(id))}, ${HR.DAYS[k]} ${Kit.addDays(week, k).slice(8)}</b><button class="icon-btn" data-x aria-label="Close">${icon('x')}</button></div>
+      <div class="opts">${db.hrShifts.filter(s => s.status !== 'Inactive').map(s => `<button class="sopt ${cur.includes(s.code) ? 'sel' : ''}" data-c="${s.code}">${HR.shiftChip(s.code)}<span>${esc(s.name)}</span></button>`).join('')}</div>
+      <label class="check small" style="margin-top:8px"><input type="checkbox" id="dbl"> Add as a second shift (double)</label>
+      <div class="row" style="margin-top:8px"><button class="btn xs" data-clear>${icon('eraser')} Clear</button></div>`;
+    document.body.appendChild(popEl);
+    const left = Math.min(window.scrollX + rect.left, window.scrollX + window.innerWidth - 300);
+    popEl.style.left = left + 'px'; popEl.style.top = (window.scrollY + rect.bottom + 4) + 'px';
+    setTimeout(() => document.addEventListener('mousedown', outside), 0);
+    const set = (val) => { const before = r.cells[id][k]; r.cells[id][k] = val; save(); closePop(); if (before !== val) audit('Changed roster shift', 'Roster', { id: r.id, label: r.no }, [[HR.name(id) + ' ' + HR.DAYS[k], before || '(none)', val || '(none)']]); draw(); };
+    $('[data-x]', popEl).addEventListener('click', closePop);
+    $('[data-clear]', popEl).addEventListener('click', () => set(''));
+    $$('[data-c]', popEl).forEach(b => b.addEventListener('click', () => {
+      const c = b.dataset.c, dbl = $('#dbl', popEl).checked;
+      if (dbl && cur.length === 1 && !cur.includes(c)) set(cur[0] + '+' + c); else set(c);
+    }));
+  }
+
+  function wire(r, prev, issues, staff) {
+    const on = (id, fn) => { const b = $('#' + id); if (b) b.addEventListener('click', fn); };
+    on('aCopy', () => confirm({ title: 'Copy last week?', body: prev ? `Shifts from the week of ${esc(Kit.day(prev.weekStart))} replace this draft. Approved leave stays as leave.` : 'There is no roster for last week.', tone: 'primary', confirm: 'Copy', onConfirm: () => {
+      if (!prev) { toast('No roster for last week', 'err'); return; }
+      staff.forEach(v => { r.cells[v.id] = Array.from({ length: 7 }, (_, k) => { const lv = HR.onLeave(v.id, Kit.addDays(week, k)); if (lv) return lv.type === 'ML' ? 'ML' : 'AL'; const c = (prev.cells[v.id] || [])[k] || ''; return c === 'AL' || c === 'ML' ? '' : c; }); });
+      save(); audit('Copied roster from last week', 'Roster', { id: r.id, label: r.no }, [['Source', '', prev.no]]); toast('Copied from last week'); draw(); } }));
+    on('aClear', () => confirm({ title: 'Clear all shifts?', body: 'Every shift in this draft is removed.', confirm: 'Clear shifts', reason: true, onConfirm: (reason) => { Object.keys(r.cells).forEach(id => { r.cells[id] = Array(7).fill(''); }); save(); audit('Cleared roster', 'Roster', { id: r.id, label: r.no }, [], { reason }); draw(); } }));
+    on('aSubmit', () => {
+      const empty = staff.filter(v => r.cells[v.id].every(c => !c)).length;
+      confirm({ title: 'Submit roster for approval?', tone: issues.length ? 'warn' : 'primary', icon: 'send', confirm: 'Submit',
+        body: `${esc(HR.dept(deptId))}, week of ${esc(Kit.day(week))}.`,
+        impact: [issues.length ? `${issues.length} conflict${issues.length > 1 ? 's' : ''} will be shown to the approver` : 'No conflicts', empty ? `${empty} staff without any shift` : 'Every staff member has shifts'].map(esc),
+        onConfirm: () => { r.status = 'Pending approval'; r.submittedBy = me.displayName; r.submittedAt = UI.nowStamp(); save(); audit('Submitted roster for approval', 'Roster', { id: r.id, label: r.no }, [['Status', 'Draft', 'Pending approval'], ['Conflicts', '', String(issues.length)]]); toast('Roster submitted'); draw(); } });
+    });
+    on('aApprove', () => confirm({ title: 'Approve and publish this roster?', tone: issues.length ? 'warn' : 'primary', icon: 'badge-check', confirm: 'Approve and publish',
+      body: `Submitted by ${esc(r.submittedBy)}. Staff are notified of their shifts.`, impact: issues.length ? issues.slice(0, 6).map(i => esc(`${i.kind}: ${HR.name(i.empId)} ${i.msg}`)) : null,
+      onConfirm: () => { r.status = 'Published'; r.approvedBy = me.displayName; r.approvedAt = UI.nowStamp(); save(); audit('Approved and published roster', 'Roster', { id: r.id, label: r.no }, [['Status', 'Pending approval', 'Published']]); toast('Roster published'); draw(); } }));
+    on('aReturn', () => confirm({ title: 'Return roster to draft?', body: 'The submitter can change it and submit again.', confirm: 'Return to draft', reason: true,
+      onConfirm: (reason) => { r.status = 'Draft'; r.note = reason; save(); audit('Returned roster to draft', 'Roster', { id: r.id, label: r.no }, [['Status', 'Pending approval', 'Draft']], { reason }); toast('Returned to draft'); draw(); } }));
+    on('aRevise', () => confirm({ title: 'Revise the published roster?', tone: 'primary', confirm: 'Create revision', body: 'A new draft version is created from the published roster. The published version stays in force until the revision is approved.',
+      onConfirm: () => { const n = JSON.parse(JSON.stringify(r)); Object.assign(n, { id: UI.uid('hro'), version: r.version + 1, status: 'Draft', createdBy: me.displayName, createdAt: UI.nowStamp(), submittedBy: '', submittedAt: '', approvedBy: '', approvedAt: '' }); r.status = 'Superseded'; db.hrRosters.push(n); save(); audit('Revised roster', 'Roster', { id: n.id, label: n.no }, [['Version', String(r.version), String(n.version)]]); toast('Revision ' + n.version + ' created'); draw(); } }));
+  }
+
+  $('#dept').addEventListener('change', (e) => { deptId = e.target.value; draw(); });
+  $('#wPrev').addEventListener('click', () => { week = Kit.addDays(week, -7); draw(); });
+  $('#wNext').addEventListener('click', () => { week = Kit.addDays(week, 7); draw(); });
+  $('#wNow').addEventListener('click', () => { week = HR.weekStart(T); draw(); });
+  $('#print').addEventListener('click', () => {
+    const r = rosterOf(deptId, week); if (!r) { toast('No roster to print for this week', 'err'); return; }
+    const ds = days(), staff = staffOf(deptId, r);
+    Kit.printDoc({ title: 'Duty roster', sub: `${HR.dept(deptId)} · week of ${Kit.day(week)} · ${r.status}`, html: `<table><thead><tr><th>Staff</th>${ds.map((d, k) => `<th>${HR.DAYS[k]} ${d.slice(8)}</th>`).join('')}<th>Hours</th></tr></thead><tbody>${staff.map(v => `<tr><td>${esc(v.name)}<br><small>${esc(v.designation)}</small></td>${r.cells[v.id].map(c => `<td>${esc(c || '-')}</td>`).join('')}<td>${HR.weekHours(r.cells[v.id])}</td></tr>`).join('')}</tbody></table>
+      <p style="font-size:11px;margin-top:10px">${db.hrShifts.filter(s => s.type === 'Work').map(s => `${s.code} ${s.name} ${s.start}-${s.end}`).join(' · ')}</p><p style="font-size:11px">${esc(r.no)} v${r.version}${r.approvedBy ? ' · approved by ' + esc(r.approvedBy) + ' on ' + esc(Kit.day(r.approvedAt)) : ''}</p>` });
+  });
+  draw();
+})();
+</script>
+</body>
+</html>

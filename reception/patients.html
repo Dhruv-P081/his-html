@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Master Patient Index · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-reception.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/reception.js"></script>
+<style>#tbl td:first-child{min-width:230px}#tbl td{white-space:nowrap}#tbl td:nth-child(5){white-space:normal;min-width:170px}</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, esc, icon, $, $$, R, can } = UI;
+  const Rc = window.Reception;
+  const OPT = 'reception.reg.patient';
+  if (!UI.page({ opt: OPT, title: 'Master Patient Index', subtitle: 'Search, register and update patients. Duplicates are flagged on Civil ID, passport and mobile.',
+    actions: `<a class="btn" href="${R('reception/merge.html')}">${icon('git-merge')} Duplicate review</a><button class="btn primary" id="newPt" ${Rc.gate(OPT, 'add')}>${icon('user-plus')} Register patient</button>` })) return;
+  const T = db.TODAY;
+  const all = () => db.patients;
+  const active = Rc.activePatients();
+  const newToday = active.filter(p => (p.registeredAt || '').startsWith(T)).length;
+  const insured = active.filter(p => p.payerId).length;
+  const unverified = (db.receptionCoverage || []).filter(c => c.status !== 'Inactive' && !c.verified).length;
+  const dupCount = (() => { const s = new Set(); active.forEach(p => Rc.matches(p, p.id).forEach(m => s.add([p.id, m.p.id].sort().join('|')))); return s.size; })();
+  $('#page').innerHTML = `
+    <div class="grid g4" style="margin-bottom:16px">
+      ${Kit.kpi('Patients in the MPI', Kit.num(active.length), { icon: 'users', foot: newToday + ' registered today' })}
+      ${Kit.kpi('Insured patients', Math.round(100 * insured / active.length) + '%', { icon: 'shield-check', foot: insured + ' with a payer mapped' })}
+      ${Kit.kpi('Coverage to verify', unverified, { icon: 'shield-alert', foot: 'Policies without an eligibility check' })}
+      ${Kit.kpi('Possible duplicates', dupCount, { icon: 'git-merge', foot: 'Open the duplicate review', href: R('reception/merge.html') })}
+    </div>
+    <div class="card card-pad" style="margin-bottom:16px"><div class="row wrap" style="gap:12px">
+      <b class="small">Search by</b><div id="mode"></div><span class="grow"></span>${Kit.scopeNote('Biometric lookup where agreed (SOW Module 1)')}
+    </div></div>
+    <div id="tbl"></div>`;
+  let mode = 'all';
+  const MODES = { all: (p) => [p.name, p.nameAr, p.mrn, p.civilId, p.passportNo, p.mobile].join(' '), civil: (p) => p.civilId || '', passport: (p) => p.passportNo || '', mrn: (p) => p.mrn, mobile: (p) => String(p.mobile || '').replace(/\s/g, '') + ' ' + p.mobile, name: (p) => p.name + ' ' + (p.nameAr || '') };
+  const PH = { all: 'Name, MRN, Civil ID, passport or mobile', civil: 'Civil ID (12 digits)', passport: 'Passport number', mrn: 'MRN, for example MRN-100240', mobile: 'Mobile, for example 6389 5990', name: 'Name in English or Arabic' };
+  Kit.seg($('#mode'), [['all', 'All fields', 'search'], ['civil', 'Civil ID', 'id-card'], ['passport', 'Passport', 'book-user'], ['mrn', 'MRN', 'hash'], ['mobile', 'Mobile', 'smartphone'], ['name', 'Name', 'user']], mode, (v) => { mode = v; const i = $('#tbl .search input'); i.placeholder = PH[v]; i.focus(); t.redraw(); });
+  const nats = [...new Set(all().map(p => p.nationality).filter(Boolean))].sort();
+  const t = UI.table($('#tbl'), {
+    columns: [
+      { label: 'Patient', sort: (p) => p.name, render: (p) => Kit.patientCell(p) + (p.dupFlag && p.dupFlag.length ? ' <span class="badge b-warn">Possible duplicate</span>' : '') },
+      { label: 'Civil ID and mobile', sort: (p) => p.civilId, render: (p) => `<span class="mono">${esc(p.civilId || p.passportNo || '')}</span>${p.civilId && p.passportNo ? `<div class="xs muted mono">Passport ${esc(p.passportNo)}</div>` : ''}<div class="small muted" style="white-space:nowrap">${esc(p.mobile || '')}</div>` },
+      { label: 'Nationality', sort: (p) => p.nationality, render: (p) => esc(p.nationality || '') + `<div class="small muted">${esc(p.lang || '')}</div>` },
+      { label: 'Payer', render: (p) => { const c = Rc.primary(p.id); const s = Rc.covState(c); return `<div class="small" style="max-width:200px;white-space:normal;overflow-wrap:anywhere">${esc(Kit.payerLabel(p))}</div>${c ? Kit.status(s[0], s[1]) : ''}`; } },
+      { label: 'Registered', sort: (p) => p.registeredAt, render: (p) => `<span class="small" style="white-space:nowrap">${esc(Kit.day(p.registeredAt))}</span><div style="margin-top:3px">${Kit.status(p.status)}</div>` },
+      { label: '', cls: 'actions', render: (p) => `<a class="btn xs icon" style="width:28px" href="${R('reception/patient.html?id=' + p.id)}" title="Open patient" aria-label="Open ${esc(p.name)}">${icon('chevron-right')}</a> <button class="btn xs icon" style="width:28px" data-edit="${p.id}" aria-label="Edit ${esc(p.name)}" title="Edit" ${Rc.gate(OPT, 'edit')} ${Rc.isMerged(p) ? 'disabled title="Merged record"' : ''}>${icon('pencil')}</button>` },
+    ],
+    rows: () => all().slice().sort((a, b) => String(b.registeredAt).localeCompare(String(a.registeredAt))),
+    search: (p) => MODES[mode](p), searchPlaceholder: PH.all,
+    filters: [
+      { label: 'Nationality', options: nats.map(n => [n, n]), test: (p, v) => p.nationality === v },
+      { label: 'Payer', options: [['cash', 'Cash (self-pay)']].concat(db.payers.map(x => [x.id, x.name])), test: (p, v) => v === 'cash' ? !p.payerId : p.payerId === v },
+      { label: 'Gender', options: [['Male', 'Male'], ['Female', 'Female']], test: (p, v) => p.gender === v },
+      { label: 'Status', options: [['Active', 'Active'], ['Temporary alias', 'Temporary alias'], ['Merged', 'Merged']], test: (p, v) => p.status === v },
+    ],
+    onRow: (p) => { location.href = R('reception/patient.html?id=' + p.id); },
+    afterDraw: (tb) => $$('[data-edit]', tb).forEach(b => b.addEventListener('click', () => Rc.registerDrawer(Kit.pt(b.dataset.edit), { onSave: () => t.redraw() }))),
+    empty: 'No patient found. Check the spelling or register a new patient.', emptyIcon: 'user-search', pageSize: 12,
+  });
+  const reg = () => Rc.registerDrawer(null, { onSave: (p) => { location.href = R('reception/patient.html?id=' + p.id + '&new=1'); } });
+  $('#newPt').addEventListener('click', reg);
+  if (UI.param('new') === '1' && can(OPT, 'add')) reg();
+})();
+</script>
+</body>
+</html>

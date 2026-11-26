@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Appointment Reports · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-appointments.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/appointments.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, $ } = UI;
+  if (!UI.page({ opt: 'appointments.reports', title: 'Appointment Reports', subtitle: 'Ten reports for appointments and the call centre (SOW V4 Annexure B).' })) return;
+  const T = Appt.T;
+  const B = db.appointmentsBookings;
+  const docs = Appt.bookDoctors();
+  const docOpts = docs.map(d => [d.id, d.name]);
+  const clinicOpts = Array.from(new Set(docs.map(d => d.clinicId))).map(id => [id, UI.L.clName(id)]);
+  const typeOpts = db.appointmentsTypes.map(t => [t.code, t.name]);
+  const from = { id: 'from', label: 'From', type: 'date' }, to = { id: 'to', label: 'To', type: 'date' };
+  const inRange = (d, v) => (!v.from || d >= v.from) && (!v.to || d <= v.to);
+  const pct = (a, b) => b ? Math.round(1000 * a / b) / 10 : 0;
+  const sel = (v, key, val) => !v[key] || v[key] === val;
+  const AGENTS = Array.from(new Set(db.appointmentsCalls.map(c => c.agent))).sort().map(a => [a, a]);
+  const PURP = Array.from(new Set(db.appointmentsCalls.map(c => c.purpose))).sort().map(a => [a, a]);
+
+  Kit.reportCatalog($('#page'), { opt: 'appointments.reports', reports: [
+    { id: 'apr01', title: 'Daily appointment list', purpose: 'Appointments for a day by doctor and time, for the clinic front desk.',
+      filters: [{ id: 'day', label: 'Date', type: 'date', value: T }, { id: 'doc', label: 'Doctor', type: 'select', options: docOpts }, { id: 'clinic', label: 'Clinic', type: 'select', options: clinicOpts }],
+      columns: ['Time', 'Reference', 'Patient', 'MRN', 'Mobile', 'Doctor', 'Type', 'Status'],
+      rows: (v) => B.filter(a => (!v.day || a.date === v.day) && sel(v, 'doc', a.doctorId) && sel(v, 'clinic', a.clinicId)).sort((a, b) => (Kit.docName(a.doctorId) + a.time).localeCompare(Kit.docName(b.doctorId) + b.time))
+        .map(a => { const p = Kit.pt(a.patientId) || {}; return [a.time, a.no, p.name, p.mrn, p.mobile, Kit.docName(a.doctorId), Appt.typeName(a.type), a.status]; }) },
+    { id: 'apr02', title: 'Appointments by status', purpose: 'Count of appointments in each status per clinic.',
+      filters: [from, to, { id: 'clinic', label: 'Clinic', type: 'select', options: clinicOpts }],
+      columns: ['Clinic'].concat(Appt.STATUSES).concat(['Total']),
+      rows: (v) => clinicOpts.filter(c => sel(v, 'clinic', c[0])).map(([id, name]) => { const r = B.filter(a => a.clinicId === id && inRange(a.date, v)); return [name].concat(Appt.STATUSES.map(s => r.filter(a => a.status === s).length)).concat([r.length]); }).filter(r => r[r.length - 1]),
+      totals: (rows) => ['Total'].concat(rows.length ? rows[0].slice(1).map((_, i) => rows.reduce((s, r) => s + r[i + 1], 0)) : []) },
+    { id: 'apr03', title: 'Doctor slot utilization', purpose: 'Available slots against booked and attended appointments per doctor.',
+      filters: [{ id: 'from', label: 'From', type: 'date', value: T }, { id: 'to', label: 'To', type: 'date', value: Kit.addDays(T, 6) }, { id: 'doc', label: 'Doctor', type: 'select', options: docOpts }],
+      columns: ['Doctor', 'Specialty', 'Session slots', 'Booked', 'Utilization %', 'Attended', 'Free slots'],
+      rows: (v) => docs.filter(d => sel(v, 'doc', d.id)).map(d => {
+        let slots = 0, free = 0; const f = v.from || T, t = v.to || f;
+        for (let x = f, i = 0; x <= t && i < 62; x = Kit.addDays(x, 1), i++) { const s = Appt.slots(d.id, x).filter(z => !z.extra); slots += s.filter(z => !z.block).length; free += s.filter(Appt.isFree).length; }
+        const r = B.filter(a => a.doctorId === d.id && inRange(a.date, v) && Appt.ACTIVE(a));
+        return [d.name, d.specialty, slots, r.length, pct(r.length, slots), r.filter(a => /Arrived|Completed/.test(a.status)).length, free];
+      }) },
+    { id: 'apr04', title: 'No-show report', purpose: 'Patients who did not attend, with contact details for follow-up.',
+      filters: [from, to, { id: 'doc', label: 'Doctor', type: 'select', options: docOpts }],
+      columns: ['Date', 'Time', 'Reference', 'Patient', 'Mobile', 'Doctor', 'Type', 'Previous no-shows'],
+      rows: (v) => B.filter(a => a.status === 'No-show' && inRange(a.date, v) && sel(v, 'doc', a.doctorId)).sort((a, b) => b.date.localeCompare(a.date))
+        .map(a => { const p = Kit.pt(a.patientId) || {}; return [UI.fmtDate(a.date), a.time, a.no, p.name, p.mobile, Kit.docName(a.doctorId), Appt.typeName(a.type), B.filter(x => x.patientId === a.patientId && x.status === 'No-show' && x.date < a.date).length]; }) },
+    { id: 'apr05', title: 'Cancellation analysis', purpose: 'Cancellations by reason and who initiated them.',
+      filters: [from, to, { id: 'reason', label: 'Reason', type: 'select', options: db.appointmentsCancelReasons.map(r => [r.code, r.name]) }],
+      columns: ['Reason', 'Initiated by', 'Cancellations', 'Share %', 'Same-day cancellations'],
+      rows: (v) => { const cx = B.filter(a => a.status === 'Cancelled' && inRange(a.date, v)); return db.appointmentsCancelReasons.filter(r => sel(v, 'reason', r.code)).map(r => { const x = cx.filter(a => a.cancelReasonCode === r.code); return [r.name, r.initiatedBy, x.length, pct(x.length, cx.length), x.filter(a => (a.cancelledAt || '').slice(0, 10) === a.date).length]; }).filter(r => r[2]); },
+      totals: (rows) => ['Total', '', rows.reduce((s, r) => s + r[2], 0), '', rows.reduce((s, r) => s + r[4], 0)] },
+    { id: 'apr06', title: 'Rescheduled appointments', purpose: 'Appointments moved to a new date or doctor, with the reason.',
+      filters: [{ id: 'from', label: 'From', type: 'date', value: Kit.addDays(T, -30) }, { id: 'to', label: 'To', type: 'date', value: Kit.addDays(T, 30) }, { id: 'doc', label: 'Doctor', type: 'select', options: docOpts }],
+      columns: ['Reference', 'Patient', 'Doctor', 'Current slot', 'Times moved', 'Last change'],
+      rows: (v) => B.filter(a => a.rescheduled && inRange(a.date, v) && sel(v, 'doc', a.doctorId)).map(a => { const h = (a.history || []).filter(x => x[2] === 'Rescheduled').pop(); return [a.no, Kit.ptName(a.patientId), Kit.docName(a.doctorId), UI.fmtDate(a.date) + ' ' + a.time, a.rescheduled, h ? h[3] : 'Moved at booking']; }) },
+    { id: 'apr07', title: 'Bookings by channel and type', purpose: 'Where bookings come from (front desk, call centre, patient app, referral) and the appointment type.',
+      filters: [from, to, { id: 'type', label: 'Appointment type', type: 'select', options: typeOpts }],
+      columns: ['Channel', 'Bookings', 'Share %', 'Attended', 'No-show', 'Cancelled'],
+      rows: (v) => { const r = B.filter(a => inRange(a.date, v) && sel(v, 'type', a.type)); return ['Front desk', 'Call centre', 'Patient app', 'Doctor referral'].map(s => { const x = r.filter(a => a.source === s); return [s, x.length, pct(x.length, r.length), x.filter(a => /Arrived|Completed/.test(a.status)).length, x.filter(a => a.status === 'No-show').length, x.filter(a => a.status === 'Cancelled').length]; }); },
+      totals: (rows) => ['Total', rows.reduce((s, r) => s + r[1], 0), 100, rows.reduce((s, r) => s + r[3], 0), rows.reduce((s, r) => s + r[4], 0), rows.reduce((s, r) => s + r[5], 0)] },
+    { id: 'apr08', title: 'Call centre activity', purpose: 'Calls handled per agent, direction and average handling time.',
+      filters: [{ id: 'from', label: 'From', type: 'date', value: Kit.addDays(T, -7) }, to, { id: 'agent', label: 'Agent', type: 'select', options: AGENTS }],
+      columns: ['Agent', 'Incoming', 'Outgoing', 'Total calls', 'Average handling (min)', 'Open follow-ups'],
+      rows: (v) => AGENTS.filter(a => sel(v, 'agent', a[0])).map(([ag]) => { const c = db.appointmentsCalls.filter(x => x.agent === ag && inRange(x.at.slice(0, 10), v)); return [ag, c.filter(x => x.direction === 'Incoming').length, c.filter(x => x.direction === 'Outgoing').length, c.length, c.length ? Math.round(10 * Kit.sumBy(c, x => x.duration) / c.length / 60) / 10 : 0, db.appointmentsCalls.filter(x => x.followUp && x.followUp.status === 'Open' && x.followUp.assignee === ag).length]; }).filter(r => r[3] || r[5]) },
+    { id: 'apr09', title: 'Call purpose and outcome', purpose: 'What patients call about and how many calls end in a booking.',
+      filters: [{ id: 'from', label: 'From', type: 'date', value: Kit.addDays(T, -7) }, to, { id: 'purpose', label: 'Purpose', type: 'select', options: PURP }],
+      columns: ['Purpose', 'Calls', 'Booked', 'Conversion %', 'Callback needed', 'Transferred'],
+      rows: (v) => PURP.filter(p => sel(v, 'purpose', p[0])).map(([p]) => { const c = db.appointmentsCalls.filter(x => x.purpose === p && inRange(x.at.slice(0, 10), v)); return [p, c.length, c.filter(x => x.outcome === 'Booked').length, pct(c.filter(x => x.outcome === 'Booked').length, c.length), c.filter(x => x.outcome === 'Callback needed').length, c.filter(x => x.outcome === 'Transferred').length]; }).filter(r => r[1]) },
+    { id: 'apr10', title: 'Leave and override impact', purpose: 'Approved and pending leave, holiday and block overrides with the bookings they affect.',
+      filters: [{ id: 'from', label: 'From', type: 'date', value: T }, { id: 'to', label: 'To', type: 'date', value: Kit.addDays(T, 90) }, { id: 'status', label: 'Status', type: 'select', options: ['Pending approval', 'Approved', 'Rejected', 'Withdrawn'].map(x => [x, x]) }],
+      columns: ['Reference', 'Type', 'Applies to', 'From', 'To', 'Status', 'Booked appointments affected'],
+      rows: (v) => db.appointmentsOverrides.filter(o => sel(v, 'status', o.status) && (!v.to || o.from <= v.to) && (!v.from || o.to >= v.from)).map(o => [o.no, o.kind, o.doctorId ? Kit.docName(o.doctorId) : o.resourceCode ? ((Appt.resource(o.resourceCode) || {}).name || o.resourceCode) : 'All doctors', UI.fmtDate(o.from), UI.fmtDate(o.to), o.status,
+        B.filter(a => /Booked|Confirmed/.test(a.status) && a.date >= o.from && a.date <= o.to && (o.kind === 'Holiday closure' ? true : o.kind === 'Resource unavailable' ? a.resourceCode === o.resourceCode : a.doctorId === o.doctorId) && (!o.start || (a.time >= o.start && a.time < o.end))).length]) },
+  ] });
+})();
+</script>
+</body>
+</html>

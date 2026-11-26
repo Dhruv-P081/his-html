@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Medication administration · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-nursing.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/nursing.js"></script>
+<style>
+  .mar td, .mar th { vertical-align: middle; }
+  .mar th.slot, .mar td.slot { text-align: center; width: 92px; padding-inline: 4px; }
+  .dose { display: inline-flex; flex-direction: column; align-items: center; gap: 1px; min-width: 78px; padding: 5px 6px; border-radius: 9px; border: 1px solid var(--line); background: var(--card); font-size: 11.5px; font-weight: 800; cursor: pointer; color: var(--ink); line-height: 1.25; }
+  .dose small { font-weight: 600; font-size: 10.5px; color: var(--sub); }
+  .dose:hover { border-color: var(--outline); box-shadow: var(--shadow-md); }
+  .dose.d-given { background: var(--success-bg); color: var(--success); border-color: color-mix(in srgb, var(--success) 30%, transparent); }
+  .dose.d-held, .dose.d-due { background: var(--warning-bg); color: var(--warning); border-color: color-mix(in srgb, var(--warning) 35%, transparent); }
+  .dose.d-refused, .dose.d-missed, .dose.d-overdue { background: var(--error-bg); color: var(--error); border-color: color-mix(in srgb, var(--error) 35%, transparent); }
+  .dose.d-upcoming { color: var(--sub); border-style: dashed; }
+  .dose.d-awaiting { color: var(--mute); cursor: default; }
+  .med-cell b { font-size: 13px; }
+  .checks { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; }
+</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, can, toast, audit, field, showErrors, R } = UI;
+  const OPT = 'nursing.ward.mar';
+  if (!UI.page({ opt: OPT, title: 'Medication administration record', subtitle: 'Scheduled doses with manual verification, PRN doses, missed-dose entry and the administration log.', actions: Nursing.wardSelect() })) return;
+  const canGive = can(OPT, 'add'), canPrint = can(OPT, 'view');
+  const noGive = canGive ? '' : 'disabled title="Needs Add permission"';
+  let tab = UI.param('tab') || 'patient', day = db.TODAY, ward = Nursing.getWard(), api = null;
+
+  $('#page').innerHTML = `<div id="topTabs" style="margin-bottom:14px"></div><div id="body"></div>`;
+  function drawTabs() {
+    const encs = Nursing.inpatients(ward);
+    const due = encs.reduce((a, e) => a.concat(Nursing.marDoses(e, db.TODAY)), []).filter(d => d.state === 'Due' || d.state === 'Overdue').length;
+    Kit.tabs($('#topTabs'), [{ id: 'patient', label: 'Patient MAR', icon: 'user' }, { id: 'ward', label: 'Ward due list', icon: 'list-checks', count: due }, { id: 'log', label: 'Administration log', icon: 'history', count: db.nursingMar.filter(m => encs.some(e => e.id === m.encounterId)).length }], tab, (t) => { tab = t; drawBody(); });
+  }
+  function drawBody() {
+    const b = $('#body');
+    if (tab === 'patient') api = Nursing.patientPage({ host: b, noBind: true, meta: patientMeta, render: renderPatient });
+    else if (tab === 'ward') wardList(b); else logView(b);
+  }
+  function refresh() { drawTabs(); if (tab === 'patient' && api) api.refresh(); else drawBody(); }
+  Nursing.bindWard((w) => { ward = w; drawTabs(); if (tab === 'patient' && api) api.setWard(w); else drawBody(); });
+
+  function patientMeta(e) {
+    const ds = Nursing.marDoses(e, db.TODAY);
+    const od = ds.filter(d => d.state === 'Overdue').length, du = ds.filter(d => d.state === 'Due').length;
+    return (od ? `<span class="badge b-err">${od} overdue</span>` : '') + (du ? `<span class="badge b-warn">${du} due</span>` : '') + (!od && !du ? `<span class="badge b-ok">Up to date</span>` : '') + (Nursing.medOrders(e).some(o => Nursing.isHighAlert(Kit.item(o.itemId))) ? '<span class="badge b-violet nodot">High alert</span>' : '');
+  }
+  const cls = (s) => ({ Given: 'd-given', Held: 'd-held', Refused: 'd-refused', Missed: 'd-missed', Due: 'd-due', Overdue: 'd-overdue', Upcoming: 'd-upcoming' }[s] || 'd-awaiting');
+  const ini = (n) => UI.initials(n || '');
+
+  function renderPatient(e, host) {
+    const p = Kit.pt(e.patientId);
+    const minDay = e.start.slice(0, 10), maxDay = Kit.addDays(db.TODAY, 1);
+    if (day < minDay) day = minDay;
+    const doses = Nursing.marDoses(e, day, true);
+    const orders = Nursing.medOrders(e, true);
+    const sched = orders.filter(o => !Nursing.isPrn(o)), prn = orders.filter(o => Nursing.isPrn(o));
+    const slots = Array.from(new Set(doses.map(d => d.due.slice(11)))).sort();
+    const given = doses.filter(d => d.state === 'Given').length;
+    host.innerHTML = `${Kit.patientBanner(p, e)}
+      ${Kit.phase2('Barcode-assisted medication verification (patient wristband and medicine scan) is SOW V4 2nd phase scope. In this phase the nurse verifies the five rights manually on every dose.')}
+      <div class="card" style="margin-top:14px"><div class="card-head"><h3>${icon('calendar-days')} Scheduled medicines</h3>
+        <div class="actions"><div class="btn-group"><button class="btn sm" id="dPrev" ${day <= minDay ? 'disabled' : ''} aria-label="Previous day">${icon('chevron-left')}</button><button class="btn sm on" id="dToday" style="min-width:140px">${day === db.TODAY ? 'Today, ' : ''}${Kit.day(day)}</button><button class="btn sm" id="dNext" ${day >= maxDay ? 'disabled' : ''} aria-label="Next day">${icon('chevron-right')}</button></div>
+        <button class="btn sm" id="prMar" ${canPrint ? '' : 'disabled'}>${icon('printer')} Print MAR</button></div></div>
+        <div class="table-wrap"><table class="tbl mar"><thead><tr><th>Medicine</th>${slots.map(s => `<th class="slot">${s}</th>`).join('')}</tr></thead><tbody>
+        ${sched.length ? sched.map(o => { const it = Kit.item(o.itemId); return `<tr><td class="med-cell"><b>${esc(it.generic || o.name)} ${esc(o.dose)}</b> ${Nursing.isHighAlert(it) ? `<span class="badge b-err nodot">High alert · ${esc(Nursing.highAlertKind(it))}</span>` : ''}<div class="xs muted">${esc(o.route)} · ${esc(o.frequency)} · ${esc(o.no)} · ${esc(Kit.docName(o.by))}</div>${o.status !== 'Active' ? `<div style="margin-top:3px">${Kit.status(o.status)} <span class="xs muted">Not yet verified by pharmacy</span></div>` : ''}</td>
+          ${slots.map(s => { const d = doses.find(x => x.order.id === o.id && x.due.slice(11) === s); if (!d) return '<td class="slot"><span class="mute">-</span></td>';
+            return `<td class="slot"><button class="dose ${cls(d.state)}" data-dose="${o.id}|${d.due}" ${d.state === 'Awaiting pharmacy' ? 'disabled' : ''} aria-label="${esc(s)} ${esc(d.state)}">${esc(d.state === 'Awaiting pharmacy' ? 'Awaiting' : d.state)}<small>${d.rec ? Kit.time(d.rec.at) + ' ' + ini(d.rec.by) : s}</small></button></td>`; }).join('')}</tr>`; }).join('') : `<tr><td colspan="${slots.length + 1}"><div class="empty">${icon('pill')}<b>No scheduled medicines</b></div></td></tr>`}
+        </tbody></table></div>
+        <div class="card-foot row wrap small muted" style="gap:14px"><span>${given} of ${doses.filter(d => d.state !== 'Awaiting pharmacy').length} doses given on this day</span><span class="grow"></span><span>Due window: 1 hour either side of the scheduled time</span></div></div>
+      <div class="card" style="margin-top:14px"><div class="card-head"><h3>${icon('pill')} As needed (PRN)</h3></div>
+        <div class="table-wrap"><table class="tbl"><thead><tr><th>Medicine</th><th>Minimum interval</th><th>Last given</th><th>Given today</th><th></th></tr></thead><tbody>
+        ${prn.length ? prn.map(o => { const it = Kit.item(o.itemId), f = Nursing.freq(o.frequency) || {}; const last = lastPrn(o); const todayN = db.nursingMar.filter(m => m.orderId === o.id && m.prn && m.at.startsWith(db.TODAY)).length;
+          return `<tr><td class="med-cell"><b>${esc(it.generic || o.name)} ${esc(o.dose)}</b> ${Nursing.isHighAlert(it) ? `<span class="badge b-err nodot">High alert · ${esc(Nursing.highAlertKind(it))}</span>` : ''}<div class="xs muted">${esc(o.route)} · ${esc(o.frequency)} · ${esc(o.no)}</div></td><td>${f.minHours ? f.minHours + ' hours' : '-'}</td><td>${last ? `${Kit.when(last.at)}<div class="xs muted">${esc(last.indication || '')} · ${esc(last.by)}</div>` : '<span class="mute">Not given</span>'}</td><td>${todayN}</td>
+          <td class="actions"><button class="btn sm" data-prn="${o.id}" ${o.status === 'Active' ? noGive : 'disabled title="Awaiting pharmacy verification"'}>${icon('syringe')} Give PRN</button></td></tr>`; }).join('') : `<tr><td colspan="5"><div class="empty">${icon('pill')}<b>No PRN medicines ordered</b></div></td></tr>`}
+        </tbody></table></div></div>
+      <div class="card" style="margin-top:14px"><div class="card-head"><h3>${icon('history')} Scheduled log for this patient</h3></div><div id="pLog"></div></div>`;
+    $('#dPrev', host).addEventListener('click', () => { day = Kit.addDays(day, -1); renderPatient(e, host); });
+    $('#dNext', host).addEventListener('click', () => { day = Kit.addDays(day, 1); renderPatient(e, host); });
+    $('#dToday', host).addEventListener('click', () => { day = db.TODAY; renderPatient(e, host); });
+    $$('[data-dose]', host).forEach(bt => bt.addEventListener('click', () => { const [oid, due] = bt.dataset.dose.split('|'); const d = Nursing.marDoses(e, due.slice(0, 10), true).find(x => x.order.id === oid && x.due === due); d.rec ? viewRec(d.rec) : administer(e, d); }));
+    $$('[data-prn]', host).forEach(bt => bt.addEventListener('click', () => givePrn(e, Kit.by('orders', bt.dataset.prn))));
+    $('#prMar', host).addEventListener('click', () => printMar(e, doses, sched, slots));
+    logTable($('#pLog', host), () => db.nursingMar.filter(m => m.encounterId === e.id), true);
+  }
+  function lastPrn(o) { return db.nursingMar.filter(m => m.orderId === o.id && m.prn && m.status === 'Given').sort((a, b) => b.at.localeCompare(a.at))[0]; }
+
+  /* ---------- Administer a scheduled dose ---------- */
+  const RIGHTS = ['Right patient (two identifiers on wristband)', 'Right medicine (label checked against order)', 'Right dose', 'Right route', 'Right time', 'Allergies checked'];
+  function administer(e, d) {
+    if (!canGive) { toast('You need Add permission on Medication Administration.', 'err'); return; }
+    const o = d.order, it = d.item || {}, p = Kit.pt(e.patientId), high = Nursing.isHighAlert(it);
+    const past = d.state === 'Overdue' || d.due.slice(0, 10) < db.TODAY;
+    const future = d.state === 'Upcoming';
+    const allergyHit = (p.allergies || []).find(a => (it.generic + ' ' + it.category).toLowerCase().includes(a.toLowerCase().replace(/s$/, '').split(' ')[0]));
+    const route = (db.nursingRoutes || []).find(r => r.name === o.route) || {};
+    let action = 'Given';
+    UI.drawer({ title: 'Administer dose', sub: `${esc(p.name)} · Bed ${esc(Nursing.bedNo(e))} · due ${Kit.when(d.due)}`, wide: true,
+      body: `<div class="err-summary hidden"></div>
+        <div class="note-box" style="margin-bottom:12px"><div class="row"><div class="grow"><b style="font-size:15px">${esc(it.generic || o.name)} ${esc(o.dose)}</b> <span class="muted">${esc(it.brand || '')} ${esc(it.strength || '')}</span><div class="small muted">${esc(o.route)} · ${esc(o.frequency)} · ${esc(o.no)} · ordered by ${esc(Kit.docName(o.by))}</div></div>${Kit.status(d.state)}</div></div>
+        ${high ? `<div class="alert-cdss" style="margin-bottom:10px">${icon('shield-alert')}<span>High-alert medicine (${esc(Nursing.highAlertKind(it))}). A second nurse must independently check the medicine, dose and patient before you give it.</span></div>` : ''}
+        ${allergyHit ? `<div class="alert-cdss" style="margin-bottom:10px">${icon('triangle-alert')}<span>Patient allergy recorded: ${esc(allergyHit)}. Confirm with the doctor before giving.</span></div>` : ''}
+        ${future ? `<div class="alert-cdss warn" style="margin-bottom:10px">${icon('clock')}<span>This dose is not due until ${Kit.time(d.due)}. Giving it early needs a reason in the note.</span></div>` : ''}
+        <div id="act" style="margin-bottom:14px"></div><div id="actBody"></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="aSave" disabled>Record</button>`,
+      onMount: (el, close) => {
+        const acts = [['Given', 'Give', 'check'], ['Held', 'Hold', 'pause'], ['Refused', 'Refused', 'ban']].concat(past ? [['Missed', 'Missed dose', 'circle-x']] : []);
+        Kit.seg($('#act', el), acts, action, (a) => { action = a; drawAct(); });
+        function drawAct() {
+          const ab = $('#actBody', el);
+          if (action === 'Given') ab.innerHTML = `<div class="section-t">Manual verification</div><div class="checks">${RIGHTS.map((r, i) => `<label class="check"><input type="checkbox" data-right="${i}"> ${esc(r)}</label>`).join('')}</div>
+            <div class="form-grid" style="margin-top:14px">${Nursing.whenFields('aD', 'aT', 'Date given')}${field({ id: 'aDose', label: 'Dose given', value: o.dose, req: true, max: 30 })}
+            ${field({ id: 'aRoute', label: 'Route', type: 'select', value: o.route, placeholder: false, options: db.nursingRoutes.filter(r => r.status !== 'Inactive').map(r => [r.name, r.name + ' (' + r.code + ')']) })}
+            ${route.siteRequired ? field({ id: 'aSite', label: 'Site', req: true, type: 'select', options: ['Abdomen left', 'Abdomen right', 'Thigh left', 'Thigh right', 'Upper arm left', 'Upper arm right', 'IV cannula, left forearm', 'IV cannula, right hand', 'Central line'].map(x => [x, x]) }) : ''}
+            ${field({ id: 'aNote', label: 'Note', type: 'textarea', max: 300, full: true })}</div>
+            ${high ? `<div class="section-t" style="margin-top:6px">Second nurse check</div>${Nursing.secondNurseFields('a')}` : ''}`;
+          else ab.innerHTML = `<div class="form-grid">${Nursing.whenFields('aD', 'aT', 'Date')}
+            ${field({ id: 'aReason', label: 'Reason', type: 'select', req: true, full: true, options: (action === 'Held' ? ['Vital signs outside parameters', 'Nil by mouth for procedure', 'Abnormal lab result', 'Doctor asked to hold', 'Patient off ward'] : action === 'Refused' ? ['Patient refused', 'Patient vomiting, unable to take', 'Patient asleep, would not wake'] : ['Patient off ward', 'Medicine not available on ward', 'IV access lost', 'Dose overlooked']).map(x => [x, x]) })}
+            ${field({ id: 'aNote', label: 'Details and who was informed', type: 'textarea', req: true, max: 300, full: true })}</div>
+            ${action === 'Missed' ? `<div class="banner warn" style="margin-top:10px">${icon('triangle-alert')}<span>Missed doses are reported to the nurse in charge and appear in the missed-dose report.</span></div>` : ''}`;
+          $$('input,select,textarea', ab).forEach(i => { i.addEventListener('input', chk); i.addEventListener('change', chk); });
+          $('#aSave', el).className = 'btn ' + (action === 'Given' ? 'success' : action === 'Missed' ? 'destructive' : 'primary');
+          $('#aSave', el).innerHTML = action === 'Given' ? icon('check') + ' Record as given' : 'Record as ' + action.toLowerCase();
+          chk();
+        }
+        function chk() {
+          let ok = !!Nursing.stampOf(el, 'aD', 'aT');
+          if (action === 'Given') { ok = ok && $$('[data-right]', el).every(c => c.checked) && $('#aDose', el).value.trim() && (!$('#aSite', el) || $('#aSite', el).value) && (!high || Nursing.secondNurseOk(el, 'a')) && (!future || $('#aNote', el).value.trim().length >= 3); }
+          else ok = ok && $('#aReason', el).value && $('#aNote', el).value.trim().length >= 3;
+          $('#aSave', el).disabled = !ok;
+        }
+        drawAct();
+        $('#aSave', el).addEventListener('click', () => {
+          const at = Nursing.stampOf(el, 'aD', 'aT'), errs = {};
+          if (at > Nursing.now()) errs.aT = 'Time cannot be in the future.';
+          if (at < e.start) errs.aD = 'Time is before the admission.';
+          if (!showErrors(el, errs)) return;
+          const rec = { id: UI.uid('mar'), orderId: o.id, encounterId: e.id, patientId: e.patientId, due: d.due, status: action, at, by: Nursing.myName(), dose: action === 'Given' ? $('#aDose', el).value.trim() : o.dose, route: action === 'Given' ? $('#aRoute', el).value : o.route, site: $('#aSite', el) ? $('#aSite', el).value : '', reason: action === 'Given' ? '' : $('#aReason', el).value, note: $('#aNote', el).value.trim(), witness: action === 'Given' && high ? $('#aWit', el).value : '', prn: false, checks: action === 'Given' ? RIGHTS.length : 0 };
+          db.nursingMar.push(rec); save();
+          const lateM = Nursing.minsBetween(d.due, at);
+          audit('Medication ' + action.toLowerCase(), 'MAR', { id: rec.id, label: `${it.generic || o.name} ${o.dose}, ${p.name}` }, [['Dose ' + Kit.time(d.due), d.state, action]].concat(rec.witness ? [['Second nurse', '', rec.witness]] : []), { reason: rec.reason ? rec.reason + ': ' + rec.note : '' });
+          close(); toast(action === 'Given' ? (lateM > 60 ? `Given ${lateM} minutes late. Recorded.` : 'Dose recorded as given') : 'Dose recorded as ' + action.toLowerCase()); refresh();
+        });
+      } });
+  }
+  function givePrn(e, o) {
+    const it = Kit.item(o.itemId) || {}, p = Kit.pt(e.patientId), f = Nursing.freq(o.frequency) || {}, last = lastPrn(o), high = Nursing.isHighAlert(it);
+    const next = last && f.minHours ? Nursing.addMin(last.at, f.minHours * 60) : '';
+    const early = next && next > Nursing.now();
+    UI.drawer({ title: 'Give PRN dose', sub: `${esc(p.name)} · Bed ${esc(Nursing.bedNo(e))}`, wide: true,
+      body: `<div class="err-summary hidden"></div><div class="note-box" style="margin-bottom:12px"><b style="font-size:15px">${esc(it.generic || o.name)} ${esc(o.dose)}</b><div class="small muted">${esc(o.route)} · ${esc(o.frequency)} · ${esc(o.no)}</div><div class="small" style="margin-top:4px">Last given: ${last ? Kit.when(last.at) + ' by ' + esc(last.by) : 'never'}</div></div>
+        ${early ? `<div class="alert-cdss" style="margin-bottom:10px">${icon('clock')}<span>Minimum interval is ${f.minHours} hours. The next dose is allowed from ${Kit.when(next)}. Contact the doctor if the patient needs it earlier.</span></div>` : ''}
+        ${high ? `<div class="alert-cdss" style="margin-bottom:10px">${icon('shield-alert')}<span>High-alert medicine (${esc(Nursing.highAlertKind(it))}): second nurse check required.</span></div>` : ''}
+        <div class="section-t">Manual verification</div><div class="checks">${RIGHTS.map((r, i) => `<label class="check"><input type="checkbox" data-right="${i}"> ${esc(r)}</label>`).join('')}</div>
+        <div class="form-grid" style="margin-top:14px">${Nursing.whenFields('qD', 'qT', 'Date given')}${field({ id: 'qInd', label: 'Indication', req: true, type: 'select', options: ['Pain score 4 or more', 'Pain score 7 or more', 'Nausea or vomiting', 'Fever', 'Breathlessness', 'Other'].map(x => [x, x]) })}${field({ id: 'qPain', label: 'Pain score before (0-10)', type: 'number', attrs: 'min="0" max="10"' })}
+        ${field({ id: 'qNote', label: 'Note', type: 'textarea', max: 300, full: true, hint: 'Reassess the effect within 1 hour and record it on the pain chart.' })}</div>
+        ${high ? `<div class="section-t" style="margin-top:6px">Second nurse check</div>${Nursing.secondNurseFields('q')}` : ''}`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn success" id="qSave" disabled>${icon('check')} Record PRN dose</button>`,
+      onMount: (el, close) => {
+        const chk = () => { $('#qSave', el).disabled = !!early || !($$('[data-right]', el).every(c => c.checked) && $('#qInd', el).value && Nursing.stampOf(el, 'qD', 'qT') && (!high || Nursing.secondNurseOk(el, 'q'))); };
+        $$('input,select,textarea', el).forEach(i => { i.addEventListener('input', chk); i.addEventListener('change', chk); });
+        $('#qSave', el).addEventListener('click', () => {
+          const at = Nursing.stampOf(el, 'qD', 'qT'), errs = {}, pain = $('#qPain', el).value;
+          if (at > Nursing.now()) errs.qT = 'Time cannot be in the future.';
+          if (pain !== '' && (+pain < 0 || +pain > 10)) errs.qPain = 'Pain score must be 0 to 10.';
+          if (!showErrors(el, errs)) return;
+          const rec = { id: UI.uid('mar'), orderId: o.id, encounterId: e.id, patientId: e.patientId, due: '', status: 'Given', at, by: Nursing.myName(), dose: o.dose, route: o.route, site: '', reason: '', indication: $('#qInd', el).value, note: $('#qNote', el).value.trim(), witness: high ? $('#qWit', el).value : '', prn: true, checks: RIGHTS.length };
+          db.nursingMar.push(rec);
+          if (pain !== '') db.nursingPainLog.push({ id: UI.uid('pl'), encounterId: e.id, patientId: e.patientId, at, scale: 'NRS', score: +pain, location: '', intervention: `${it.generic} ${o.dose} ${o.route} (PRN)`, reassessed: '', by: Nursing.myName(), source: 'MAR' });
+          save(); audit('PRN medication given', 'MAR', { id: rec.id, label: `${it.generic} ${o.dose}, ${p.name}` }, [['Indication', '', rec.indication]].concat(rec.witness ? [['Second nurse', '', rec.witness]] : []));
+          close(); toast('PRN dose recorded'); refresh();
+        });
+      } });
+  }
+  function viewRec(m) {
+    const o = Kit.by('orders', m.orderId) || {}, it = Kit.item(o.itemId) || {};
+    UI.drawer({ title: 'Administration record', sub: esc(Kit.ptName(m.patientId)) + ' · ' + esc(it.generic || o.name),
+      body: `<dl class="kv"><dt>Status</dt><dd>${Kit.status(m.status)}</dd><dt>Medicine</dt><dd>${esc(it.generic || o.name)} ${esc(m.dose)}, ${esc(m.route)}</dd>${m.due ? `<dt>Scheduled</dt><dd>${Kit.when(m.due)}</dd>` : '<dt>Type</dt><dd>PRN</dd>'}<dt>Recorded time</dt><dd>${Kit.when(m.at)}${m.due && m.status === 'Given' && Nursing.minsBetween(m.due, m.at) > 60 ? ` <span class="badge b-warn">Late ${Nursing.minsBetween(m.due, m.at)} min</span>` : ''}</dd><dt>Nurse</dt><dd>${esc(m.by)}</dd>
+        ${m.witness ? `<dt>Second nurse</dt><dd>${esc(m.witness)}</dd>` : ''}${m.site ? `<dt>Site</dt><dd>${esc(m.site)}</dd>` : ''}${m.indication ? `<dt>Indication</dt><dd>${esc(m.indication)}</dd>` : ''}${m.reason ? `<dt>Reason</dt><dd>${esc(m.reason)}</dd>` : ''}${m.note ? `<dt>Note</dt><dd>${esc(m.note)}</dd>` : ''}<dt>Verification</dt><dd>${m.checks ? 'Five rights and allergies checked manually' : '-'}</dd></dl>` });
+  }
+
+  /* ---------- Ward due list ---------- */
+  function wardList(b) {
+    const rows = () => Nursing.inpatients(ward).reduce((a, e) => a.concat(Nursing.marDoses(e, db.TODAY).map(d => Object.assign(d, { e }))), []).filter(d => d.state === 'Due' || d.state === 'Overdue' || d.state === 'Upcoming');
+    b.innerHTML = `<div id="wt"></div>`;
+    UI.table($('#wt', b), {
+      columns: [{ label: 'Due', sort: d => d.due, render: d => `<b class="mono">${Kit.time(d.due)}</b>` }, { label: 'Bed', render: d => `<span class="token">${esc(Nursing.bedNo(d.e).split('-').pop())}</span>` }, { label: 'Patient', render: d => Kit.patientCell(Kit.pt(d.e.patientId)) },
+        { label: 'Medicine', render: d => `<b>${esc(d.item.generic || d.order.name)} ${esc(d.order.dose)}</b> ${Nursing.isHighAlert(d.item) ? '<span class="badge b-err nodot">High alert</span>' : ''}<div class="xs muted">${esc(d.order.route)} · ${esc(d.order.frequency)}</div>` }, { label: 'Status', sort: d => d.state, render: d => Kit.status(d.state) },
+        { label: '', cls: 'actions', render: d => `<button class="btn xs primary" data-adm="${d.order.id}|${d.due}" ${noGive}>${icon('syringe')} Administer</button>` }],
+      rows, search: d => [Kit.ptName(d.e.patientId), d.item.generic, Nursing.bedNo(d.e)].join(' '), searchPlaceholder: 'Search patient or medicine', pageSize: 12,
+      filters: [{ label: 'Status', options: [['Overdue', 'Overdue'], ['Due', 'Due now'], ['Upcoming', 'Upcoming']], test: (d, v) => d.state === v }, { label: 'High alert', options: [['y', 'High alert only']], test: d => Nursing.isHighAlert(d.item) }],
+      empty: 'No doses left to give today', emptyIcon: 'circle-check',
+      afterDraw: (tb) => $$('[data-adm]', tb).forEach(bt => bt.addEventListener('click', () => { const [oid, due] = bt.dataset.adm.split('|'); const d = rows().find(x => x.order.id === oid && x.due === due); administer(d.e, d); })),
+    });
+  }
+
+  /* ---------- Administration log ---------- */
+  function logView(b) {
+    b.innerHTML = `<div class="row" style="margin-bottom:10px"><span class="small muted">All administration events for patients now in ${esc(Kit.ward(ward).name)}.</span><span class="grow"></span><button class="btn sm" id="prLog" ${canPrint ? '' : 'disabled'}>${icon('printer')} Print log</button></div><div id="lg"></div>`;
+    const rows = () => db.nursingMar.filter(m => Nursing.inpatients(ward).some(e => e.id === m.encounterId));
+    const t = logTable($('#lg', b), rows, false);
+    $('#prLog', b).addEventListener('click', () => { const r = rows().sort((x, y) => y.at.localeCompare(x.at)).slice(0, 80);
+      Kit.printDoc({ title: 'Medication administration log', sub: Kit.ward(ward).name, html: `<table><thead><tr><th>Time</th><th>Patient</th><th>Medicine</th><th>Status</th><th>Nurse</th><th>Second nurse</th><th>Reason</th></tr></thead><tbody>${r.map(m => { const o = Kit.by('orders', m.orderId) || {}; return `<tr><td>${esc(m.at)}</td><td>${esc(Kit.ptName(m.patientId))}</td><td>${esc(o.name)} ${esc(m.dose)}</td><td>${esc(m.status)}${m.prn ? ' (PRN)' : ''}</td><td>${esc(m.by)}</td><td>${esc(m.witness || '')}</td><td>${esc(m.reason || '')}</td></tr>`; }).join('')}</tbody></table>` }); });
+    void t;
+  }
+  function logTable(host, rows, compact) {
+    return UI.table(host, {
+      columns: [{ label: 'Time', sort: m => m.at, render: m => `<span class="mono">${Kit.when(m.at)}</span>${m.due && m.status === 'Given' && Nursing.minsBetween(m.due, m.at) > 60 ? ' <span class="badge b-warn nodot">Late</span>' : ''}` }]
+        .concat(compact ? [] : [{ label: 'Patient', sort: m => Kit.ptName(m.patientId), render: m => `<b>${esc(Nursing.bedNo(Kit.enc(m.encounterId)))}</b> ${esc(Kit.ptName(m.patientId))}` }])
+        .concat([{ label: 'Medicine', render: m => { const o = Kit.by('orders', m.orderId) || {}; const it = Kit.item(o.itemId) || {}; return `${esc(it.generic || o.name)} ${esc(m.dose)} <span class="xs muted">${esc(m.route)}</span>${m.prn ? ' <span class="tag">PRN</span>' : ''}`; } },
+          { label: 'Scheduled', render: m => m.due ? Kit.time(m.due) : '<span class="mute">PRN</span>' }, { label: 'Status', sort: m => m.status, render: m => Kit.status(m.status) + (m.reason ? `<div class="xs muted">${esc(m.reason)}</div>` : '') },
+          { label: 'Nurse', render: m => `<span class="small">${esc(m.by)}</span>` }, { label: 'Second nurse', render: m => m.witness ? `<span class="small">${esc(m.witness)}</span>` : '<span class="mute">-</span>' }]),
+      rows: () => rows().slice().sort((a, z) => z.at.localeCompare(a.at)), search: m => { const o = Kit.by('orders', m.orderId) || {}; return [o.name, m.by, m.witness, Kit.ptName(m.patientId), m.reason].join(' '); }, searchPlaceholder: 'Search medicine, nurse or patient', pageSize: compact ? 6 : 12,
+      filters: [{ label: 'Status', options: [['Given', 'Given'], ['Held', 'Held'], ['Refused', 'Refused'], ['Missed', 'Missed']], test: (m, v) => m.status === v }, { label: 'Type', options: [['s', 'Scheduled'], ['p', 'PRN'], ['h', 'High alert']], test: (m, v) => v === 'p' ? m.prn : v === 's' ? !m.prn : !!m.witness }, { label: 'Date', options: Array.from(new Set(rows().map(m => m.at.slice(0, 10)))).sort().reverse().map(d => [d, Kit.day(d)]), test: (m, v) => m.at.startsWith(v) }],
+      onRow: viewRec, empty: 'No administration records',
+    });
+  }
+  function printMar(e, doses, sched, slots) {
+    const p = Kit.pt(e.patientId);
+    Kit.printDoc({ title: 'Medication administration record', sub: `${p.name} · ${p.mrn} · Bed ${Nursing.bedNo(e)} · ${Kit.day(day)}`,
+      html: `<div style="margin-bottom:10px"><b>${esc(p.name)}</b> · ${esc(p.mrn)} · ${esc(Kit.sexAge(p))} · Allergies: <b>${esc((p.allergies || []).join(', ') || 'None known')}</b> · ${esc(e.no)}</div>
+        <table><thead><tr><th>Medicine</th>${slots.map(s => `<th>${s}</th>`).join('')}</tr></thead><tbody>${sched.map(o => `<tr><td><b>${esc(o.name)}</b><br>${esc(o.dose)} ${esc(o.route)} ${esc(o.frequency)}</td>${slots.map(s => { const d = doses.find(x => x.order.id === o.id && x.due.slice(11) === s); return `<td>${d ? esc(d.state) + (d.rec ? '<br>' + esc(Kit.time(d.rec.at) + ' ' + ini(d.rec.by)) + (d.rec.witness ? ' / ' + esc(ini(d.rec.witness)) : '') : '') : ''}</td>`; }).join('')}</tr>`).join('')}</tbody></table>
+        <p style="font-size:11px;color:#555;margin-top:12px">Initials: nurse / second nurse. Manual verification of the five rights on every dose.</p>` });
+  }
+
+  drawTabs(); drawBody();
+})();
+</script>
+</body>
+</html>

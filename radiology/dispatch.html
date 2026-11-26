@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Radiology report print and e-send · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-radiology.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/lab.js"></script><script src="../assets/radiology.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, icon, $, R } = UI;
+  const OPT = 'radiology.out';
+  if (!UI.page({ opt: OPT, title: 'Report print and e-send', subtitle: 'Print approved radiology reports with the letterhead and signature, or send them by email, SMS, the patient app or to the referring doctor.',
+    actions: `<a class="btn" href="${R('radiology/reporting.html')}">${icon('file-pen-line')} Reporting</a>` })) return;
+  Lab.dispatchPage($('#page'), { opt: OPT, kind: 'rad', key: 'radiologyDispatch',
+    orders: () => Rad.orders().filter(o => o.status === 'Approved' && o.report),
+    finalAt: o => (o.report && o.report.approvedAt) || '', testName: o => o.name, ref: o => Rad.acc(o), title: o => 'Radiology report · ' + o.name,
+    reportHtml: Rad.reportHtml, flags: o => o.report && o.report.critical ? ' <span class="flag-c">Critical</span>' : '',
+    filters: [{ label: 'Modality', options: [...new Set(db.radExams.map(x => x.modality))].map(m => [m, m]), test: (o, v) => Rad.exam(o.code).modality === v },
+      { label: 'Setting', options: [['OPD', 'OPD'], ['ER', 'Emergency'], ['IPD', 'Inpatient']], test: (o, v) => Lab.setting(o) === v }] });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lab orders · Tibbi Orbit</title>
+
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-lab.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/lab.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, nowStamp } = UI;
+  const OPT = 'lab.orders';
+  if (!UI.page({ opt: OPT, title: 'Lab orders', subtitle: 'Accept, reject, cancel and follow every laboratory order from request to approved report.',
+    actions: `<a class="btn" href="${R('lab/collection.html')}">${icon('test-tube')} Collection worklist</a><a class="btn primary" href="${R('lab/results.html')}">${icon('microscope')} Result entry</a>` })) return;
+  const canEdit = can(OPT, 'edit'), canCancel = can(OPT, 'cancel'), canVerify = can(OPT, 'verify'), canApprove = can(OPT, 'approve');
+  const TABS = [
+    ['open', 'Open', o => Lab.isOpen(o)], ['new', 'New', o => Lab.stageKey(o) === 'new'], ['accepted', 'To collect', o => Lab.stageKey(o) === 'accepted'],
+    ['lab', 'In lab', o => ['collected', 'received', 'progress'].includes(Lab.stageKey(o))], ['resulted', 'To verify', o => Lab.stageKey(o) === 'resulted'],
+    ['tech', 'To approve', o => Lab.stageKey(o) === 'tech'], ['final', 'Approved', o => o.status === 'Verified'], ['closed', 'Rejected or cancelled', o => /Rejected|Cancelled/.test(o.status)], ['all', 'All', () => true],
+  ];
+  let tab = 'open';
+  $('#page').innerHTML = `<div id="oTabs" style="margin-bottom:12px"></div><div id="oTbl"></div>
+    <div style="margin-top:14px">${Kit.phase2('Send-out (outsourced) order tracking is in the SOW V4 2nd phase. Outsource laboratories are kept in the Lab Masters now.')}</div>`;
+  const drawTabs = () => Kit.tabs($('#oTabs'), TABS.map(([id, label, f]) => ({ id, label, count: Lab.orders().filter(f).length })), tab, (t) => { tab = t; tbl.redraw(); });
+  const sections = [...new Set(db.labTests.map(t => t.section))];
+  const tbl = UI.table($('#oTbl'), {
+    columns: [
+      { label: '', render: o => o.status === 'Ordered' && !o.acceptedAt ? `<input type="checkbox" data-sel="${o.id}" aria-label="Select ${esc(o.no)}">` : '' },
+      { label: 'Patient', sort: o => Kit.ptName(o.patientId), render: o => Kit.patientCell(Kit.pt(o.patientId)) },
+      { label: 'Test', sort: o => o.name, render: o => `<b>${esc(o.name)}</b><div class="small muted"><span class="mono">${esc(Lab.acc(o))}</span> · ${esc(Lab.test(o.code).section)}</div>` },
+      { label: 'Location', render: o => `${esc(Lab.location(o))}<div class="small muted">${esc(Kit.docName(o.by))}</div>` },
+      { label: 'Priority', sort: o => ({ STAT: 0, Urgent: 1 }[o.priority] ?? 2), render: o => Kit.priority(o.priority) },
+      { label: 'Ordered', sort: o => o.orderedAt, render: o => esc(Kit.when(o.orderedAt)) },
+      { label: 'TAT', sort: o => Lab.tat(o).pct, render: o => Lab.tatCell(o) },
+      { label: 'Stage', sort: o => Lab.STAGES.findIndex(s => s[0] === Lab.stageKey(o)), render: o => Lab.stageBadge(o) },
+      { label: '', cls: 'actions', render: o => Lab.stageKey(o) === 'new' ? `<button class="btn sm" data-acc="${o.id}" ${canEdit ? '' : 'disabled title="Needs Edit permission"'}>${icon('check')} Accept</button>` : '' },
+    ],
+    rows: () => Lab.orders().filter(TABS.find(t => t[0] === tab)[2]).sort((a, b) => (a.orderedAt < b.orderedAt ? 1 : -1)),
+    search: o => [Lab.acc(o), o.no, o.name, o.code, Kit.ptName(o.patientId), (Kit.pt(o.patientId) || {}).mrn, Kit.docName(o.by)].join(' '),
+    searchPlaceholder: 'Accession, order, patient, MRN or test',
+    filters: [
+      { label: 'Priority', options: [['STAT', 'STAT'], ['Urgent', 'Urgent'], ['Routine', 'Routine']], test: (o, v) => o.priority === v },
+      { label: 'Section', options: sections.map(s => [s, s]), test: (o, v) => Lab.test(o.code).section === v },
+      { label: 'Setting', options: [['OPD', 'OPD'], ['ER', 'Emergency'], ['IPD', 'Inpatient']], test: (o, v) => Lab.setting(o) === v },
+      { label: 'TAT', options: [['late', 'Over target'], ['ok', 'Within target']], test: (o, v) => (Lab.tat(o).late ? 'late' : 'ok') === v },
+    ],
+    toolbar: `<button class="btn sm" id="accSel" ${canEdit ? '' : 'disabled title="Needs Edit permission"'}>${icon('check-check')} Accept selected</button>`,
+    onRow: (o) => open(o),
+    afterDraw: (tb) => $$('[data-acc]', tb).forEach(b => b.addEventListener('click', () => accept([db.orders.find(o => o.id === b.dataset.acc)]))),
+    empty: 'No orders in this list',
+  });
+  drawTabs();
+  $('#accSel').addEventListener('click', () => {
+    const list = $$('[data-sel]:checked').map(c => db.orders.find(o => o.id === c.dataset.sel));
+    if (!list.length) { toast('Select at least one new order.', 'err'); return; }
+    accept(list);
+  });
+  const refresh = () => { drawTabs(); tbl.redraw(); };
+
+  function accept(list, after) {
+    UI.confirm({ title: list.length > 1 ? `Accept ${list.length} orders?` : 'Accept this order?', tone: 'primary', icon: 'check', confirm: 'Accept',
+      body: list.length > 1 ? 'The orders move to the collection worklist.' : `${esc(list[0].name)} for ${esc(Kit.ptName(list[0].patientId))} moves to the collection worklist.`,
+      onConfirm: () => {
+        list.forEach(o => { o.acceptedAt = nowStamp(); o.acceptedBy = Lab.meName(); audit('Lab order accepted', 'Lab order', { id: o.id, label: o.no }, [['Stage', 'New', 'To collect']]); });
+        save(); toast(list.length > 1 ? list.length + ' orders accepted' : 'Order accepted'); refresh(); after && after();
+      } });
+  }
+  function reject(o, after) {
+    Lab.reasonConfirm({ title: 'Reject this order?', confirm: 'Reject order', label: 'Rejection reason (master)',
+      body: `${esc(o.name)} for ${esc(Kit.ptName(o.patientId))}. The ordering doctor sees the rejection and the reason in the EMR.`,
+      impact: ['The order is closed and cannot be collected or resulted.', 'The doctor can place a new order if needed.'],
+      reasons: (db.labRejectReasons || []).filter(r => r.status !== 'Inactive' && /Order|Both/.test(r.appliesTo)),
+      onConfirm: (code, name, text) => {
+        const before = o.status; Object.assign(o, { status: 'Rejected', rejectCode: code, rejectReason: text, rejectedBy: Lab.meName(), rejectedAt: nowStamp() });
+        save(); audit('Lab order rejected', 'Lab order', { id: o.id, label: o.no }, [['Status', before, 'Rejected'], ['Reason code', '', code]], { reason: text });
+        toast('Order rejected'); refresh(); after && after();
+      } });
+  }
+  function cancel(o, after) {
+    Lab.reasonConfirm({ title: 'Cancel (delete) this order?', confirm: 'Cancel order', label: 'Cancellation reason (master)',
+      body: `${esc(o.name)} for ${esc(Kit.ptName(o.patientId))}. Orders are never physically deleted; they are cancelled and stay in the audit trail.`,
+      impact: o.collectedAt ? ['A sample was already collected. It will be discarded.', 'Any charge for this test is reversed by billing.'] : ['Any charge for this test is reversed by billing.'],
+      reasons: (db.labRejectReasons || []).filter(r => r.status !== 'Inactive'),
+      onConfirm: (code, name, text) => {
+        const before = o.status; Object.assign(o, { status: 'Cancelled', cancelCode: code, cancelReason: text, cancelledBy: Lab.meName(), cancelledAt: nowStamp() });
+        save(); audit('Lab order cancelled', 'Lab order', { id: o.id, label: o.no }, [['Status', before, 'Cancelled']], { reason: text });
+        toast('Order cancelled'); refresh(); after && after();
+      } });
+  }
+
+  function open(o) {
+    const p = Kit.pt(o.patientId), e = Kit.enc(o.encounterId), t = Lab.test(o.code), k = Lab.stageKey(o);
+    const steps = [
+      ['Ordered', o.orderedAt, Kit.docName(o.by)], ['Accepted by the lab', o.acceptedAt, o.acceptedBy], ['Sample collected', o.collectedAt, o.collectedBy + (o.collectSite ? ' · ' + o.collectSite : '')],
+      ['Received in the lab', o.receivedAt, o.receivedBy + (o.rack ? ' · rack ' + o.rack : '')], ['Results entered', o.resultedAt, o.resultedBy], ['Technically verified', o.techVerifiedAt, o.techVerifiedBy], ['Approved by pathologist', o.verifiedAt, o.verifiedBy],
+    ];
+    const closed = o.status === 'Rejected' ? ['Rejected', o.rejectedAt, o.rejectedBy, o.rejectReason] : o.status === 'Cancelled' ? ['Cancelled', o.cancelledAt, o.cancelledBy, o.cancelReason] : null;
+    const reachedVerify = k === 'resulted', reachedApprove = k === 'tech';
+    const preResult = ['Ordered', 'Collected', 'Received'].includes(o.status);
+    UI.drawer({ title: o.name, sub: `<span class="mono">${esc(Lab.acc(o))}</span> · ${esc(o.no)} · ${Lab.stageBadge(o)}`, wide: true,
+      body: `${Kit.patientBanner(p, e)}
+        ${o.sampleRejected && o.status === 'Ordered' ? `<div class="banner warn" style="margin-bottom:12px">${icon('rotate-ccw')}<span>Recollection needed: ${esc(o.sampleRejected.reason)} (${esc(o.sampleRejected.by)}, ${esc(Kit.when(o.sampleRejected.at))}). ${esc(o.sampleRejected.note || '')}</span></div>` : ''}
+        ${closed ? `<div class="banner err" style="margin-bottom:12px">${icon('ban')}<span>${esc(closed[0])} by ${esc(closed[2])} on ${esc(UI.fmtDate(closed[1]))}: ${esc(closed[3])}</span></div>` : ''}
+        <div class="grid g2">
+          <div class="card card-pad"><div class="section-t" style="margin:0 0 10px">Order</div><dl class="kv tight">
+            <dt>Test</dt><dd>${esc(t.code)} · ${esc(t.name)}</dd><dt>Section</dt><dd>${esc(t.section)}</dd><dt>Specimen</dt><dd>${esc(t.specimen)}</dd><dt>Container</dt><dd>${Lab.tube(t.container)}</dd>
+            <dt>Priority</dt><dd>${Kit.priority(o.priority)}</dd><dt>Ordered by</dt><dd>${esc(Kit.docName(o.by))}</dd><dt>Location</dt><dd>${esc(Lab.location(o))}</dd>
+            <dt>TAT target</dt><dd>${esc(Lab.dur(Lab.tat(o).target))}</dd><dt>Price</dt><dd>${Kit.money(t.price)}</dd>${o.notes ? `<dt>Clinical notes</dt><dd>${esc(o.notes)}</dd>` : ''}</dl></div>
+          <div class="card card-pad"><div class="section-t" style="margin:0 0 10px">Progress</div><div class="timeline">
+            ${steps.map(([l, at, by]) => `<div class="tl-item ${at ? 'ok' : 'mute'}"><b class="${at ? '' : 'mute'}">${esc(l)}</b><div class="meta">${at ? esc(UI.fmtDate(at)) + (by ? ' · ' + esc(by) : '') : 'Pending'}</div></div>`).join('')}
+            ${closed ? `<div class="tl-item err"><b>${esc(closed[0])}</b><div class="meta">${esc(UI.fmtDate(closed[1]))} · ${esc(closed[2])}</div></div>` : ''}</div></div>
+        </div>
+        ${o.results ? `<div class="card" style="margin-top:16px"><div class="card-head"><h3>${icon('flask-conical')} Results</h3><span class="small muted">${o.status === 'Verified' ? 'Approved' : 'Preliminary'}</span></div><div class="table-wrap"><table class="tbl compact"><thead><tr><th>Parameter</th><th>Result</th><th>Flag</th><th>Unit</th><th>Reference</th></tr></thead><tbody>
+          ${o.results.map(r => `<tr><td>${esc(r.name)}</td><td><b>${esc(r.value)}</b></td><td>${Lab.flagHtml(r.flag, r.critical)}</td><td>${esc(r.unit)}</td><td>${esc(Lab.refText(r.low, r.high))}</td></tr>`).join('')}</tbody></table></div></div>` : ''}`,
+      foot: `<button class="btn" data-close>Close</button><span class="grow"></span>
+        ${preResult && !closed ? `<button class="btn danger" id="dCancel" ${canCancel ? '' : 'disabled title="Needs Cancel permission"'}>${icon('trash-2')} Cancel order</button>` : ''}
+        ${k === 'new' || k === 'accepted' ? `<button class="btn danger" id="dReject" ${canCancel ? '' : 'disabled title="Needs Cancel permission"'}>${icon('ban')} Reject</button>` : ''}
+        ${k === 'new' ? `<button class="btn primary" id="dAccept" ${canEdit ? '' : 'disabled title="Needs Edit permission"'}>${icon('check')} Accept</button>` : ''}
+        ${k === 'accepted' ? `<a class="btn primary" href="${R('lab/collection.html?pt=' + o.patientId)}">${icon('test-tube')} Collect sample</a>` : ''}
+        ${k === 'collected' ? `<a class="btn primary" href="${R('lab/receiving.html?acc=' + Lab.acc(o))}">${icon('scan-barcode')} Receive sample</a>` : ''}
+        ${k === 'received' || k === 'progress' ? `<a class="btn primary" href="${R('lab/results.html?id=' + o.id)}">${icon('microscope')} Enter results</a>` : ''}
+        ${reachedVerify ? (canVerify ? `<a class="btn primary" href="${R('lab/results.html?id=' + o.id)}">${icon('check-check')} Verify results</a>` : `<button class="btn primary" disabled title="Needs Verify permission">${icon('check-check')} Verify results</button>`) : ''}
+        ${reachedApprove ? (canApprove ? `<a class="btn primary" href="${R('lab/results.html?id=' + o.id)}">${icon('signature')} Approve and sign</a>` : `<button class="btn primary" disabled title="Needs Approve permission">${icon('signature')} Approve and sign</button>`) : ''}
+        ${o.status === 'Verified' ? `<a class="btn" href="${R('lab/dispatch.html')}">${icon('send')} Print or e-send</a>` : ''}`,
+      onMount: (el, close) => {
+        const b = (id, f) => { const x = $('#' + id, el); if (x) x.addEventListener('click', () => f(o, () => { close(); })); };
+        b('dAccept', (o, c) => accept([o], c)); b('dReject', reject); b('dCancel', cancel);
+      } });
+  }
+  const id = UI.param('id'); if (id) { const o = db.orders.find(x => x.id === id); if (o) { tab = 'all'; drawTabs(); tbl.redraw(); open(o); } }
+})();
+</script>
+</body>
+</html>

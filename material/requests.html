@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Material requests · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-material.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/material.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, drawer, confirm, field, showErrors, nowStamp, fmtDate, param } = UI;
+  const M = Material, OPT = 'material.stock.req';
+  if (!UI.page({ opt: OPT, title: 'Material requests', subtitle: 'Wards and departments request items from a store. The store approves, then issues by batch.',
+    actions: M.btn({ id: 'newMr', cls: 'primary', icon: 'plus', label: 'New request', allow: can(OPT, 'add'), why: 'Needs Add permission' }) })) return;
+  const list = () => db.materialRequests;
+  const where = (r) => r.wardId ? M.wardName(r.wardId) : M.deptName(r.deptId);
+  const storeOpts = M.storeOpts(OPT);
+  let store = param('wh') || M.ctxWh() || (storeOpts[0] || [])[0] || '';
+  const inStore = (r) => !store || r.fromWarehouseId === store || r.forWarehouseId === store;
+
+  $('#page').innerHTML = `<div class="card card-pad" style="margin-bottom:16px"><div class="row wrap" style="gap:16px;align-items:flex-end"><div class="field" style="min-width:260px;margin:0"><label for="whSel">Store</label><select class="input" id="whSel">${storeOpts.map(o => `<option value="${o[0]}" ${o[0] === store ? 'selected' : ''}>${esc(o[1])}</option>`).join('')}</select></div>
+    <div class="small muted grow" style="padding-bottom:10px;min-width:280px">${icon('info')} Requests issued from this store, or raised for it. Your context store is <b>${esc(M.whName(M.ctxWh()) || 'none')}</b>${M.isMainCtx() ? '; as a main store user you can view every store.' : '; you can view only the stores in your assignments.'}</div></div></div>
+    <div class="grid g4" style="margin-bottom:16px" id="kpis"></div><div id="tabs" style="margin-bottom:12px"></div><div id="tbl"></div>`;
+  let tab = param('tab') || 'Pending approval';
+  const TABS = [['Pending approval', 'Pending approval', r => r.status === 'Pending approval'], ['toissue', 'To issue', r => /^Approved$|Partially issued/.test(r.status)], ['Issued', 'Issued', r => r.status === 'Issued'], ['closed', 'Rejected or cancelled', r => /Rejected|Cancelled/.test(r.status)], ['all', 'All', () => true]];
+  const mine = () => list().filter(inStore);
+  const drawTabs = () => Kit.tabs($('#tabs'), TABS.map(([id, label, f]) => ({ id, label, count: mine().filter(f).length })), tab, (t) => { tab = t; t1.redraw(); });
+  const drawKpis = () => {
+    const m = mine();
+    $('#kpis').innerHTML = Kit.kpi('Waiting for approval', m.filter(r => r.status === 'Pending approval').length, { icon: 'hourglass', foot: m.filter(r => r.status === 'Pending approval' && r.priority === 'Urgent').length + ' urgent' })
+      + Kit.kpi('Approved, to issue', m.filter(TABS[1][2]).length, { icon: 'package-open', foot: 'Issue on Transfers and Issues' })
+      + Kit.kpi('Requests today', m.filter(r => r.date === db.TODAY).length, { icon: 'calendar', foot: 'Raised on ' + fmtDate(db.TODAY) })
+      + Kit.kpi('Fill rate (30 days)', (() => { const d = m.filter(r => /Issued|Partially issued/.test(r.status)); const a = Kit.sumBy(d, r => Kit.sumBy(r.lines, l => l.approvedQty || 0)); return a ? Math.round(100 * Kit.sumBy(d, r => Kit.sumBy(r.lines, l => l.issuedQty || 0)) / a) + '%' : '-'; })(), { icon: 'gauge', foot: 'Issued vs approved quantity' });
+  };
+  const t1 = UI.table($('#tbl'), {
+    columns: [
+      { label: 'Request no.', sort: r => r.no, render: r => `<span class="mono b nw">${esc(r.no)}</span><div class="xs muted">${Kit.when(r.at)}</div>` },
+      { label: 'From ward / department', sort: r => where(r), render: r => `<b>${esc(where(r))}</b><div class="xs muted">${esc(r.reqType)}${r.forWarehouseId ? ' · for ' + esc(M.whName(r.forWarehouseId)) : ' · direct consumption'}</div>` },
+      { label: 'Issuing store', render: r => esc(M.whName(r.fromWarehouseId)) },
+      { label: 'Items', render: r => `${r.lines.length} line(s)<div class="xs muted">${esc(r.lines.slice(0, 2).map(l => M.item(l.itemId).name).join(', '))}${r.lines.length > 2 ? '…' : ''}</div>` },
+      { label: 'Priority', sort: r => r.priority, render: r => Kit.priority(r.priority) },
+      { label: 'Requested by', sort: r => r.requestedBy, render: r => esc(r.requestedBy) },
+      { label: 'Status', sort: r => r.status, render: r => M.st(r.status) },
+    ],
+    rows: () => mine().filter(TABS.find(t => t[0] === tab)[2]).slice().sort((a, b) => (b.priority === 'Urgent') - (a.priority === 'Urgent') || b.no.localeCompare(a.no)),
+    search: r => [r.no, where(r), r.requestedBy, r.lines.map(l => M.itemLabel(l.itemId)).join(' ')].join(' '),
+    searchPlaceholder: 'Search request, ward, person or item',
+    filters: [{ label: 'Type', options: [['Ward', 'Ward'], ['Department', 'Department']], test: (r, v) => r.reqType === v }, { label: 'Priority', options: [['Routine', 'Routine'], ['Urgent', 'Urgent']], test: (r, v) => r.priority === v }],
+    onRow: open, empty: 'No requests in this view', emptyIcon: 'hand-helping',
+  });
+  const refresh = () => { drawTabs(); drawKpis(); t1.redraw(); };
+  $('#whSel').addEventListener('change', (e) => { store = e.target.value; refresh(); });
+  drawTabs(); drawKpis();
+
+  function open(r) {
+    const ap = M.canAct(OPT, 'approve', r);
+    const isMaker = r.requestedBy === M.meName();
+    const issues = db.materialTransfers.filter(t => t.mrId === r.id);
+    const pending = r.status === 'Pending approval';
+    drawer({ title: r.no, sub: `${esc(where(r))} · ${M.st(r.status)}`, wide: true,
+      body: `${pending && !ap.ok ? `<div class="banner warn" style="margin-bottom:12px">${icon('lock')}<span>${esc(ap.why)}</span></div>` : ''}
+        ${r.status === 'Rejected' ? `<div class="banner err" style="margin-bottom:12px">${icon('circle-x')}<span>Rejected by ${esc(r.approvedBy)}: ${esc(r.rejectReason)}</span></div>` : ''}
+        ${r.status === 'Cancelled' ? `<div class="banner err" style="margin-bottom:12px">${icon('ban')}<span>Cancelled: ${esc(r.cancelReason)}</span></div>` : ''}
+        <div class="card card-pad" style="margin-bottom:14px">${M.kv([['Requested by', esc(r.requestedBy) + ' · ' + fmtDate(r.at)], ['Ward / department', esc(where(r))], ['Receiving sub store', r.forWarehouseId ? esc(M.whName(r.forWarehouseId)) : 'None, direct consumption'], ['Issuing store', esc(M.whName(r.fromWarehouseId))], ['Priority', Kit.priority(r.priority)], ['Note', esc(r.note)], ['Approved by', r.approvedBy && !/Rejected/.test(r.status) ? esc(r.approvedBy) + ' · ' + fmtDate(r.approvedAt) : '']])}</div>
+        <div class="card"><div class="card-head"><h3>${icon('list')} Lines</h3>${pending && ap.ok ? '<div class="actions"><span class="small muted">You can reduce the approved quantity</span></div>' : ''}</div><div class="table-wrap"><table class="tbl compact"><thead><tr><th>Item</th><th class="num">Requested</th><th class="num">Usable in issuing store</th><th class="num" style="width:130px">Approved</th><th class="num">Issued</th></tr></thead><tbody>
+          ${r.lines.map((l, i) => { const avail = M.usable(l.itemId, r.fromWarehouseId); return `<tr><td>${M.itemCell(l.itemId, esc(M.item(l.itemId).uom))}</td><td class="num">${Kit.num(l.qty)}</td><td class="num ${avail < l.qty ? 'mm-var-neg' : ''}">${Kit.num(avail)}</td>
+            <td class="num">${pending && ap.ok ? `<input class="input" type="number" min="0" max="${l.qty}" value="${Math.min(l.qty, avail)}" data-ap="${i}" aria-label="Approved quantity">` : l.approvedQty != null ? Kit.num(l.approvedQty) : '<span class="mute">-</span>'}</td><td class="num">${Kit.num(l.issuedQty || 0)}</td></tr>`; }).join('')}
+        </tbody></table></div></div>
+        ${issues.length ? `<div class="card" style="margin-top:14px"><div class="card-head"><h3>${icon('arrow-left-right')} Goods issues</h3></div><div class="list-rows pad">${issues.map(t => `<div><a class="mono b" href="${R('material/transfers.html?id=' + t.id)}">${esc(t.no)}</a><span class="small muted">${fmtDate(t.date)} · ${Kit.num(Kit.sumBy(t.lines, l => l.qty))} units</span><span class="grow"></span>${M.st(t.status)}</div>`).join('')}</div></div>` : ''}`,
+      foot: `${/Pending approval|^Approved$/.test(r.status) ? M.btn({ id: 'dCancel', cls: 'danger', icon: 'ban', label: 'Cancel request', allow: can(OPT, 'cancel') && (isMaker || can(OPT, 'approve')) ? true : { ok: false, why: 'Needs Cancel permission' } }) : ''}
+        <span class="grow"></span><button class="btn" data-close>Close</button>
+        ${pending ? M.btn({ id: 'dReject', cls: 'destructive', icon: 'circle-x', label: 'Reject', allow: ap }) + M.btn({ id: 'dApprove', cls: 'success', icon: 'check', label: 'Approve', allow: ap }) : ''}
+        ${/^Approved$|Partially issued/.test(r.status) ? (can('material.stock.issue', 'add') ? `<a class="btn primary" href="${R('material/transfers.html?mr=' + r.id)}">${icon('package-open')} Issue goods</a>` : M.btn({ cls: 'primary', icon: 'package-open', label: 'Issue goods', allow: false, why: 'Needs Add permission on Transfers and Issues' })) : ''}`,
+      onMount: (el, close) => {
+        const on = (id, fn) => { const b = $('#' + id, el); if (b) b.addEventListener('click', fn); };
+        const apIn = $$('[data-ap]', el);
+        const ab = $('#dApprove', el);
+        apIn.forEach(i => i.addEventListener('input', () => { if (ab && ap.ok) ab.disabled = !apIn.some(x => +x.value > 0) || apIn.some(x => +x.value < 0 || +x.value > +x.max); }));
+        on('dApprove', () => {
+          const q = apIn.map(i => Math.max(0, Math.min(+i.max, Number(i.value || 0))));
+          const cut = r.lines.filter((l, i) => q[i] < l.qty).length;
+          confirm({ title: 'Approve ' + r.no + '?', tone: 'primary', icon: 'check', confirm: 'Approve', body: cut ? `${cut} line(s) are approved for less than requested. The requester will see the approved quantity.` : 'All lines are approved as requested.',
+            onConfirm: () => { r.lines.forEach((l, i) => { l.approvedQty = q[i]; }); r.status = 'Approved'; r.approvedBy = M.meName(); r.approvedAt = nowStamp(); save();
+              audit('Material request approved', 'Material request', { id: r.id, label: r.no }, [['Status', 'Pending approval', 'Approved']].concat(r.lines.filter(l => l.approvedQty < l.qty).map(l => [M.item(l.itemId).code + ' qty', String(l.qty), String(l.approvedQty)])));
+              toast(r.no + ' approved. Ready to issue.'); close(); refresh(); } });
+        });
+        on('dReject', () => confirm({ title: 'Reject ' + r.no + '?', body: 'The ward or department is told the reason.', confirm: 'Reject request', reason: true,
+          onConfirm: (reason) => { r.status = 'Rejected'; r.rejectReason = reason; r.approvedBy = M.meName(); r.approvedAt = nowStamp(); save(); audit('Material request rejected', 'Material request', { id: r.id, label: r.no }, [['Status', 'Pending approval', 'Rejected']], { reason }); toast(r.no + ' rejected'); close(); refresh(); } }));
+        on('dCancel', () => confirm({ title: 'Cancel ' + r.no + '?', body: 'Nothing has been issued yet. The request is kept with the reason.', confirm: 'Cancel request', reason: true,
+          onConfirm: (reason) => { const b = r.status; r.status = 'Cancelled'; r.cancelReason = reason; save(); audit('Material request cancelled', 'Material request', { id: r.id, label: r.no }, [['Status', b, 'Cancelled']], { reason }); toast(r.no + ' cancelled'); close(); refresh(); } }));
+      } });
+  }
+
+  function create() {
+    const wards = db.wards.map(w => [w.id, w.name]);
+    const depts = db.departments.filter(d => d.status === 'Active' && d.companyId === M.ctx().companyId).map(d => [d.id, d.name]);
+    const issuing = db.warehouses.filter(w => w.status === 'Active' && w.companyId === M.ctx().companyId && w.type !== 'Sub Store').map(w => [w.id, w.name]);
+    let le;
+    drawer({ title: 'New material request', sub: 'Request items from a store for a ward or department.', wide: true,
+      body: `<div class="err-summary hidden"></div><div class="form-grid c4">
+        ${field({ id: 'qType', label: 'Requested for', type: 'select', options: [['Ward', 'Ward'], ['Department', 'Department']], value: 'Ward', placeholder: false })}
+        <div id="qWhoBox">${field({ id: 'qWho', label: 'Ward', type: 'select', options: wards, req: true })}</div>
+        ${field({ id: 'qFrom', label: 'Issuing store', type: 'select', options: issuing, value: 'wh_01', req: true })}
+        ${field({ id: 'qPri', label: 'Priority', type: 'select', options: [['Routine', 'Routine'], ['Urgent', 'Urgent']], value: 'Routine', placeholder: false })}
+        ${field({ id: 'qNote', label: 'Note', full: true, max: 200 })}</div>
+        <div class="small muted" id="qFor" style="margin-top:8px"></div>
+        <div class="section-t" style="margin-top:14px">Items</div><div id="qLines"></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><span class="grow"></span><button class="btn primary" id="qSave" disabled>${icon('send')} Submit request</button>`,
+      onMount: (el, close) => {
+        const upd = () => { const t = $('#qType', el).value; const w = t === 'Ward' ? Kit.ward($('#qWho', el).value) : null; $('#qFor', el).innerHTML = w && w.warehouseId ? `${icon('warehouse')} Goods go to <b>${esc(M.whName(w.warehouseId))}</b> (ward sub store) through a goods issue.` : `${icon('info')} Goods are issued for direct consumption by the ${t === 'Ward' ? 'ward' : 'department'}.`;
+          $('#qSave', el).disabled = !(le && le.valid() && $('#qWho', el).value && $('#qFrom', el).value); };
+        const drawWho = () => { const t = $('#qType', el).value; $('#qWhoBox', el).innerHTML = field({ id: 'qWho', label: t, type: 'select', options: t === 'Ward' ? wards : depts, req: true }); $('#qWho', el).addEventListener('change', upd); upd(); };
+        $('#qType', el).addEventListener('change', drawWho);
+        $('#qWho', el).addEventListener('change', upd);
+        $('#qFrom', el).addEventListener('change', () => le.redraw());
+        le = M.lineEditor($('#qLines', el), { wh: () => $('#qFrom', el) ? $('#qFrom', el).value : '', items: (x) => x.type !== 'Reagent' || true, onChange: upd });
+        $('#qSave', el).addEventListener('click', () => {
+          const e = {}; if (!$('#qWho', el).value) e.qWho = 'Choose the ' + $('#qType', el).value.toLowerCase() + '.'; le.problems().forEach((m, i) => { e['l' + i] = m; });
+          if (!showErrors(el, e)) return;
+          const t = $('#qType', el).value, w = t === 'Ward' ? Kit.ward($('#qWho', el).value) : null;
+          const r = { id: UI.uid('mmr'), no: M.docNo('MR-26-', 'materialRequests'), date: db.TODAY, at: db.TODAY + ' ' + nowStamp().slice(11), reqType: t, wardId: w ? w.id : null, deptId: w ? w.deptId : $('#qWho', el).value, forWarehouseId: w ? w.warehouseId : null, fromWarehouseId: $('#qFrom', el).value,
+            priority: $('#qPri', el).value, requestedBy: M.meName(), status: 'Pending approval', note: $('#qNote', el).value.trim(), lines: le.get().map(l => ({ itemId: l.itemId, qty: l.qty, approvedQty: null, issuedQty: 0 })) };
+          db.materialRequests.push(r); save(); audit('Material request raised', 'Material request', { id: r.id, label: r.no }, [['Lines', '', String(r.lines.length)], ['Issuing store', '', M.whName(r.fromWarehouseId)]]);
+          toast(r.no + ' submitted'); close(); store = r.fromWarehouseId; $('#whSel').value = store; tab = 'Pending approval'; refresh();
+        });
+        upd();
+      } });
+  }
+  $('#newMr').addEventListener('click', create);
+  M.openFromQuery(list(), open);
+})();
+</script>
+</body>
+</html>

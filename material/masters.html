@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Material masters · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-material.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/material.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, confirm, fmtDate } = UI;
+  const M = Material, OPT = 'material.masters';
+  if (!UI.page({ opt: OPT, title: 'Material masters', subtitle: 'Items, categories, units, vendors, reorder levels, stores and valuation settings (SOW V4 Module 10).' })) return;
+  const S = db.materialSettings;
+  const canSet = can(OPT, 'admin') || can(OPT, 'edit');
+  const cats = db.materialCategories.map(c => c.name);
+  const uoms = db.materialUoms.map(u => u.name);
+  const activeWh = db.warehouses.filter(w => w.status === 'Active' && w.companyId === M.ctx().companyId);
+
+  $('#page').innerHTML = `<div class="card" style="margin-bottom:16px"><div class="card-head"><h3>${icon('sliders-horizontal')} Valuation and matching settings</h3><div class="actions">${M.btn({ id: 'setSave', cls: 'primary sm', icon: 'save', label: 'Save settings', allow: canSet, why: 'Needs Edit or Admin permission on Material Masters' })}</div></div>
+      <div class="card-pad"><div class="grid g4">
+        <div class="field"><label>Stock valuation method</label><div id="vSeg"></div><div class="hint">Both are always computed. This one is used for book value and postings.</div></div>
+        <div class="field"><label for="tPrice">Invoice price tolerance (%)</label><input class="input" id="tPrice" type="number" min="0" max="20" step="0.5" value="${S.priceTolPct}" ${canSet ? '' : 'disabled'}></div>
+        <div class="field"><label for="tQty">Invoice quantity tolerance (%)</label><input class="input" id="tQty" type="number" min="0" max="20" step="0.5" value="${S.qtyTolPct}" ${canSet ? '' : 'disabled'}></div>
+        <div class="field"><label for="tAmt">Invoice total tolerance (KWD)</label><input class="input" id="tAmt" type="number" min="0" step="0.5" value="${S.amtTol}" ${canSet ? '' : 'disabled'}></div>
+      </div>
+      <div class="grid g2" style="margin-top:16px">
+        <div><div class="section-t" style="margin-top:0">Requisition approval levels</div>${S.prLevels.map(l => `<div class="row small" style="gap:8px;margin-bottom:8px"><span class="req-ref">L${l.level}</span><b>${esc(l.name)}</b><span class="muted">${l.from ? 'from ' + Kit.money(l.from) : 'always'}</span></div>`).join('')}</div>
+        <div><div class="section-t" style="margin-top:0">Purchase order approval levels</div>${S.poLevels.map(l => `<div class="row small" style="gap:8px;margin-bottom:8px"><span class="req-ref">L${l.level}</span><b>${esc(l.name)}</b><span class="muted">${l.from ? 'from ' + Kit.money(l.from) : 'always'}</span></div>`).join('')}</div>
+      </div>
+      <div style="margin-top:8px">${Kit.scopeNote('Approver roles per level are mapped in Administration, Access Mapping. Self-approval is always blocked.')}</div></div></div>
+    <div id="m"></div>
+    <div style="margin-top:16px">${Kit.phase2('Implant Master and Vendor Rating Master are SOW V4 2nd phase items (with consignment and implant tracking). Not part of this phase.')}</div>`;
+
+  let vm = S.valuation;
+  Kit.seg($('#vSeg'), [['FIFO', 'FIFO'], ['WAVG', 'Weighted average']], vm, (v) => { vm = v; });
+  if (!canSet) $$('#vSeg button').forEach(b => { b.disabled = true; b.title = 'Needs Edit or Admin permission'; });
+  $('#setSave').addEventListener('click', () => {
+    const nv = { valuation: vm, priceTolPct: Number($('#tPrice').value), qtyTolPct: Number($('#tQty').value), amtTol: Number($('#tAmt').value) };
+    if ([nv.priceTolPct, nv.qtyTolPct, nv.amtTol].some(x => isNaN(x) || x < 0 || x > 1000)) { toast('Tolerances must be zero or more.', 'err'); return; }
+    const ch = [['Valuation method', M.methodName(S.valuation), M.methodName(nv.valuation)], ['Price tolerance %', String(S.priceTolPct), String(nv.priceTolPct)], ['Quantity tolerance %', String(S.qtyTolPct), String(nv.qtyTolPct)], ['Total tolerance KWD', String(S.amtTol), String(nv.amtTol)]].filter(c => c[1] !== c[2]);
+    if (!ch.length) { toast('No changes to save'); return; }
+    const rows = db.stock.filter(s => s.qty > 0);
+    confirm({ title: 'Save material settings?', tone: nv.valuation !== S.valuation ? 'danger' : 'primary', confirm: 'Save settings', reason: true,
+      body: nv.valuation !== S.valuation ? `Changing the valuation method changes the book value of stock from ${Kit.money(S.valuation === 'WAVG' ? M.wavgValue(rows) : M.fifoValue(rows))} to ${Kit.money(nv.valuation === 'WAVG' ? M.wavgValue(rows) : M.fifoValue(rows))}. Finance must agree the change at a period end.` : 'New tolerances apply to invoices matched from now on.',
+      impact: ch.map(c => `${esc(c[0])}: ${esc(c[1])} → ${esc(c[2])}`),
+      onConfirm: (reason) => { Object.assign(S, nv); save(); audit('Material settings changed', 'Material settings', { id: 'materialSettings', label: 'Valuation and matching' }, ch, { reason }); toast('Settings saved'); } });
+  });
+
+  
+  Kit.masters($('#m'), { opt: OPT, defs: [
+    { id: 'item', title: 'Item master', icon: 'package', key: 'items', code: 'code', note: 'Shared with Pharmacy (Module 7). Drug fields such as generic, strength and schedule are kept in the Pharmacy drug master.',
+      columns: ['code', 'name', 'type', 'uom', 'cost'],
+      fields: [{ key: 'code', label: 'Item code', req: true }, { key: 'name', label: 'Item name', req: true, full: true }, { key: 'type', label: 'Item type', type: 'select', options: ['Drug', 'Consumable', 'Reagent', 'General'], req: true },
+        { key: 'category', label: 'Category', type: 'select', options: Array.from(new Set(cats.concat(db.items.map(x => x.category)))).sort(), req: true }, { key: 'uom', label: 'Stock UOM', type: 'select', options: Array.from(new Set(uoms.concat(db.items.map(x => x.uom)))), req: true },
+        { key: 'cost', label: 'Last purchase cost (KWD)', type: 'number', money: true, req: true }, { key: 'price', label: 'Selling price (KWD)', type: 'number', money: true }, { key: 'min', label: 'Main Store min', type: 'number' }, { key: 'max', label: 'Main Store max', type: 'number' }, { key: 'manufacturer', label: 'Manufacturer' }] },
+    { id: 'cat', title: 'Item categories', icon: 'folder-tree', key: 'materialCategories', code: 'code',
+      columns: ['code', 'name', 'itemType', 'glAccount'],
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Category name', req: true }, { key: 'itemType', label: 'Item type', type: 'select', options: ['Drug', 'Consumable', 'Reagent', 'General'], req: true }, { key: 'glAccount', label: 'Inventory GL account', req: true },
+        { key: 'batchTracked', label: 'Batch tracked', type: 'check' }, { key: 'expiryTracked', label: 'Expiry tracked', type: 'check' }] },
+    { id: 'uom', title: 'Units of measure', icon: 'ruler', key: 'materialUoms', code: 'code',
+      columns: ['code', 'name', 'baseUom', 'factor'],
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Name', req: true }, { key: 'baseUom', label: 'Base unit', req: true }, { key: 'factor', label: 'Base units per UOM', type: 'number', req: true }] },
+    { id: 'ven', title: 'Vendors', icon: 'truck', key: 'vendors', code: 'code', note: 'Shared with Finance (Accounts Payable). Vendors on hold cannot receive new purchase orders.',
+      columns: ['code', 'name', 'category', 'paymentTerms', 'phone'],
+      fields: [{ key: 'code', label: 'Vendor code', req: true }, { key: 'name', label: 'Vendor name', req: true }, { key: 'category', label: 'Supply category', type: 'select', options: ['Medicines', 'Medical consumables', 'Laboratory reagents', 'Equipment', 'General supplies'], req: true },
+        { key: 'paymentTerms', label: 'Payment terms (days)', type: 'number', req: true }, { key: 'contact', label: 'Email' }, { key: 'phone', label: 'Phone' }] },
+    { id: 'rl', title: 'Reorder levels (min/max)', icon: 'bell-ring', key: 'materialReorder', code: 'code', note: 'Per item and store. Without a row here the Item master min/max applies to the Main Store.',
+      columns: ['code', 'item', 'store', 'min', 'max', 'reorderQty'],
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'item', label: 'Item', type: 'select', options: db.items.map(x => [x.code, x.code + ' · ' + x.name]), req: true }, { key: 'store', label: 'Store', type: 'select', options: activeWh.map(w => w.name), req: true },
+        { key: 'min', label: 'Minimum', type: 'number', req: true }, { key: 'max', label: 'Maximum', type: 'number', req: true }, { key: 'reorderQty', label: 'Reorder quantity', type: 'number' }, { key: 'leadDays', label: 'Lead time (days)', type: 'number' }] },
+  ] });
+
+  /* Store master: read-only view of the Administration warehouses (shared with Module 13). */
+  const list = $('#mList');
+  const addStoreItem = () => {
+    if ($('[data-store]', list)) return;
+    const el = document.createElement('div');
+    el.className = 'qitem'; el.setAttribute('data-store', '1');
+    el.innerHTML = `${icon('warehouse')}<div class="grow"><b style="font-size:13px">Stores</b><div class="xs mute">Read-only, kept in Administration</div></div><span class="tag">${db.warehouses.length}</span>`;
+    el.addEventListener('click', () => { $$('.qitem', list).forEach(q => q.classList.remove('on')); el.classList.add('on'); drawStores(); });
+    list.appendChild(el);
+  };
+  new MutationObserver(addStoreItem).observe(list, { childList: true });
+  addStoreItem();
+  function drawStores() {
+    const body = $('#mBody');
+    const val = (w) => M.fifoValue(db.stock.filter(s => s.warehouseId === w.id && s.qty > 0));
+    body.innerHTML = `<div class="card"><div class="card-head"><div><h3>${icon('warehouse')} Stores</h3><div class="small muted" style="margin-top:2px">Store Master is shared with Administration (Module 13). Add or change stores there.</div></div><div class="actions"><a class="btn sm" href="${R('warehouses.html')}">${icon('external-link')} Open Warehouse Master</a></div></div><div id="whT"></div></div>`;
+    UI.table($('#whT'), {
+      columns: [
+        { label: 'Code', sort: w => w.code, render: w => `<span class="mono">${esc(w.code)}</span>` },
+        { label: 'Store', sort: w => w.name, render: w => `<b>${esc(w.name)}</b><div class="xs muted">${esc(w.location)}</div>` },
+        { label: 'Type', sort: w => w.type, render: w => esc(w.type) },
+        { label: 'Branch', render: w => esc(UI.L.bName(w.branchId)) },
+        { label: 'Custodian', render: w => esc(UI.L.uName(w.custodianUserId) || '-') },
+        { label: 'Stock value', cls: 'num', sort: w => val(w), render: w => `<span class="num nw">${Kit.money(val(w))}</span>` },
+        { label: 'Status', render: w => UI.badge(w.status) },
+      ],
+      rows: () => db.warehouses, search: w => [w.code, w.name, w.type, w.location].join(' '), searchPlaceholder: 'Search stores',
+      filters: [{ label: 'Type', options: Array.from(new Set(db.warehouses.map(w => w.type))).map(t => [t, t]), test: (w, v) => w.type === v }], empty: 'No stores',
+    });
+  }
+})();
+</script>
+</body>
+</html>

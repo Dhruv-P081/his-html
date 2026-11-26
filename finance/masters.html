@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Finance masters · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-finance.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/finance.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, $ } = UI;
+  if (!UI.page({ opt: 'finance.masters', title: 'Finance masters', subtitle: 'Chart of accounts, cost centers, periods, currencies and manual exchange rates, voucher series, banks and cards, books, charge codes, posting rules and vendors.' })) return;
+  const BR = [['All', 'All branches'], ['SAL', 'SAL · Tibbi Salmiya Hospital'], ['HAW', 'HAW · Tibbi Hawalli Clinic']];
+  const acctCodes = db.financeAccounts.filter(a => a.posting).sort((a, b) => a.code.localeCompare(b.code)).map(a => [a.code, a.code + ' ' + a.name]);
+  const cashCodes = db.financeAccounts.filter(a => a.group === 'Cash and bank').map(a => [a.code, a.code + ' ' + a.name]);
+  const ccCodes = db.financeCostCenters.map(c => [c.code, c.code + ' ' + c.name]);
+  const cur = db.financeCurrencies.map(c => [c.code, c.code + ' · ' + c.name]);
+  $('#page').innerHTML = `<div style="margin-bottom:14px">${Kit.phase2('Asset Category Master, Budget Master and Multi-Currency Master (automatic revaluation) are SOW V4 2nd phase. Currencies below use manually maintained rates.')}</div><div id="m"></div>`;
+  Kit.masters($('#m'), { opt: 'finance.masters', defs: [
+    { id: 'coa', title: 'Chart of accounts', icon: 'list-tree', key: 'financeAccounts', note: 'Multi-branch: an account is open to all branches or to one branch. Header accounts do not take postings. Codes 4100 to 5210 match the department account mapping in Administration.',
+      columns: ['code', 'name', 'type', 'group', 'branch', 'normal'],
+      fields: [{ key: 'code', label: 'Account code', req: true }, { key: 'name', label: 'Account name', req: true }, { key: 'type', label: 'Type', type: 'select', options: ['Asset', 'Liability', 'Equity', 'Revenue', 'Expense'], req: true },
+        { key: 'group', label: 'Statement group', type: 'select', options: ['Header', 'Cash and bank', 'Receivables', 'Inventory', 'Other current assets', 'Non-current assets', 'Current liabilities', 'Non-current liabilities', 'Equity', 'Patient revenue', 'Ancillary revenue', 'Contra revenue', 'Direct costs', 'Overheads'], req: true },
+        { key: 'parent', label: 'Parent (header) code' }, { key: 'normal', label: 'Normal balance', type: 'select', options: [['Dr', 'Debit'], ['Cr', 'Credit']], req: true },
+        { key: 'branch', label: 'Branches', type: 'select', options: BR, req: true }, { key: 'currency', label: 'Currency', type: 'select', options: cur, default: 'KWD' }, { key: 'posting', label: 'Allows postings (not a header)', type: 'check' }] },
+    { id: 'ccm', title: 'Cost centers', icon: 'target', key: 'financeCostCenters', columns: ['code', 'name', 'branch', 'type'], note: 'Revenue and expense lines must carry a cost center.',
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Name', req: true }, { key: 'branch', label: 'Branch', type: 'select', options: BR.slice(1), req: true }, { key: 'type', label: 'Type', type: 'select', options: ['Revenue', 'Support'], req: true },
+        { key: 'deptId', label: 'Department', type: 'select', options: db.departments.filter(d => d.companyId === 'co_01').map(d => [d.id, d.code + ' ' + d.name]) }, { key: 'owner', label: 'Cost center owner' }] },
+    { id: 'per', title: 'Financial periods', icon: 'calendar-days', key: 'financePeriods', columns: ['code', 'name', 'fy', 'from', 'to'], note: 'Open, close and reopen on the Period Closing screen (needs approval).',
+      fields: [{ key: 'code', label: 'Period code (YYYY-MM)', req: true }, { key: 'name', label: 'Name', req: true }, { key: 'fy', label: 'Fiscal year', req: true }, { key: 'from', label: 'From', type: 'date', req: true }, { key: 'to', label: 'To', type: 'date', req: true }] },
+    { id: 'cur', title: 'Currencies', icon: 'coins', key: 'financeCurrencies', columns: ['code', 'name', 'rate', 'rateDate'], note: 'KWD is the base currency (3 decimals). Rates are KWD per one unit, entered manually from the CBK published rate.',
+      fields: [{ key: 'code', label: 'ISO code', req: true }, { key: 'name', label: 'Name', req: true }, { key: 'symbol', label: 'Symbol' }, { key: 'decimals', label: 'Decimals', type: 'number', req: true }, { key: 'rate', label: 'Current rate (KWD per unit)', type: 'number', req: true }, { key: 'rateDate', label: 'Rate date', type: 'date' }, { key: 'base', label: 'Base currency', type: 'check' }] },
+    { id: 'fxr', title: 'Exchange rates (manual)', icon: 'arrow-right-left', key: 'financeRates', columns: ['code', 'currency', 'date', 'rate'], note: 'Rate history used for foreign currency journals. Copy the latest rate to the currency master.',
+      fields: [{ key: 'code', label: 'Entry code', req: true }, { key: 'currency', label: 'Currency', type: 'select', options: cur.filter(c => c[0] !== 'KWD'), req: true }, { key: 'date', label: 'Effective date', type: 'date', req: true }, { key: 'rate', label: 'Rate (KWD per unit)', type: 'number', req: true }, { key: 'source', label: 'Source' }, { key: 'enteredBy', label: 'Entered by' }] },
+    { id: 'vs', title: 'Voucher series', icon: 'hash', key: 'financeVoucherSeries', columns: ['code', 'name', 'prefix', 'book'],
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Voucher type', req: true }, { key: 'prefix', label: 'Number prefix', req: true }, { key: 'book', label: 'Book', type: 'select', options: ['Cash book', 'Bank book', 'Sales book', 'Purchase book', 'Journal book'] }, { key: 'reset', label: 'Numbering resets', type: 'select', options: ['Yearly', 'Monthly', 'Never'] }, { key: 'branch', label: 'Branches', type: 'select', options: BR }, { key: 'use', label: 'Used for', type: 'textarea' }] },
+    { id: 'bnk', title: 'Banks and cards', icon: 'landmark', key: 'financeBanks', columns: ['code', 'name', 'kind', 'accountCode'],
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Name', req: true }, { key: 'kind', label: 'Kind', type: 'select', options: ['Bank account', 'Card terminal'], req: true }, { key: 'accountCode', label: 'GL account', type: 'select', options: cashCodes, req: true }, { key: 'iban', label: 'IBAN or terminal ID' }, { key: 'branch', label: 'Branch', type: 'select', options: BR }, { key: 'commission', label: 'Card commission %', type: 'number' }] },
+    { id: 'bks', title: 'Books', icon: 'book-marked', key: 'financeBooks', columns: ['code', 'name', 'type', 'accountCode'],
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Name', req: true }, { key: 'type', label: 'Book type', type: 'select', options: ['Cash book', 'Bank book', 'Sales book', 'Purchase book', 'Journal book'], req: true }, { key: 'accountCode', label: 'Control account', type: 'select', options: acctCodes }, { key: 'series', label: 'Voucher series', type: 'select', options: db.financeVoucherSeries.map(v => [v.code, v.code + ' ' + v.name]) }, { key: 'branch', label: 'Branch', type: 'select', options: BR }] },
+    { id: 'svc', title: 'Charge and service codes', icon: 'receipt-text', key: 'services', columns: ['code', 'name', 'category', 'price'], note: 'Shared charge master used by Reception, Billing and Insurance. Laboratory and radiology prices come from their catalogues (LAB- and RAD- codes).',
+      fields: [{ key: 'code', label: 'Service code', req: true }, { key: 'name', label: 'Description', req: true }, { key: 'category', label: 'Service category', type: 'select', options: Fin.SVC_CATS.filter(c => !['Laboratory', 'Radiology'].includes(c)), req: true }, { key: 'price', label: 'Price (KWD)', type: 'number', money: true, req: true }, { key: 'vat', label: 'Tax %', type: 'number', default: 0 }] },
+    { id: 'map', title: 'Posting account mapping', icon: 'workflow', key: 'financeChargeMap', columns: ['code', 'kind', 'key', 'account', 'cc'], note: 'Rules used by auto-posting: service category to revenue account, pharmacy group to sales account, warehouse to cost center, payment mode and receivable type to account.',
+      fields: [{ key: 'code', label: 'Rule code', req: true }, { key: 'kind', label: 'Rule type', type: 'select', options: ['Service category', 'Pharmacy sales group', 'Warehouse cost center', 'Payment mode', 'Receivable'], req: true }, { key: 'key', label: 'Key', req: true }, { key: 'account', label: 'Account', type: 'select', options: acctCodes }, { key: 'cc', label: 'Cost center', type: 'select', options: ccCodes }] },
+    { id: 'ven', title: 'Vendors', icon: 'truck', key: 'vendors', columns: ['code', 'name', 'category', 'paymentTerms'], note: 'Shared with Material Management. Payment terms drive bill due dates.',
+      fields: [{ key: 'code', label: 'Vendor code', req: true }, { key: 'name', label: 'Vendor name', req: true }, { key: 'category', label: 'Category', type: 'select', options: ['Medicines', 'Medical consumables', 'Laboratory reagents', 'Equipment', 'General supplies', 'Services'], req: true }, { key: 'paymentTerms', label: 'Payment terms (days)', type: 'number', req: true }, { key: 'contact', label: 'Email' }, { key: 'phone', label: 'Phone' }] },
+  ] });
+})();
+</script>
+</body>
+</html>

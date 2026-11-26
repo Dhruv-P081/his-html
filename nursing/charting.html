@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vitals and fluid balance · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-nursing.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/nursing.js"></script>
+<style>
+  .vt-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+  @media (max-width: 1500px) { .vt-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  .pain-pick { display: flex; gap: 4px; flex-wrap: wrap; }
+  .pain-pick button { width: 38px; height: 38px; border-radius: 9px; border: 1px solid var(--line); background: var(--card); color: var(--ink); font-weight: 800; cursor: pointer; }
+  .pain-pick button.on { background: var(--primary-light); border-color: var(--primary-light); color: #fff; }
+  .tbl td.abn { color: var(--error); font-weight: 800; }
+  .tbl tr.void td { text-decoration: line-through; color: var(--mute); }
+</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, can, toast, audit, field, showErrors } = UI;
+  const OPT = 'nursing.ward.vitals';
+  if (!UI.page({ opt: OPT, title: 'Vitals and fluid balance', subtitle: 'Vital signs charting and trends, intake and output balance, and pain scale tracking.', actions: Nursing.wardSelect() })) return;
+  const canAdd = can(OPT, 'add'), canEdit = can(OPT, 'edit');
+  const noAdd = canAdd ? '' : 'disabled title="Needs Add permission"';
+  let tab = UI.param('tab') || 'vitals', range = '72', ioDay = Nursing.shiftDay();
+
+  const api = Nursing.patientPage({
+    meta: (e) => { const v = Nursing.latestVitals(e.id); const ab = v ? Nursing.vitalAbn(v) : []; return ab.length ? `<span class="badge b-err">${esc(Nursing.abnText(v))}</span>` : v ? `<span class="badge b-ok">Stable</span>` : '<span class="badge b-warn">No vitals</span>'; },
+    render,
+  });
+
+  function render(e, host) {
+    const p = Kit.pt(e.patientId), v = Nursing.latestVitals(e.id);
+    const tile = (k, label, val, unit) => `<div class="vital ${k && Nursing.vitalFlag(k, v && v[k]) ? 'abn' : ''}"><span>${label}</span><b>${val != null && val !== '' ? esc(val) : '-'}<small>${unit}</small></b></div>`;
+    const ioToday = Nursing.ioTotals(Nursing.ioOf(e.id, Nursing.shiftDay()));
+    const lastPain = db.nursingPainLog.filter(x => x.encounterId === e.id).sort((a, b) => b.at.localeCompare(a.at))[0];
+    host.innerHTML = `${Kit.patientBanner(p, e)}
+      <div class="vt-grid">
+        ${tile('temp', 'Temperature', v && v.temp, '°C')}${tile('hr', 'Heart rate', v && v.hr, 'bpm')}${tile('sbp', 'Blood pressure', v ? v.sbp + '/' + v.dbp : '', 'mmHg')}${tile('spo2', 'SpO2', v && v.spo2, '%')}${tile('rr', 'Resp. rate', v && v.rr, '/min')}
+        <div class="vital ${lastPain && lastPain.score >= 4 ? 'abn' : ''}"><span>Pain</span><b>${lastPain ? lastPain.score : '-'}<small>/10</small></b></div>
+      </div>
+      <div class="small muted" style="margin:-6px 0 12px">${v ? `Last vital signs ${Kit.when(v.at)} by ${esc(v.by)}` : 'No vital signs recorded yet'} · Fluid balance today ${Nursing.signed(ioToday.balance)}</div>
+      <div class="card"><div id="tabs"></div><div id="tbody"></div></div>`;
+    Kit.tabs($('#tabs', host), [{ id: 'vitals', label: 'Vital signs', icon: 'activity', count: Nursing.vitalsOf(e.id).length }, { id: 'io', label: 'Fluid balance', icon: 'droplets', count: Nursing.ioOf(e.id).length }, { id: 'pain', label: 'Pain tracking', icon: 'gauge', count: db.nursingPainLog.filter(x => x.encounterId === e.id).length }], tab, (t) => { tab = t; drawTab(e); });
+    drawTab(e);
+  }
+  function drawTab(e) { const b = $('#tbody'); if (tab === 'vitals') vitalsTab(e, b); else if (tab === 'io') ioTab(e, b); else painTab(e, b); }
+
+  /* ---------- Vital signs ---------- */
+  function vitalsTab(e, b) {
+    const all = Nursing.vitalsOf(e.id);
+    const from = range === 'all' ? '' : Nursing.addMin(Nursing.now(), -60 * +range);
+    const list = all.filter(v => v.at >= from);
+    const labels = list.map(v => v.at.slice(8, 10) + ' ' + Kit.time(v.at));
+    const chart = (title, ic, series, band, unit) => `<div class="card"><div class="card-head"><h3>${icon(ic)} ${title}</h3><span class="small muted">${unit}</span></div><div class="card-pad">${list.length ? Kit.lineChart({ labels, series, band, height: 220, title }) : `<div class="empty">${icon('activity')}<b>No readings in this period</b></div>`}</div></div>`;
+    b.innerHTML = `<div class="card-pad">
+      <div class="row wrap" style="margin-bottom:12px"><div id="rng"></div><span class="grow"></span><span class="small muted">Shaded band is the normal range</span><button class="btn primary" id="addV" ${noAdd}>${icon('plus')} Record vital signs</button></div>
+      <div class="grid g2">
+        ${chart('Temperature', 'thermometer', [{ name: 'Temp', color: '#E0670E', values: list.map(v => v.temp) }], [36, 37.9], '°C')}
+        ${chart('Heart rate', 'heart-pulse', [{ name: 'HR', color: '#D23F6A', values: list.map(v => v.hr) }], [50, 100], 'bpm')}
+        ${chart('Blood pressure', 'activity', [{ name: 'Systolic', color: '#2F6BC5', values: list.map(v => v.sbp) }, { name: 'Diastolic', color: '#0891B2', values: list.map(v => v.dbp) }], [60, 140], 'mmHg')}
+        ${chart('SpO2', 'droplet', [{ name: 'SpO2', color: '#0E9F6E', values: list.map(v => v.spo2) }], [94, 100], '%')}
+      </div></div><div id="vTbl" style="border-top:1px solid var(--line)"></div>`;
+    Kit.seg($('#rng', b), [['24', '24 hours'], ['72', '72 hours'], ['all', 'Whole stay']], range, (r) => { range = r; vitalsTab(e, b); });
+    const cell = (k, v, txt) => `<span class="${Nursing.vitalFlag(k, v[k]) ? 'flag-' + Nursing.vitalFlag(k, v[k]) : ''}">${esc(txt != null ? txt : v[k])}</span>`;
+    UI.table($('#vTbl', b), {
+      columns: [{ label: 'Time', sort: v => v.at, render: v => `<span class="mono">${Kit.when(v.at)}</span>` }, { label: 'Temp °C', render: v => cell('temp', v) }, { label: 'HR', render: v => cell('hr', v) }, { label: 'BP', render: v => cell('sbp', v, v.sbp + '/' + v.dbp) }, { label: 'RR', render: v => cell('rr', v) }, { label: 'SpO2 %', render: v => cell('spo2', v) }, { label: 'Pain', render: v => esc(v.pain) }, { label: 'Status', render: v => Nursing.vitalAbn(v).length ? Kit.status('Abnormal', 'err') : Kit.status('Normal', 'ok') }, { label: 'By', sort: v => v.by, render: v => `<span class="small">${esc(v.by)}</span>` }],
+      rows: () => all.slice().reverse(), search: v => [v.at, v.by].join(' '), searchPlaceholder: 'Search time or nurse', pageSize: 8,
+      filters: [{ label: 'Result', options: [['abn', 'Abnormal'], ['ok', 'Normal']], test: (v, f) => (Nursing.vitalAbn(v).length > 0) === (f === 'abn') }],
+    });
+    $('#addV', b).addEventListener('click', () => addVitals(e));
+  }
+  function addVitals(e) {
+    const num = (id, label, min, max, step, unit) => field({ id, label: `${label} (${unit})`, type: 'number', req: true, attrs: `min="${min}" max="${max}" step="${step || 1}" inputmode="decimal"` });
+    UI.drawer({ title: 'Record vital signs', sub: esc(Kit.ptName(e.patientId)) + ' · Bed ' + esc(Nursing.bedNo(e)),
+      body: `<div class="err-summary hidden"></div><div class="form-grid">${Nursing.whenFields('vD', 'vT')}
+        ${num('vTemp', 'Temperature', 33, 43, 0.1, '°C')}${num('vHr', 'Heart rate', 20, 220, 1, 'bpm')}${num('vSbp', 'Systolic BP', 50, 260, 1, 'mmHg')}${num('vDbp', 'Diastolic BP', 30, 160, 1, 'mmHg')}
+        ${num('vRr', 'Respiratory rate', 4, 60, 1, '/min')}${num('vSpo2', 'SpO2', 50, 100, 1, '%')}
+        <div class="field full"><label>Pain score (0-10)</label><div class="pain-pick" id="vPain">${Array.from({ length: 11 }, (_, i) => `<button type="button" data-p="${i}" class="${i === 0 ? 'on' : ''}" aria-label="Pain ${i}">${i}</button>`).join('')}</div></div>
+        <div class="full hidden" id="vAbn"></div></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="vSave" disabled>Save vital signs</button>`,
+      onMount: (el, close) => {
+        let pain = 0;
+        $$('[data-p]', el).forEach(bt => bt.addEventListener('click', () => { pain = +bt.dataset.p; $$('[data-p]', el).forEach(x => x.classList.toggle('on', x === bt)); }));
+        const ids = ['vTemp', 'vHr', 'vSbp', 'vDbp', 'vRr', 'vSpo2'];
+        const read = () => ({ temp: +$('#vTemp', el).value, hr: +$('#vHr', el).value, sbp: +$('#vSbp', el).value, dbp: +$('#vDbp', el).value, rr: +$('#vRr', el).value, spo2: +$('#vSpo2', el).value });
+        const check = () => {
+          const filled = ids.every(i => $('#' + i, el).value !== '') && Nursing.stampOf(el, 'vD', 'vT');
+          $('#vSave', el).disabled = !filled;
+          const v = read(), ab = filled ? Nursing.vitalAbn(v) : [];
+          $('#vAbn', el).classList.toggle('hidden', !ab.length);
+          $('#vAbn', el).innerHTML = ab.length ? `<div class="alert-cdss">${icon('triangle-alert')}<span>Outside the normal range: ${esc(Nursing.abnText(v))}. Inform the doctor and recheck within 1 hour.</span></div>` : '';
+        };
+        $$('input', el).forEach(i => i.addEventListener('input', check));
+        $('#vSave', el).addEventListener('click', () => {
+          const v = read(), errs = {}, at = Nursing.stampOf(el, 'vD', 'vT');
+          const rng = { vTemp: [33, 43], vHr: [20, 220], vSbp: [50, 260], vDbp: [30, 160], vRr: [4, 60], vSpo2: [50, 100] };
+          Object.entries(rng).forEach(([id, [lo, hi]]) => { const x = +$('#' + id, el).value; if (isNaN(x) || x < lo || x > hi) errs[id] = `${$('label[for=' + id + ']', el).textContent.replace('*', '')} must be between ${lo} and ${hi}.`; });
+          if (v.dbp >= v.sbp) errs.vDbp = 'Diastolic must be lower than systolic.';
+          if (at > Nursing.now()) errs.vT = 'Time cannot be in the future.';
+          if (at < e.start) errs.vD = 'Time is before the admission.';
+          if (!showErrors(el, errs)) return;
+          const rec = Object.assign({ id: UI.uid('vt'), patientId: e.patientId, encounterId: e.id, at }, v, { temp: +v.temp.toFixed(1), pain, by: Nursing.myName() });
+          db.vitals.push(rec);
+          if (pain > 0) db.nursingPainLog.push({ id: UI.uid('pl'), encounterId: e.id, patientId: e.patientId, at, scale: defaultScale(e), score: pain, location: '', intervention: '', reassessed: '', by: Nursing.myName(), source: 'Vitals' });
+          save(); audit('Vital signs recorded', 'Vital signs', { id: rec.id, label: Kit.ptName(e.patientId) + ' ' + at }, [['Values', '', `T ${rec.temp}, HR ${rec.hr}, BP ${rec.sbp}/${rec.dbp}, RR ${rec.rr}, SpO2 ${rec.spo2}, Pain ${pain}`]]);
+          close(); toast(Nursing.vitalAbn(rec).length ? 'Saved. Abnormal values flagged for the doctor.' : 'Vital signs saved'); api.refresh();
+        });
+      } });
+  }
+
+  /* ---------- Fluid balance ---------- */
+  function ioTab(e, b) {
+    const day = ioDay, list = Nursing.ioOf(e.id, day), tot = Nursing.ioTotals(list);
+    const minDay = Nursing.shiftDay(e.start), maxDay = Nursing.shiftDay();
+    const shiftRow = (sh) => { const [a, z] = Nursing.shiftRange(day, sh); const l = list.filter(x => x.at >= a && x.at < z); const t = Nursing.ioTotals(l);
+      const s = (kind, re) => Kit.sumBy(l.filter(x => x.kind === kind && re.test(x.route)), x => x.volume);
+      return `<tr><td style="white-space:nowrap"><b>${sh}</b> <span class="xs muted">${a.slice(11)}-${z.slice(11)}</span></td><td class="num">${Kit.num(s('Intake', /Oral|Feed/))}</td><td class="num">${Kit.num(s('Intake', /IV|Blood/))}</td><td class="num">${Kit.num(s('Intake', /^(?!Oral|Feed|IV|Blood).*/))}</td><td class="num"><b>${Kit.num(t.intake)}</b></td><td class="num">${Kit.num(s('Output', /Urine/))}</td><td class="num">${Kit.num(s('Output', /^(?!Urine).*/))}</td><td class="num"><b>${Kit.num(t.output)}</b></td><td class="num"><b style="color:${t.balance < 0 ? 'var(--error)' : 'var(--success)'}">${Nursing.signed(t.balance)}</b></td></tr>`; };
+    const days = []; for (let d = minDay; d <= maxDay; d = Kit.addDays(d, 1)) days.push(d);
+    const cum = Nursing.ioTotals(Nursing.ioOf(e.id)).balance;
+    b.innerHTML = `<div class="card-pad">
+      <div class="row wrap" style="margin-bottom:12px">
+        <div class="btn-group"><button class="btn sm" id="dPrev" ${day <= minDay ? 'disabled' : ''} aria-label="Previous day">${icon('chevron-left')}</button><button class="btn sm on" style="min-width:210px">${Kit.day(day)} 07:00 to ${Kit.day(Kit.addDays(day, 1))} 07:00</button><button class="btn sm" id="dNext" ${day >= maxDay ? 'disabled' : ''} aria-label="Next day">${icon('chevron-right')}</button></div>
+        <span class="grow"></span><button class="btn primary" id="addIo" ${noAdd}>${icon('plus')} Add intake or output</button></div>
+      <div class="grid g4" style="margin-bottom:14px">
+        ${Kit.kpi('24 h intake', Kit.num(tot.intake), { icon: 'droplets', unit: 'mL' })}${Kit.kpi('24 h output', Kit.num(tot.output), { icon: 'droplet', unit: 'mL' })}
+        ${Kit.kpi('24 h balance', (tot.balance > 0 ? '+' : '') + Kit.num(tot.balance), { icon: 'scale', unit: 'mL', foot: tot.balance < -500 ? 'Negative balance, review fluids' : 'Within plan' })}${Kit.kpi('Since admission', (cum > 0 ? '+' : '') + Kit.num(cum), { icon: 'history', unit: 'mL', foot: days.length + ' nursing days' })}
+      </div>
+      <div class="table-wrap" style="border:1px solid var(--line);border-radius:12px"><table class="tbl compact"><thead><tr><th>Shift</th><th class="num">Oral / feed</th><th class="num">IV</th><th class="num">Other in</th><th class="num">Total intake</th><th class="num">Urine</th><th class="num">Other out</th><th class="num">Total output</th><th class="num">Balance</th></tr></thead>
+        <tbody>${['Morning', 'Evening', 'Night'].map(shiftRow).join('')}</tbody>
+        <tfoot><tr><td>24 hour total</td><td></td><td></td><td></td><td class="num">${Kit.num(tot.intake)}</td><td></td><td></td><td class="num">${Kit.num(tot.output)}</td><td class="num">${Nursing.signed(tot.balance)}</td></tr></tfoot></table></div>
+      <div class="grid g-side" style="margin-top:14px">
+        <div class="card"><div class="card-head"><h3>${icon('chart-column')} Daily balance (mL)</h3></div><div class="card-pad">${Kit.lineChart({ labels: days.map(d => d.slice(8) + '/' + d.slice(5, 7)), series: [{ name: 'Intake', color: '#2F6BC5', values: days.map(d => Nursing.ioTotals(Nursing.ioOf(e.id, d)).intake) }, { name: 'Output', color: '#E0670E', values: days.map(d => Nursing.ioTotals(Nursing.ioOf(e.id, d)).output) }, { name: 'Balance', color: '#0E9F6E', values: days.map(d => Nursing.ioTotals(Nursing.ioOf(e.id, d)).balance) }], height: 170, title: 'Daily fluid balance' })}</div></div>
+        <div class="card"><div class="card-head"><h3>${icon('info')} Notes</h3></div><div class="card-pad small stack">
+          <div>The nursing day runs from 07:00 to 07:00. Shift totals close at 15:00, 23:00 and 07:00.</div>
+          <div>Entries made in error are struck through with a reason and are not counted.</div></div></div>
+      </div></div><div id="ioTbl" style="border-top:1px solid var(--line)"></div>`;
+    $('#dPrev', b).addEventListener('click', () => { ioDay = Kit.addDays(day, -1); ioTab(e, b); });
+    $('#dNext', b).addEventListener('click', () => { ioDay = Kit.addDays(day, 1); ioTab(e, b); });
+    $('#addIo', b).addEventListener('click', () => addIo(e));
+    const allDay = db.nursingIO.filter(x => x.encounterId === e.id && Nursing.shiftDay(x.at) === day).sort((a, z) => z.at.localeCompare(a.at));
+    UI.table($('#ioTbl', b), {
+      columns: [{ label: 'Time', sort: x => x.at, render: x => `<span class="mono">${Kit.when(x.at)}</span>` }, { label: 'Shift', render: x => esc(Nursing.shiftOf(x.at)) }, { label: 'Type', render: x => x.kind === 'Intake' ? '<span class="badge b-info">Intake</span>' : '<span class="badge b-warn">Output</span>' }, { label: 'Route', render: x => esc(x.route) },
+        { label: 'Description', render: x => esc(x.item) + (x.voided ? `<div class="xs" style="color:var(--error)">Entered in error: ${esc(x.voidReason)}</div>` : x.note ? `<div class="xs muted">${esc(x.note)}</div>` : '') }, { label: 'Volume', cls: 'num', sort: x => x.volume, render: x => Kit.num(x.volume) + ' mL' }, { label: 'By', render: x => `<span class="small">${esc(x.by)}</span>` },
+        { label: '', cls: 'actions', render: x => x.voided ? '' : `<button class="btn xs ghost" data-void="${x.id}" ${canEdit ? '' : 'disabled title="Needs Edit permission"'}>${icon('x')} Entered in error</button>` }],
+      rows: allDay, search: x => [x.item, x.route, x.by].join(' '), searchPlaceholder: 'Search entries', pageSize: 8,
+      filters: [{ label: 'Type', options: [['Intake', 'Intake'], ['Output', 'Output']], test: (x, v) => x.kind === v }],
+      afterDraw: (tb) => {
+        $$('tr', tb).forEach(tr => { const btn = $('[data-void]', tr); if (!btn && tr.textContent.includes('Entered in error:')) tr.classList.add('void'); });
+        $$('[data-void]', tb).forEach(bt => bt.addEventListener('click', () => { const x = db.nursingIO.find(i => i.id === bt.dataset.void);
+          UI.confirm({ title: 'Mark entry as entered in error?', body: `${esc(x.kind)} ${esc(x.route)} ${Kit.num(x.volume)} mL at ${Kit.when(x.at)} will be struck through and removed from the totals.`, reason: true, confirm: 'Mark as error',
+            onConfirm: (reason) => { x.voided = true; x.voidReason = reason; x.voidBy = Nursing.myName(); save(); audit('Fluid balance entry voided', 'Fluid balance', { id: x.id, label: Kit.ptName(e.patientId) }, [['Status', 'Counted', 'Entered in error']], { reason }); toast('Entry struck through'); api.refresh(); } }); }));
+      },
+    });
+  }
+  function addIo(e) {
+    const routes = { Intake: ['Oral', 'IV', 'Feed', 'Blood product', 'Other'], Output: ['Urine', 'Drain', 'Vomit', 'Stool', 'NG aspirate', 'Other'] };
+    let kind = 'Intake';
+    UI.drawer({ title: 'Add intake or output', sub: esc(Kit.ptName(e.patientId)) + ' · Bed ' + esc(Nursing.bedNo(e)),
+      body: `<div class="err-summary hidden"></div><div id="ioKind" style="margin-bottom:14px"></div><div class="form-grid">${Nursing.whenFields('ioD', 'ioT')}
+        <div id="ioRouteF"></div>${field({ id: 'ioVol', label: 'Volume (mL)', type: 'number', req: true, attrs: 'min="1" max="5000" step="10"' })}
+        ${field({ id: 'ioItem', label: 'Description', placeholder: 'For example water, Sodium chloride 0.9%, voided', max: 80, full: true })}${field({ id: 'ioNote', label: 'Note', type: 'textarea', max: 200 })}</div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="ioSave" disabled>Add entry</button>`,
+      onMount: (el, close) => {
+        const drawRoute = () => { $('#ioRouteF', el).outerHTML = `<div id="ioRouteF">${field({ id: 'ioRoute', label: 'Route', type: 'select', req: true, options: routes[kind].map(r => [r, r]) })}</div>`; $('#ioRoute', el).addEventListener('change', chk); chk(); };
+        const chk = () => { $('#ioSave', el).disabled = !($('#ioRoute', el) && $('#ioRoute', el).value && +$('#ioVol', el).value > 0 && Nursing.stampOf(el, 'ioD', 'ioT')); };
+        Kit.seg($('#ioKind', el), [['Intake', 'Intake', 'droplets'], ['Output', 'Output', 'droplet']], kind, (k) => { kind = k; drawRoute(); });
+        drawRoute(); $$('input', el).forEach(i => i.addEventListener('input', chk));
+        $('#ioSave', el).addEventListener('click', () => {
+          const at = Nursing.stampOf(el, 'ioD', 'ioT'), vol = +$('#ioVol', el).value, errs = {};
+          if (!(vol >= 1 && vol <= 5000)) errs.ioVol = 'Volume must be between 1 and 5,000 mL.';
+          if (at > Nursing.now()) errs.ioT = 'Time cannot be in the future.';
+          if (at < e.start) errs.ioD = 'Time is before the admission.';
+          if (!showErrors(el, errs)) return;
+          const rec = { id: UI.uid('io'), encounterId: e.id, patientId: e.patientId, at, kind, route: $('#ioRoute', el).value, item: $('#ioItem', el).value.trim() || $('#ioRoute', el).value, volume: vol, by: Nursing.myName(), note: $('#ioNote', el).value.trim() };
+          db.nursingIO.push(rec); save(); audit('Fluid balance entry added', 'Fluid balance', { id: rec.id, label: Kit.ptName(e.patientId) }, [[kind, '', rec.route + ' ' + vol + ' mL']]);
+          ioDay = Nursing.shiftDay(at); close(); toast(kind + ' recorded'); api.refresh();
+        });
+      } });
+  }
+
+  /* ---------- Pain ---------- */
+  function defaultScale(e) { const w = Nursing.wardOf(e).id, p = Kit.pt(e.patientId); const age = p.dob ? (new Date(db.TODAY) - new Date(p.dob)) / 31557600000 : 40; return w === 'wd_03' ? (age < 3 ? 'FLACC' : 'FACES') : w === 'wd_04' ? 'CPOT' : 'NRS'; }
+  function painTab(e, b) {
+    const list = db.nursingPainLog.filter(x => x.encounterId === e.id).sort((a, z) => a.at.localeCompare(z.at));
+    const sc = (db.nursingPainScales || []).find(s => s.code === defaultScale(e)) || {};
+    const pending = list.filter(x => x.score >= 4 && x.reassessed === '' );
+    b.innerHTML = `<div class="card-pad">
+      <div class="row wrap" style="margin-bottom:12px"><span class="tag">${icon('gauge')} Scale: ${esc(sc.name || 'NRS')}</span><span class="small muted">Reassess ${esc(sc.reassessMins || 60)} minutes after an intervention</span><span class="grow"></span><button class="btn primary" id="addP" ${noAdd}>${icon('plus')} Record pain score</button></div>
+      ${pending.length ? `<div class="alert-cdss warn" style="margin-bottom:12px">${icon('clock')}<span>${pending.length} pain score${pending.length > 1 ? 's' : ''} of 4 or more without a reassessment. Use Reassess in the list below.</span></div>` : ''}
+      <div class="card"><div class="card-head"><h3>${icon('chart-line')} Pain score over time</h3><span class="small muted">0 no pain, 10 worst pain</span></div><div class="card-pad">
+        ${list.length ? Kit.lineChart({ labels: list.map(x => x.at.slice(8, 10) + ' ' + Kit.time(x.at)), series: [{ name: 'Score', color: '#7C4DDB', values: list.map(x => x.score) }, { name: 'After intervention', color: '#0E9F6E', values: list.map(x => x.reassessed === '' ? null : x.reassessed) }], band: [0, 3], min: 0, max: 10, height: 190, title: 'Pain trend' }) : `<div class="empty">${icon('gauge')}<b>No pain scores yet</b></div>`}</div></div>
+    </div><div id="pTbl" style="border-top:1px solid var(--line)"></div>`;
+    $('#addP', b).addEventListener('click', () => addPain(e, null));
+    UI.table($('#pTbl', b), {
+      columns: [{ label: 'Time', sort: x => x.at, render: x => `<span class="mono">${Kit.when(x.at)}</span>` }, { label: 'Scale', render: x => esc(x.scale) }, { label: 'Score', sort: x => x.score, render: x => { const l = Nursing.painLevel(x.score); return `<span class="badge b-${l[1]}">${x.score} · ${l[0]}</span>`; } },
+        { label: 'Location', render: x => esc(x.location || '-') }, { label: 'Intervention', render: x => esc(x.intervention || '-') }, { label: 'Reassessed', render: x => x.reassessed === '' ? (x.score >= 4 ? Kit.status('Due') : '<span class="mute">-</span>') : `<b>${x.reassessed}</b>${x.reassessedAt ? `<div class="xs muted">${Kit.when(x.reassessedAt)}</div>` : ''}` }, { label: 'By', render: x => `<span class="small">${esc(x.by)}</span>` },
+        { label: '', cls: 'actions', render: x => x.score >= 4 && x.reassessed === '' ? `<button class="btn xs" data-re="${x.id}" ${noAdd}>${icon('refresh-cw')} Reassess</button>` : '' }],
+      rows: list.slice().reverse(), search: x => [x.location, x.intervention, x.by].join(' '), searchPlaceholder: 'Search pain log', pageSize: 8,
+      filters: [{ label: 'Severity', options: [['3', 'Severe (7-10)'], ['2', 'Moderate (4-6)'], ['1', 'Mild (1-3)'], ['0', 'No pain']], test: (x, v) => (x.score >= 7 ? '3' : x.score >= 4 ? '2' : x.score >= 1 ? '1' : '0') === v }],
+      afterDraw: (tb) => $$('[data-re]', tb).forEach(bt => bt.addEventListener('click', () => addPain(e, db.nursingPainLog.find(x => x.id === bt.dataset.re)))),
+    });
+  }
+  function addPain(e, base) {
+    const re = !!base;
+    UI.drawer({ title: re ? 'Reassess pain' : 'Record pain score', sub: esc(Kit.ptName(e.patientId)) + (re ? ` · first score ${base.score} at ${Kit.when(base.at)}` : ''),
+      body: `<div class="err-summary hidden"></div><div class="form-grid">${Nursing.whenFields('pD', 'pT')}
+        ${re ? '' : field({ id: 'pScale', label: 'Pain scale', type: 'select', req: true, value: defaultScale(e), options: db.nursingPainScales.filter(s => s.status !== 'Inactive').map(s => [s.code, s.name]), placeholder: false })}
+        <div class="field full"><label>${re ? 'Score after intervention' : 'Score'}<span class="req">*</span></label><div class="pain-pick" id="pPick">${Array.from({ length: 11 }, (_, i) => `<button type="button" data-p="${i}" aria-label="Score ${i}">${i}</button>`).join('')}</div><div class="hint" id="pLvl">Select a score</div></div>
+        ${re ? '' : field({ id: 'pLoc', label: 'Location', max: 60, placeholder: 'For example surgical site' }) + field({ id: 'pChar', label: 'Character', type: 'select', options: ['Aching', 'Sharp', 'Dull', 'Burning', 'Throbbing', 'Cramping'].map(x => [x, x]) })}
+        ${re ? '' : field({ id: 'pInt', label: 'Intervention given', type: 'select', full: true, options: ['Analgesia as prescribed (see MAR)', 'Repositioned', 'Cold or warm pack', 'Distraction and reassurance', 'Doctor informed'].map(x => [x, x]), placeholder: 'None' })}</div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="pSave" disabled>Save</button>`,
+      onMount: (el, close) => {
+        let score = null;
+        $$('[data-p]', el).forEach(bt => bt.addEventListener('click', () => { score = +bt.dataset.p; $$('[data-p]', el).forEach(x => x.classList.toggle('on', x === bt)); const l = Nursing.painLevel(score); $('#pLvl', el).innerHTML = `<span class="badge b-${l[1]}">${l[0]}</span>${!re && score >= 4 ? ' An intervention and a reassessment are expected.' : ''}`; $('#pSave', el).disabled = false; }));
+        $('#pSave', el).addEventListener('click', () => {
+          const at = Nursing.stampOf(el, 'pD', 'pT'), errs = {};
+          if (!at) errs.pT = 'Date and time are required.'; else if (at > Nursing.now()) errs.pT = 'Time cannot be in the future.'; else if (re && at < base.at) errs.pT = 'Reassessment must be after the first score.';
+          if (!showErrors(el, errs)) return;
+          if (re) { base.reassessed = score; base.reassessedAt = at; base.reassessedBy = Nursing.myName(); save(); audit('Pain reassessed', 'Pain score', { id: base.id, label: Kit.ptName(e.patientId) }, [['Score', String(base.score), String(score)]]); }
+          else { const rec = { id: UI.uid('pl'), encounterId: e.id, patientId: e.patientId, at, scale: $('#pScale', el).value, score, location: $('#pLoc', el).value.trim(), character: $('#pChar', el).value, intervention: $('#pInt', el).value, reassessed: '', by: Nursing.myName(), source: 'Pain assessment' }; db.nursingPainLog.push(rec); save(); audit('Pain score recorded', 'Pain score', { id: rec.id, label: Kit.ptName(e.patientId) }, [['Score', '', String(score)]]); }
+          close(); toast('Pain score saved'); api.refresh();
+        });
+      } });
+  }
+})();
+</script>
+</body>
+</html>

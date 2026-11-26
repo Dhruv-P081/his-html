@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Financial statements · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<style>.st tr.grp td{background:var(--raised);font-weight:800;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--sub)}.st tr.sub td{font-weight:800;border-top:1px solid var(--line-strong)}.st tr.big td{font-weight:800;font-size:15px;background:var(--raised)}.st td.ind{padding-inline-start:28px}.st tr.acc{cursor:pointer}.st tr.acc:hover td{background:var(--hover)}</style>
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-finance.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/finance.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, esc, icon, $, $$, R, can, audit, drawer } = UI;
+  const OPT = 'finance.statements';
+  if (!UI.page({ opt: OPT, title: 'Financial statements', subtitle: 'Trial Balance, Profit and Loss and Balance Sheet computed from posted journals. Filter by branch and period.',
+    actions: Fin.btn({ attrs: 'id="csv"', icon: 'file-spreadsheet', label: 'Excel (CSV)', gate: Fin.gate(OPT, 'print') }) + Fin.btn({ cls: 'primary', attrs: 'id="prt"', icon: 'printer', label: 'Print', gate: Fin.gate(OPT, 'print') }) })) return;
+  const T = Fin.T;
+  const ps = Fin.periodOpts();
+  let view = UI.param('v') || 'tb';
+  const curP = Fin.periodOf(T);
+  $('#page').innerHTML = `<div id="seg" style="margin-bottom:14px"></div><div class="card card-pad" style="margin-bottom:14px"><div class="row wrap" style="gap:12px;align-items:flex-end">
+      ${Fin.sel('fBr', 'Branch', Fin.brOpts(), '', 'All branches (consolidated)')}
+      <span id="fromW">${Fin.sel('fFrom', 'From period', ps, curP, false)}</span>${Fin.sel('fTo', 'To period', ps, curP, false)}
+      <label class="check" style="margin-bottom:8px"><input type="checkbox" id="fZero"> Show zero balances</label></div></div>
+    <div id="ban"></div><div class="card" id="out"></div>`;
+  Kit.tabs($('#seg'), [{ id: 'tb', label: 'Trial balance', icon: 'scale' }, { id: 'pl', label: 'Profit and loss', icon: 'trending-up' }, { id: 'bs', label: 'Balance sheet', icon: 'landmark' }], view, (v) => { view = v; draw(); });
+  ['fBr', 'fFrom', 'fTo', 'fZero'].forEach(i => $('#' + i).addEventListener('change', draw));
+  let last = { title: '', head: [], rows: [] };
+  const f = () => ({ branchId: $('#fBr').value, from: Fin.pStart($('#fFrom').value), to: Fin.pEnd($('#fTo').value) < T ? Fin.pEnd($('#fTo').value) : T });
+  const accts = () => db.financeAccounts.filter(a => a.posting).sort((a, b) => a.code.localeCompare(b.code));
+  const nat = (a, b) => b ? (a.normal === 'Cr' ? b.cr - b.dr : b.dr - b.cr) : 0;
+  const filterLabel = () => `${$('#fBr').value ? Fin.brName($('#fBr').value) : 'All branches'} · ${view === 'bs' ? 'as at ' + Kit.day(f().to) : Fin.pName($('#fFrom').value) + ' to ' + Fin.pName($('#fTo').value)}`;
+
+  function draw() {
+    $('#fromW').classList.toggle('hidden', view === 'bs');
+    if ($('#fFrom').value > $('#fTo').value) $('#fFrom').value = $('#fTo').value;
+    if (view === 'tb') tb(); else if (view === 'pl') pl(); else bs();
+  }
+  function tb() {
+    const x = f();
+    const open = Fin.balances({ branchId: x.branchId, to: Kit.addDays(x.from, -1) }), mov = Fin.balances(x);
+    const rows = accts().map(a => { const o = Fin.netOf(open[a.id]), m = mov[a.id] || { dr: 0, cr: 0 }, c = Fin.r3(o + m.dr - m.cr); return { a, o, dr: Fin.r3(m.dr), cr: Fin.r3(m.cr), c }; }).filter(r => $('#fZero').checked || r.o || r.dr || r.cr || r.c);
+    const tot = { odr: Kit.sumBy(rows, r => Math.max(0, r.o)), ocr: Kit.sumBy(rows, r => Math.max(0, -r.o)), dr: Kit.sumBy(rows, r => r.dr), cr: Kit.sumBy(rows, r => r.cr), cdr: Kit.sumBy(rows, r => Math.max(0, r.c)), ccr: Kit.sumBy(rows, r => Math.max(0, -r.c)) };
+    const ok = Math.abs(tot.cdr - tot.ccr) < 0.005 && Math.abs(tot.dr - tot.cr) < 0.005;
+    $('#ban').innerHTML = `<div class="banner ${ok ? 'ok' : 'err'}" style="margin-bottom:14px">${icon(ok ? 'circle-check' : 'circle-alert')}<span>${ok ? `Trial balance balances. Closing debits ${Fin.money(tot.cdr)} equal closing credits.` : 'Trial balance does not balance. Difference ' + Fin.money(tot.cdr - tot.ccr)}</span></div>`;
+    const v = (n) => n ? Fin.amt(n) : '';
+    $('#out').innerHTML = `<div class="card-head"><h3>${icon('scale')} Trial balance</h3><div class="actions"><span class="small muted">${esc(filterLabel())}</span></div></div><div class="table-wrap"><table class="tbl compact st"><thead><tr><th>Code</th><th>Account</th><th>Type</th><th class="num">Opening Dr</th><th class="num">Opening Cr</th><th class="num">Period Dr</th><th class="num">Period Cr</th><th class="num">Closing Dr</th><th class="num">Closing Cr</th></tr></thead><tbody>
+      ${rows.map(r => `<tr class="acc" data-a="${r.a.id}"><td class="mono">${esc(r.a.code)}</td><td>${esc(r.a.name)}</td><td class="small muted">${esc(r.a.type)}</td><td class="num">${v(Math.max(0, r.o))}</td><td class="num">${v(Math.max(0, -r.o))}</td><td class="num">${v(r.dr)}</td><td class="num">${v(r.cr)}</td><td class="num"><b>${v(Math.max(0, r.c))}</b></td><td class="num"><b>${v(Math.max(0, -r.c))}</b></td></tr>`).join('')}
+      </tbody><tfoot><tr><td></td><td>Total</td><td></td><td class="num">${Fin.amt(tot.odr)}</td><td class="num">${Fin.amt(tot.ocr)}</td><td class="num">${Fin.amt(tot.dr)}</td><td class="num">${Fin.amt(tot.cr)}</td><td class="num">${Fin.amt(tot.cdr)}</td><td class="num">${Fin.amt(tot.ccr)}</td></tr></tfoot></table></div>`;
+    last = { title: 'Trial balance', head: ['Code', 'Account', 'Type', 'Opening Dr', 'Opening Cr', 'Period Dr', 'Period Cr', 'Closing Dr', 'Closing Cr'], rows: rows.map(r => [r.a.code, r.a.name, r.a.type, Math.max(0, r.o), Math.max(0, -r.o), r.dr, r.cr, Math.max(0, r.c), Math.max(0, -r.c)]) };
+    wireDrill();
+  }
+  function section(title, list, b, sign) {
+    const rows = list.map(a => ({ a, v: Fin.r3(sign(a, b[a.id])) })).filter(r => $('#fZero').checked || r.v);
+    return { rows, total: Fin.r3(Kit.sumBy(rows, r => r.v)) };
+  }
+  function pl() {
+    const x = f(), ytd = Object.assign({}, x, { from: '2026-01-01' });
+    const b = Fin.balances(x), y = Fin.balances(ytd);
+    const rev = (a, v) => v ? v.cr - v.dr : 0, exp = (a, v) => v ? v.dr - v.cr : 0;
+    const A = accts();
+    const groups = [['Patient revenue', A.filter(a => a.group === 'Patient revenue'), rev], ['Ancillary revenue', A.filter(a => a.group === 'Ancillary revenue'), rev], ['Less: discounts allowed', A.filter(a => a.group === 'Contra revenue'), rev], ['Direct costs', A.filter(a => a.group === 'Direct costs'), exp], ['Overheads', A.filter(a => a.group === 'Overheads'), exp]];
+    const S = groups.map(([t, l, s]) => ({ t, p: section(t, l, b, s), y: section(t, l, y, s), s }));
+    const netRev = S[0].p.total + S[1].p.total + S[2].p.total, netRevY = S[0].y.total + S[1].y.total + S[2].y.total;
+    const gp = netRev - S[3].p.total, gpY = netRevY - S[3].y.total;
+    const np = gp - S[4].p.total, npY = gpY - S[4].y.total;
+    const pct = (n, d) => d ? Math.round(1000 * n / d) / 10 + '%' : '';
+    const line = (r, yb, s) => `<tr class="acc" data-a="${r.a.id}"><td class="ind"><span class="mono small">${esc(r.a.code)}</span> ${esc(r.a.name)}</td><td class="num">${Fin.amt(r.v)}</td><td class="num">${Fin.amt(s(r.a, yb[r.a.id]))}</td></tr>`;
+    const block = (k) => `<tr class="grp"><td colspan="3">${esc(S[k].t)}</td></tr>${S[k].p.rows.map(r => line(r, y, S[k].s)).join('')}<tr class="sub"><td>Total ${esc(S[k].t.toLowerCase().replace('less: ', ''))}</td><td class="num">${Fin.amt(S[k].p.total)}</td><td class="num">${Fin.amt(S[k].y.total)}</td></tr>`;
+    const unposted = db.financeJournals.filter(j => ['Draft', 'Pending approval', 'Approved'].includes(j.status) && j.date >= x.from && j.date <= x.to && (!x.branchId || j.branchId === x.branchId));
+    const unpAmt = Kit.sumBy(unposted, Fin.jDr);
+    $('#ban').innerHTML = `${unposted.length ? `<div class="banner warn" style="margin-bottom:14px">${icon('clock')}<span>${unposted.length} journal${unposted.length === 1 ? '' : 's'} for this period (${Fin.money(unpAmt)}) ${unposted.length === 1 ? 'is' : 'are'} not posted yet and not included, for example month-end payroll and accruals. <a href="${R('finance/journals.html')}">Review journals</a></span></div>` : ''}<div class="grid g4" style="margin-bottom:14px">${Kit.kpi('Net revenue', Fin.amt(netRev).replace(/\.\d+$/, ''), { unit: 'KWD', icon: 'trending-up', foot: 'Year to date ' + Fin.amt(netRevY).replace(/\.\d+$/, '') })}${Kit.kpi('Gross profit', Fin.amt(gp).replace(/\.\d+$/, ''), { unit: 'KWD', icon: 'chart-column', foot: pct(gp, netRev) + ' gross margin' })}${Kit.kpi('Overheads', Fin.amt(S[4].p.total).replace(/\.\d+$/, ''), { unit: 'KWD', icon: 'building-2', foot: 'Year to date ' + Fin.amt(S[4].y.total).replace(/\.\d+$/, '') })}${Kit.kpi('Net profit', Fin.amt(np).replace(/\.\d+$/, ''), { unit: 'KWD', icon: 'scale', foot: pct(np, netRev) + ' net margin' })}</div>`;
+    $('#out').innerHTML = `<div class="card-head"><h3>${icon('trending-up')} Profit and loss</h3><div class="actions"><span class="small muted">${esc(filterLabel())}</span></div></div><div class="table-wrap"><table class="tbl compact st"><thead><tr><th>Account</th><th class="num">Selected period</th><th class="num">Year to date</th></tr></thead><tbody>
+      ${block(0)}${block(1)}${block(2)}<tr class="big"><td>Net revenue</td><td class="num">${Fin.amt(netRev)}</td><td class="num">${Fin.amt(netRevY)}</td></tr>
+      ${block(3)}<tr class="big"><td>Gross profit <span class="small muted">${pct(gp, netRev)}</span></td><td class="num">${Fin.amt(gp)}</td><td class="num">${Fin.amt(gpY)}</td></tr>
+      ${block(4)}<tr class="big"><td>Net profit <span class="small muted">${pct(np, netRev)}</span></td><td class="num">${Fin.amt(np)}</td><td class="num">${Fin.amt(npY)}</td></tr></tbody></table></div>`;
+    last = { title: 'Profit and loss', head: ['Account', 'Selected period', 'Year to date'], rows: [].concat(...S.map(s => [[s.t, '', '']].concat(s.p.rows.map(r => [r.a.code + ' ' + r.a.name, r.v, Fin.r3(s.s(r.a, y[r.a.id]))])).concat([['Total ' + s.t, s.p.total, s.y.total]]))).concat([['Net profit', np, npY]]) };
+    wireDrill();
+  }
+  function bs() {
+    const x = f(), b = Fin.balances({ branchId: x.branchId, to: x.to });
+    const A = accts();
+    const dr = (a, v) => v ? v.dr - v.cr : 0, cr = (a, v) => v ? v.cr - v.dr : 0;
+    const groups = [['Cash and bank', 'Asset'], ['Receivables', 'Asset'], ['Inventory', 'Asset'], ['Other current assets', 'Asset'], ['Non-current assets', 'Asset'], ['Current liabilities', 'Liability'], ['Non-current liabilities', 'Liability'], ['Equity', 'Equity']];
+    const S = groups.map(([g, t]) => ({ g, t, s: section(g, A.filter(a => a.group === g && a.type === t), b, t === 'Asset' ? dr : cr) }));
+    const plt = Fin.plTotals({ branchId: x.branchId, from: '2026-01-01', to: x.to });
+    const ta = Kit.sumBy(S.filter(s => s.t === 'Asset'), s => s.s.total), tl = Kit.sumBy(S.filter(s => s.t === 'Liability'), s => s.s.total), te = S[7].s.total + plt.profit;
+    const ok = Math.abs(ta - tl - te) < 0.005;
+    $('#ban').innerHTML = `<div class="banner ${ok ? 'ok' : 'err'}" style="margin-bottom:14px">${icon(ok ? 'circle-check' : 'circle-alert')}<span>${ok ? `Balance sheet balances: total assets ${Fin.money(ta)} equal liabilities and equity.` : 'Out of balance by ' + Fin.money(ta - tl - te)}${x.branchId ? ' Branch view: inter-branch funding is not eliminated.' : ''}</span></div>`;
+    const blk = (s) => `<tr class="grp"><td colspan="2">${esc(s.g)}</td></tr>${s.s.rows.map(r => `<tr class="acc" data-a="${r.a.id}"><td class="ind"><span class="mono small">${esc(r.a.code)}</span> ${esc(r.a.name)}</td><td class="num">${Fin.amt(r.v)}</td></tr>`).join('')}<tr class="sub"><td>Total ${esc(s.g.toLowerCase())}</td><td class="num">${Fin.amt(s.s.total)}</td></tr>`;
+    $('#out').innerHTML = `<div class="card-head"><h3>${icon('landmark')} Balance sheet</h3><div class="actions"><span class="small muted">${esc(filterLabel())}</span></div></div><div class="grid g2" style="padding:0"><div class="table-wrap"><table class="tbl compact st"><thead><tr><th>Assets</th><th class="num">KWD</th></tr></thead><tbody>${S.filter(s => s.t === 'Asset').map(blk).join('')}<tr class="big"><td>Total assets</td><td class="num">${Fin.amt(ta)}</td></tr></tbody></table></div>
+      <div class="table-wrap"><table class="tbl compact st"><thead><tr><th>Liabilities and equity</th><th class="num">KWD</th></tr></thead><tbody>${S.filter(s => s.t === 'Liability').map(blk).join('')}<tr class="big"><td>Total liabilities</td><td class="num">${Fin.amt(tl)}</td></tr>${blk(S[7]).replace('Total equity</td>', 'Total share capital and reserves</td>')}<tr><td class="ind">Current year profit (FY2026 to date)</td><td class="num">${Fin.amt(plt.profit)}</td></tr><tr class="sub"><td>Total equity</td><td class="num">${Fin.amt(te)}</td></tr><tr class="big"><td>Total liabilities and equity</td><td class="num">${Fin.amt(tl + te)}</td></tr></tbody></table></div></div>`;
+    last = { title: 'Balance sheet', head: ['Line', 'KWD'], rows: [].concat(...S.map(s => [[s.g, '']].concat(s.s.rows.map(r => [r.a.code + ' ' + r.a.name, r.v])).concat([['Total ' + s.g, s.s.total]]))).concat([['Current year profit', plt.profit], ['Total assets', ta], ['Total liabilities and equity', tl + te]]) };
+    wireDrill();
+  }
+  function wireDrill() {
+    $$('tr.acc', $('#out')).forEach(tr => tr.addEventListener('click', () => {
+      const a = Fin.A(tr.dataset.a), x = f(), from = view === 'bs' ? '2026-01-01' : x.from;
+      const lines = Fin.posted({ branchId: x.branchId, from, to: x.to }).filter(l => l.accountId === a.id).sort((p, q) => (p.j.date + p.j.at).localeCompare(q.j.date + q.j.at));
+      const open = Fin.netOf(Fin.balances({ branchId: x.branchId, to: Kit.addDays(from, -1) })[a.id]);
+      drawer({ title: a.code + ' ' + a.name, sub: esc('General ledger · ' + Kit.day(from) + ' to ' + Kit.day(x.to) + ' · ' + (x.branchId ? Fin.brName(x.branchId) : 'All branches')), wide: true, body: '<div id="gl"></div>', onMount: (el) => {
+        let run = open; const rows = lines.map(l => { run += l.debit - l.credit; return Object.assign({ run }, l); });
+        UI.table($('#gl', el), { columns: [
+          { label: 'Date', render: l => `<span class="nw">${esc(Kit.day(l.j.date))}</span>` },
+          { label: 'Voucher', render: l => `<a class="mono small" href="${R('finance/journals.html?id=' + l.j.id)}">${esc(l.j.no)}</a>` },
+          { label: 'Narration', render: l => `<span class="small">${esc(l.j.narration)}</span>${l.ccId ? `<div class="xs muted">${esc(Fin.ccName(l.ccId))}</div>` : ''}` },
+          { label: 'Debit', cls: 'num', render: l => l.debit ? Fin.amt(l.debit) : '' }, { label: 'Credit', cls: 'num', render: l => l.credit ? Fin.amt(l.credit) : '' }, { label: 'Balance', cls: 'num', render: l => `<b>${Fin.amt(l.run)}</b>` }],
+          rows: rows.slice().reverse(), search: l => l.j.no + ' ' + l.j.narration, searchPlaceholder: 'Voucher or narration', pageSize: 15, toolbar: `<span class="small muted">Opening ${Fin.amt(open)} · ${rows.length} lines</span>` });
+      } });
+    }));
+  }
+  $('#prt') && $('#prt').addEventListener('click', () => { Kit.printDoc({ title: last.title, sub: filterLabel(), html: `<h3 style="margin:0 0 8px">${esc(last.title)}</h3><p style="margin:0 0 10px;color:#555">${esc(filterLabel())} · KWD</p>` + $('#out').innerHTML.replace(/class="acc"/g, '') }); audit('Statement printed', 'Financial statement', { id: view, label: last.title }, [['Filters', '', filterLabel()]]); });
+  $('#csv') && $('#csv').addEventListener('click', () => { Kit.csv(last.title.replace(/\W+/g, '_'), last.head, last.rows); audit('Statement exported', 'Financial statement', { id: view, label: last.title }, [['Format', '', 'CSV']]); });
+  draw();
+})();
+</script>
+</body>
+</html>

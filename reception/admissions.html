@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admissions and discharge · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-reception.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/reception.js"></script>
+<style>#tb td { vertical-align: middle; } #tb td:nth-child(3) { min-width: 220px; } #tb td:first-child { white-space: nowrap; } .bedpick { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; } .bedpick .bed { min-height: 64px; } .bedpick .bed.on { box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary-light) 40%, transparent); border-color: var(--primary-light); }</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, fmtDate, confirm, field } = UI;
+  const Rc = window.Reception;
+  const OPT = 'reception.visit.adm';
+  if (!UI.page({ opt: OPT, title: 'Admissions and discharge', subtitle: 'Admission requests, financial clearance, bed allocation, transfers, temporary leave and discharge.',
+    actions: `<a class="btn" href="${R('reception/beds.html')}">${icon('layout-grid')} Bed board</a><button class="btn primary" id="newReq" ${Rc.gate(OPT, 'add')}>${icon('bed-double')} New admission request</button>` })) return;
+  const T = db.TODAY;
+  const reqs = () => (db.receptionAdmRequests = db.receptionAdmRequests || []);
+  const inpatients = () => db.encounters.filter(e => e.type === 'IPD' && e.status !== 'Discharged');
+  const onLeave = (e) => (db.receptionLeaves || []).find(l => l.encounterId === e.id && l.status === 'On leave');
+  const ivOf = (e) => db.invoices.filter(i => i.encounterId === e.id);
+  const losOf = (e) => Math.max(1, Math.round((new Date((e.end || T).slice(0, 10)) - new Date(e.start.slice(0, 10))) / 864e5));
+  const bedType = (b) => (db.receptionBedTypes || []).find(t => t.name === b.type) || { rate: (db.services.find(s => s.code === b.serviceCode) || {}).price || 0, name: b.type };
+  let tab = UI.param('tab') || 'req';
+  $('#page').innerHTML = `<div class="grid g4" style="margin-bottom:16px" id="kpi"></div><div class="card"><div id="tabs"></div><div id="tb"></div></div>`;
+  function draw() {
+    const R0 = reqs().filter(r => !/Admitted|Cancelled/.test(r.status)), IP = inpatients(), LV = (db.receptionLeaves || []), DC = db.encounters.filter(e => e.type === 'IPD' && e.status === 'Discharged').sort((a, b) => (b.end || '').localeCompare(a.end || ''));
+    const vac = db.beds.filter(b => b.status === 'Vacant').length;
+    $('#kpi').innerHTML = Kit.kpi('Admission requests', R0.length, { icon: 'inbox', foot: R0.filter(r => r.type === 'Emergency').length + ' emergency · ' + R0.filter(r => r.status === 'Cleared').length + ' cleared, waiting for a bed' })
+      + Kit.kpi('Inpatients', IP.length, { icon: 'bed-double', foot: IP.filter(e => e.start.startsWith(T)).length + ' admitted today' })
+      + Kit.kpi('Discharges planned', IP.filter(e => e.status === 'Discharge planned' || e.expectedDischarge === T).length, { icon: 'log-out', foot: IP.filter(e => e.clearance !== 'Cleared').length + ' waiting for billing clearance' })
+      + Kit.kpi('Vacant beds', vac, { icon: 'layout-grid', foot: db.beds.filter(b => b.status === 'Cleaning').length + ' being cleaned', href: R('reception/beds.html') });
+    Kit.tabs($('#tabs'), [{ id: 'req', label: 'Requests', count: R0.length, icon: 'inbox' }, { id: 'ip', label: 'Inpatients', count: IP.length, icon: 'bed-double' }, { id: 'leave', label: 'Temporary leave', count: LV.filter(l => l.status === 'On leave').length, icon: 'door-open' }, { id: 'dc', label: 'Discharged', count: DC.length, icon: 'log-out' }], tab, (v) => { tab = v; body(); });
+    function body() {
+      const host = $('#tb');
+      if (tab === 'req') UI.table(host, { columns: [
+          { label: 'Request', sort: (r) => r.at, render: (r) => `<b class="mono">${esc(r.no)}</b> ${r.type === 'Emergency' ? '<span class="badge b-err nodot">Emergency</span>' : '<span class="badge b-info nodot">Elective</span>'}<div class="small muted">${esc(Kit.when(r.at))} · from ${esc(r.source)}</div>` },
+          { label: 'Patient', render: (r) => Kit.patientCell(Kit.pt(r.patientId)) },
+          { label: 'Admission', render: (r) => `${esc(r.reason)}<div class="small muted">${esc(Kit.docName(r.admittingId))} · ${esc((Kit.ward(r.wardPref) || {}).code || '')} · ${esc(Kit.day(r.plannedDate))}, ${r.los} d</div>` },
+          { label: 'Clearance and bed', render: (r) => (r.clearance ? Kit.status('Cleared') : Kit.status('Pending')) + ' ' + (r.bedId ? `<span class="badge b-violet nodot">${esc((Kit.bed(r.bedId) || {}).no)} reserved</span>` : '') + `<div class="small muted">${esc(r.clearance ? r.clearance.payer : 'Payer not verified')}</div>` },
+          { label: '', cls: 'actions', render: (r) => r.status === 'Cleared' ? `<button class="btn xs primary" data-a="bed" data-id="${r.id}" ${Rc.gate(OPT, 'edit')}>${icon('bed-double')} Allocate bed</button>` : `<button class="btn xs" data-a="clr" data-id="${r.id}" ${Rc.gate(OPT, 'approve')}>${icon('shield-check')} Financial clearance</button>` }],
+        rows: () => reqs().filter(r => !/Admitted|Cancelled/.test(r.status)).sort((a, b) => (a.type === 'Emergency' ? 0 : 1) - (b.type === 'Emergency' ? 0 : 1) || a.at.localeCompare(b.at)),
+        search: (r) => [r.no, Kit.ptName(r.patientId), r.reason, Kit.docName(r.admittingId)].join(' '), searchPlaceholder: 'Request, patient or doctor',
+        filters: [{ label: 'Type', options: [['Elective', 'Elective'], ['Emergency', 'Emergency']], test: (r, v) => r.type === v }, { label: 'Stage', options: [['Requested', 'Requested'], ['Pending clearance', 'Pending clearance'], ['Cleared', 'Cleared, waiting for bed']], test: (r, v) => r.status === v }],
+        onRow: (r) => reqDetail(r), empty: 'No open admission requests', emptyIcon: 'inbox',
+        afterDraw: (tb) => $$('[data-a]', tb).forEach(b => b.addEventListener('click', () => { const r = reqs().find(x => x.id === b.dataset.id); b.dataset.a === 'bed' ? allocate(r) : clearance(r); })) });
+      if (tab === 'ip') UI.table(host, { columns: [
+          { label: 'Bed', sort: (e) => (Kit.bed(e.bedId) || {}).no, render: (e) => { const b = Kit.bed(e.bedId) || {}; return `<b>${esc(b.no || '')}</b><div class="small muted">${esc((Kit.ward(b.wardId) || {}).code || '')} · room ${esc(b.room || '')}</div>`; } },
+          { label: 'Patient', sort: (e) => Kit.ptName(e.patientId), render: (e) => Kit.patientCell(Kit.pt(e.patientId)) + (onLeave(e) ? ' <span class="badge b-violet">On leave</span>' : '') },
+          { label: 'Admission', sort: (e) => e.start, render: (e) => `<span class="mono">${esc(e.no)}</span><div class="small muted">${esc(Kit.day(e.start))} · ${esc(e.admissionType || '')}</div>` },
+          { label: 'Attending', render: (e) => esc(Kit.docName(e.attendingId || e.doctorId)) + `<div class="small muted">Admitted by ${esc(Kit.docName(e.doctorId))}</div>` },
+          { label: 'Diagnosis', render: (e) => `${esc(e.reason || '')}<div class="small mono muted">${esc(e.diagnosis || '')}</div>` },
+          { label: 'Stay', sort: (e) => losOf(e), render: (e) => `${losOf(e)} d<div class="small muted">EDD ${esc(Kit.day(e.expectedDischarge))}</div>` },
+          { label: 'Billing', render: (e) => `${Kit.status(e.clearance || 'Pending billing', e.clearance === 'Cleared' ? 'ok' : 'warn')}<div class="small muted num">Due ${Kit.money(Kit.sumBy(ivOf(e), Rc.balance))}</div>` },
+          { label: 'Status', render: (e) => Kit.status(e.status) }],
+        rows: inpatients, search: (e) => { const p = Kit.pt(e.patientId) || {}; return [p.name, p.mrn, e.no, (Kit.bed(e.bedId) || {}).no, Kit.docName(e.attendingId)].join(' '); }, searchPlaceholder: 'Patient, MRN, bed or doctor',
+        filters: [{ label: 'Ward', options: db.wards.map(w => [w.id, w.name]), test: (e, v) => (Kit.bed(e.bedId) || {}).wardId === v }, { label: 'Status', options: [['Admitted', 'Admitted'], ['Discharge planned', 'Discharge planned']], test: (e, v) => e.status === v }, { label: 'Billing', options: [['Cleared', 'Cleared'], ['Pending billing', 'Pending billing']], test: (e, v) => (e.clearance || 'Pending billing') === v }],
+        onRow: (e) => ipDetail(e), pageSize: 12, empty: 'No inpatients', emptyIcon: 'bed-double' });
+      if (tab === 'leave') {
+        host.innerHTML = `<div class="card-pad" style="padding-bottom:0">${Kit.scopeNote('Scope to be confirmed: Temporary Leave Tracking is listed in the SOW V4 2nd phase. The detailed workflow keeps departure, expected return and re-entry subject to confirmation.')}</div><div id="lvT"></div>`;
+        UI.table($('#lvT'), { columns: [
+          { label: 'Patient', render: (l) => { const e = Kit.enc(l.encounterId) || {}; return Kit.patientCell(Kit.pt(e.patientId)) + `<div class="small muted">${esc(e.no || '')} · bed ${esc((Kit.bed(e.bedId) || {}).no || '')}</div>`; } },
+          { label: 'Departure', sort: (l) => l.departAt, render: (l) => esc(fmtDate(l.departAt)) },
+          { label: 'Expected return', render: (l) => esc(fmtDate(l.expectedReturn)) + (l.status === 'On leave' && Rc.now() > l.expectedReturn ? ' <span class="badge b-err">Overdue</span>' : '') },
+          { label: 'Re-entry', render: (l) => l.returnedAt ? esc(fmtDate(l.returnedAt)) : '<span class="mute">-</span>' },
+          { label: 'Reason', render: (l) => `<span class="small">${esc(l.reason)}</span>` },
+          { label: 'Status', render: (l) => Kit.status(l.status === 'On leave' ? 'Leave' : 'Returned', l.status === 'On leave' ? 'violet' : 'ok') },
+          { label: '', cls: 'actions', render: (l) => l.status === 'On leave' ? `<button class="btn xs primary" data-ret="${l.id}" ${Rc.gate(OPT, 'edit')}>${icon('log-in')} Record re-entry</button>` : '' }],
+          rows: () => (db.receptionLeaves || []).slice().sort((a, b) => b.departAt.localeCompare(a.departAt)), search: (l) => Kit.ptName((Kit.enc(l.encounterId) || {}).patientId) + ' ' + l.reason, searchPlaceholder: 'Search leave records', empty: 'No leave records', emptyIcon: 'door-open',
+          afterDraw: (tb) => $$('[data-ret]', tb).forEach(b => b.addEventListener('click', () => { const l = db.receptionLeaves.find(x => x.id === b.dataset.ret); l.returnedAt = Rc.now(); l.status = 'Returned'; save(); audit('Recorded return from leave', 'Encounter', { id: l.encounterId, label: (Kit.enc(l.encounterId) || {}).no }, [['Leave', 'On leave', 'Returned']]); toast('Re-entry recorded'); draw(); })) });
+      }
+      if (tab === 'dc') UI.table(host, { columns: [
+          { label: 'Patient', render: (e) => Kit.patientCell(Kit.pt(e.patientId)) },
+          { label: 'Admission', render: (e) => `<span class="mono">${esc(e.no)}</span><div class="small muted">${esc(Kit.day(e.start))}</div>` },
+          { label: 'Discharged', sort: (e) => e.end, render: (e) => esc(fmtDate(e.end)) },
+          { label: 'Type', render: (e) => `<span class="badge ${/Death/.test(e.dischargeType) ? 'b-neutral' : /AMA/.test(e.dischargeType) ? 'b-warn' : /Transfer/.test(e.dischargeType) ? 'b-violet' : 'b-ok'} nodot">${esc(e.dischargeType || 'Routine discharge')}</span>` },
+          { label: 'Stay', render: (e) => losOf(e) + ' d' },
+          { label: 'Bed released', render: (e) => esc(e.releasedBed || '') },
+          { label: 'By', render: (e) => `<span class="small">${esc(e.dischargedBy || '')}</span>` }],
+        rows: () => db.encounters.filter(e => e.type === 'IPD' && e.status === 'Discharged').sort((a, b) => (b.end || '').localeCompare(a.end || '')), search: (e) => Kit.ptName(e.patientId) + ' ' + e.no, searchPlaceholder: 'Search discharges',
+        filters: [{ label: 'Type', options: Rc.DISCHARGE_TYPES.map(x => [x, x]), test: (e, v) => e.dischargeType === v }], empty: 'No discharges yet', emptyIcon: 'log-out' });
+    }
+    body();
+  }
+  function reqDetail(r) {
+    const p = Kit.pt(r.patientId);
+    UI.drawer({ title: 'Admission request ' + r.no, sub: esc(r.type) + ' · ' + esc(r.status),
+      body: `${Kit.patientBanner(p)}<dl class="kv"><dt>Admitting doctor</dt><dd>${esc(Kit.docName(r.admittingId))}</dd><dt>Attending doctor</dt><dd>${esc(Kit.docName(r.attendingId))}</dd><dt>Diagnosis</dt><dd>${esc(r.diagnosis)} ${esc((db.icd10.find(c => c.code === r.diagnosis) || {}).name || '')}</dd><dt>Reason</dt><dd>${esc(r.reason)}</dd>
+        <dt>Ward and bed type</dt><dd>${esc((Kit.ward(r.wardPref) || {}).name || '')} · ${esc(r.bedType)}</dd><dt>Planned</dt><dd>${esc(Kit.day(r.plannedDate))}, ${r.los} days</dd><dt>Package</dt><dd>${esc(r.packageCode ? (db.services.find(s => s.code === r.packageCode) || {}).name : 'None')}</dd><dt>Requested</dt><dd>${esc(r.by)}, ${esc(fmtDate(r.at))}</dd>
+        <dt>Financial clearance</dt><dd>${r.clearance ? `${Kit.status('Cleared')} ${esc(r.clearance.payer)} · estimate ${Kit.money(r.clearance.estimate)} · deposit ${Kit.money(r.clearance.deposit)}${r.clearance.preAuth ? ' · pre-auth ' + esc(r.clearance.preAuth) : ''}<div class="small muted">${esc(r.clearance.by)}, ${esc(fmtDate(r.clearance.at))}</div>` : Kit.status('Pending')}</dd>
+        <dt>Bed</dt><dd>${r.bedId ? esc((Kit.bed(r.bedId) || {}).no) + ' reserved' : 'Not allocated'}</dd></dl>`,
+      foot: `<button class="btn danger" id="rCx" ${Rc.gate(OPT, 'cancel')}>Cancel request</button><span class="grow"></span>${r.status === 'Cleared' ? `<button class="btn primary" id="rBed" ${Rc.gate(OPT, 'edit')}>${icon('bed-double')} Allocate bed and admit</button>` : `<button class="btn primary" id="rClr" ${Rc.gate(OPT, 'approve')}>${icon('shield-check')} Financial clearance</button>`}`,
+      onMount: (el, close) => {
+        const on = (id, f) => { const b = $('#' + id, el); if (b) b.addEventListener('click', () => { close(); f(); }); };
+        on('rBed', () => allocate(r)); on('rClr', () => clearance(r));
+        on('rCx', () => confirm({ title: 'Cancel ' + r.no + '?', body: 'The request is closed' + (r.bedId ? ' and the reserved bed is released.' : '.'), confirm: 'Cancel request', reason: true, onConfirm: (reason) => {
+          const bf = r.status; r.status = 'Cancelled'; r.cancelReason = reason;
+          if (r.bedId) { const b = Kit.bed(r.bedId); if (b && b.status === 'Reserved') { b.status = 'Vacant'; } r.bedId = null; }
+          save(); audit('Cancelled admission request', 'Admission request', { id: r.id, label: r.no }, [['Status', bf, 'Cancelled']], { reason }); toast('Request cancelled'); draw(); } }));
+      } });
+  }
+  function clearance(r) {
+    if (!can(OPT, 'approve')) { toast('Financial clearance needs Approve permission.', 'err'); return; }
+    const p = Kit.pt(r.patientId); const cov = Rc.coverage(p.id).filter(c => !(c.to && c.to < T));
+    const bt = (db.receptionBedTypes || []).find(t => t.name === r.bedType) || { rate: 60, nursing: 25 };
+    const pkg = r.packageCode ? db.services.find(s => s.code === r.packageCode) : null;
+    const est = +(pkg ? pkg.price : (bt.rate + bt.nursing) * r.los).toFixed(3);
+    UI.drawer({ title: 'Financial clearance ' + r.no, sub: 'Verify payer, estimate and deposit before the bed is allocated',
+      body: `${Kit.patientBanner(p)}<div class="err-summary hidden"></div><div class="form-grid">
+        ${field({ id: 'fPayer', label: 'Payer scheme', type: 'select', options: cov.map(c => [c.id, (Kit.payer(c.payerId) || {}).name + ' · ' + (Kit.plan(c.planId) || {}).name + (c.verified ? '' : ' (not verified)')]).concat([['cash', 'Cash (self-pay)'], ['waiver', 'Emergency waiver (clear after admission)']]), value: cov[0] ? cov[0].id : 'cash', placeholder: false, full: true })}
+        ${field({ id: 'fEst', label: 'Estimated cost (KWD)', type: 'number', value: est.toFixed(3), attrs: 'step="0.001"', hint: pkg ? 'Package ' + esc(pkg.name) : `${esc(r.bedType)} ${Kit.money(bt.rate)} + nursing ${Kit.money(bt.nursing)} x ${r.los} days` })}
+        ${field({ id: 'fShare', label: 'Patient share (KWD)', type: 'number', readonly: true })}
+        ${field({ id: 'fDep', label: 'Deposit collected (KWD)', type: 'number', value: '0.000', attrs: 'step="0.001" min="0"' })}
+        ${field({ id: 'fAuth', label: 'Pre-authorization number', max: 30, hint: 'Required for insured elective admissions' })}
+        ${field({ id: 'fNote', label: 'Note', full: true, max: 160 })}</div><div id="fWarn" style="margin-top:12px"></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn success" id="fGo" disabled>${icon('shield-check')} Mark cleared</button>`,
+      onMount: (el, close) => {
+        const g = (id) => $('#' + id, el);
+        const chk = () => {
+          const v = g('fPayer').value; const c = cov.find(x => x.id === v); const sh = Rc.share(+g('fEst').value || 0, c ? c.planId : null);
+          g('fShare').value = (v === 'waiver' ? 0 : sh.patient).toFixed(3);
+          const needAuth = c && r.type === 'Elective';
+          g('fAuth').closest('.field').querySelector('label').innerHTML = 'Pre-authorization number' + (needAuth ? '<span class="req">*</span>' : '');
+          g('fWarn').innerHTML = c && !c.verified ? `<div class="banner warn">${icon('shield-alert')}<span>Eligibility of this policy is not verified. Verify it on the patient record first.</span></div>` : v === 'waiver' && r.type !== 'Emergency' ? `<div class="banner err">${icon('ban')}<span>An emergency waiver is only for emergency admissions.</span></div>` : '';
+          g('fGo').disabled = !(+g('fEst').value > 0 && (!needAuth || g('fAuth').value.trim().length >= 4) && !(v === 'waiver' && r.type !== 'Emergency') && !(c && !c.verified));
+        };
+        $$('input,select', el).forEach(i => { i.addEventListener('input', chk); i.addEventListener('change', chk); });
+        g('fGo').addEventListener('click', () => {
+          const v = g('fPayer').value; const c = cov.find(x => x.id === v);
+          r.clearance = { payer: c ? (Kit.payer(c.payerId) || {}).name + ' · ' + (Kit.plan(c.planId) || {}).name : v === 'waiver' ? 'Emergency waiver (clearance after admission)' : 'Cash (self-pay)', coverageId: c ? c.id : null, estimate: +g('fEst').value, deposit: +g('fDep').value || 0, preAuth: g('fAuth').value.trim(), note: g('fNote').value.trim(), by: Rc.myName(), at: Rc.now() };
+          const bf = r.status; r.status = 'Cleared'; save();
+          audit('Financial clearance given', 'Admission request', { id: r.id, label: r.no + ' ' + p.name }, [['Status', bf, 'Cleared'], ['Payer', '', r.clearance.payer], ['Deposit', '', Kit.money(r.clearance.deposit)]]);
+          close(); toast(r.no + ' cleared. Allocate a bed next.'); draw(); setTimeout(() => allocate(r), 60);
+        });
+        chk();
+      } });
+  }
+  /* Bed allocation: ward, room, bed, rate and payer scheme. Creates the IPD encounter. */
+  function allocate(r) {
+    if (!can(OPT, 'edit')) { toast('You need Edit permission on Admissions and Discharge.', 'err'); return; }
+    const p = Kit.pt(r.patientId); let bedId = r.bedId; let ward = r.bedId ? (Kit.bed(r.bedId) || {}).wardId : r.wardPref;
+    UI.drawer({ title: 'Allocate bed · ' + r.no, wide: true, sub: esc(p.name) + ' · ' + esc(r.reason),
+      body: `${Kit.patientBanner(p)}<div class="row wrap" style="margin-bottom:12px"><div id="wsel"></div><span class="grow"></span><span class="legend"><span><i style="background:#1C8A4C"></i>Vacant</span><span><i style="background:#7C4DDB"></i>Reserved for this request</span></span></div>
+        <div class="bedpick" id="beds"></div><div class="card card-pad" style="margin-top:14px" id="sum"></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn" id="bRes" disabled>${icon('bookmark')} Reserve only</button><button class="btn primary" id="bGo" disabled>${icon('log-in')} Admit to bed</button>`,
+      onMount: (el, close) => {
+        const drawW = () => Kit.seg($('#wsel', el), db.wards.map(w => [w.id, w.code + ' · ' + db.beds.filter(b => b.wardId === w.id && b.status === 'Vacant').length + ' free']), ward, (v) => { ward = v; drawB(); });
+        const ok = (b) => b.status === 'Vacant' || (b.status === 'Reserved' && b.id === r.bedId);
+        const drawB = () => {
+          const bs = db.beds.filter(b => b.wardId === ward);
+          $('#beds', el).innerHTML = bs.map(b => { const cls = { Vacant: 'vac', Occupied: 'occ', Cleaning: 'cln', Reserved: 'res', Blocked: 'blk' }[b.status]; const gm = b.gender !== 'Any' && p.gender && b.gender !== p.gender;
+            return `<div class="bed ${cls} ${bedId === b.id ? 'on' : ''} ${ok(b) && !gm ? 'pick' : 'nopick'}" data-b="${b.id}" style="${ok(b) && !gm ? '' : 'opacity:.45;cursor:not-allowed'}"><span class="b-no">${esc(b.no)}</span><span class="b-sub">Room ${esc(b.room)} · ${esc(b.gender)}</span><span class="b-sub">${esc(b.status)}${gm ? ' · gender' : ''}</span></div>`; }).join('');
+          $$('[data-b]', el).forEach(n => n.addEventListener('click', () => { const b = Kit.bed(n.dataset.b); if (!ok(b) || (b.gender !== 'Any' && p.gender && b.gender !== p.gender)) return; bedId = b.id; drawB(); }));
+          sum();
+        };
+        const sum = () => {
+          const b = bedId ? Kit.bed(bedId) : null; const bt = b ? bedType(b) : null;
+          $('#sum', el).innerHTML = b ? `<div class="grid g4"><div><div class="small muted">Ward</div><b>${esc((Kit.ward(b.wardId) || {}).name)}</b></div><div><div class="small muted">Room and bed</div><b>${esc(b.room)} · ${esc(b.no)}</b></div><div><div class="small muted">Rate per day</div><b>${Kit.money(bt.rate)}</b> <span class="small muted">+ nursing ${Kit.money(bt.nursing || 25)}</span></div><div><div class="small muted">Payer scheme</div><b>${esc(r.clearance ? r.clearance.payer : 'Cash')}</b></div></div>`
+            : `<span class="muted">Choose a vacant bed.</span>`;
+          $('#bGo', el).disabled = !b; $('#bRes', el).disabled = !b || b.id === r.bedId;
+        };
+        $('#bRes', el).addEventListener('click', () => {
+          if (r.bedId && r.bedId !== bedId) { const o = Kit.bed(r.bedId); if (o && o.status === 'Reserved') o.status = 'Vacant'; }
+          const b = Kit.bed(bedId); b.status = 'Reserved'; r.bedId = b.id; save(); audit('Reserved bed', 'Bed', { id: b.id, label: b.no }, [['Status', 'Vacant', 'Reserved'], ['For', '', r.no]]); close(); toast(b.no + ' reserved for ' + p.name); draw();
+        });
+        $('#bGo', el).addEventListener('click', () => {
+          const b = Kit.bed(bedId); const bt = bedType(b); const d = Kit.doc(r.admittingId) || {};
+          if (r.bedId && r.bedId !== bedId) { const o = Kit.bed(r.bedId); if (o && o.status === 'Reserved') o.status = 'Vacant'; }
+          const cov = r.clearance && r.clearance.coverageId ? db.receptionCoverage.find(c => c.id === r.clearance.coverageId) : null;
+          const e = { id: UI.uid('en'), no: Kit.nextNo('IP-26-', db.encounters), type: 'IPD', patientId: p.id, doctorId: r.admittingId, attendingId: r.attendingId, clinicId: d.clinicId || null, deptId: d.deptId || 'dp_01', branchId: 'br_01', start: Rc.now(), end: '', status: 'Admitted', bedId: b.id, admissionType: r.type, diagnosis: r.diagnosis, reason: r.reason, payer: cov ? 'Insurance' : 'Cash', expectedDischarge: Kit.addDays(T, r.los), clearance: 'Pending billing', requestId: r.id, admittedBy: Rc.myName() };
+          db.encounters.push(e);
+          Object.assign(b, { status: 'Occupied', patientId: p.id, encounterId: e.id });
+          const lines = [{ code: b.serviceCode, desc: bt.name + ', per day', qty: 1, price: bt.rate }, { code: 'SRV-NUR', desc: 'Nursing care, per day', qty: 1, price: 25 }];
+          const pkg = r.packageCode ? db.services.find(s => s.code === r.packageCode) : null; if (pkg) lines.push({ code: pkg.code, desc: pkg.name, qty: 1, price: pkg.price });
+          const total = Kit.sumBy(lines, l => l.qty * l.price); const sh = Rc.share(total, cov ? cov.planId : null);
+          db.invoices.push({ id: UI.uid('iv'), no: Kit.nextNo('INV-26-', db.invoices), encounterId: e.id, patientId: p.id, date: T, type: 'IPD', lines, total, payerId: cov ? cov.payerId : null, planId: cov ? cov.planId : null, payerAmount: sh.payer, patientAmount: sh.patient, paid: Math.min(sh.patient, (r.clearance || {}).deposit || 0), status: 'Interim', claimStatus: cov ? 'Not submitted' : '', by: Rc.myName() });
+          Object.assign(r, { status: 'Admitted', encounterId: e.id, bedId: b.id });
+          if (r.erEncounterId) { const er = Kit.enc(r.erEncounterId); if (er && !/Discharged|Admitted/.test(er.status)) Object.assign(er, { status: 'Admitted', disposition: 'Admitted to ward', end: Rc.now() }); }
+          save(); audit('Admitted patient', 'Encounter', { id: e.id, label: e.no + ' ' + p.name }, [['Bed', '', b.no], ['Ward', '', (Kit.ward(b.wardId) || {}).name], ['Attending', '', Kit.docName(r.attendingId)]]);
+          close(); toast(`${p.name} admitted to ${b.no}`); tab = 'ip'; draw();
+          setTimeout(() => confirm({ title: 'Print admission documents?', tone: 'primary', icon: 'printer', body: 'Print the wristband and the admission consent form for signature.', confirm: 'Print wristband', cancel: 'Later', onConfirm: () => Rc.printWristband(p, e) }), 80);
+        });
+        drawW(); drawB();
+      } });
+  }
+  function ipDetail(e) {
+    const p = Kit.pt(e.patientId); const b = Kit.bed(e.bedId) || {}; const ivs = ivOf(e); const due = Kit.sumBy(ivs, Rc.balance); const lv = onLeave(e);
+    const tf = (db.receptionTransfers || []).filter(t => t.encounterId === e.id);
+    UI.drawer({ title: e.no + ' · ' + p.name, wide: true, sub: esc((Kit.ward(b.wardId) || {}).name || '') + ' · bed ' + esc(b.no || '') + ' · day ' + losOf(e),
+      body: `${Kit.patientBanner(p, e)}${lv ? `<div class="banner info" style="margin-bottom:12px">${icon('door-open')}<span>On temporary leave since ${esc(fmtDate(lv.departAt))}, expected back ${esc(fmtDate(lv.expectedReturn))}.</span></div>` : ''}
+        <div class="grid g2"><dl class="kv"><dt>Admission type</dt><dd>${esc(e.admissionType || '')}</dd><dt>Admitting doctor</dt><dd>${esc(Kit.docName(e.doctorId))}</dd><dt>Attending doctor</dt><dd>${esc(Kit.docName(e.attendingId || e.doctorId))}</dd><dt>Diagnosis</dt><dd>${esc(e.reason || '')} <span class="mono small">${esc(e.diagnosis || '')}</span></dd><dt>Admitted</dt><dd>${esc(fmtDate(e.start))}</dd><dt>Expected discharge</dt><dd>${esc(Kit.day(e.expectedDischarge))}</dd></dl>
+        <dl class="kv"><dt>Bed</dt><dd>${esc(b.no || '')} · room ${esc(b.room || '')} · ${esc(b.type || '')}</dd><dt>Rate</dt><dd>${Kit.money(bedType(b).rate)} per day</dd><dt>Payer</dt><dd>${esc(Kit.payerLabel(p))}</dd><dt>Billing</dt><dd>${Kit.status(e.clearance || 'Pending billing', e.clearance === 'Cleared' ? 'ok' : 'warn')} · balance ${Kit.money(due)}</dd><dt>Interim bill</dt><dd>${ivs.map(i => esc(i.no) + ' ' + Kit.money(i.total)).join(', ') || '-'}</dd></dl></div>
+        ${tf.length ? `<div class="section-t" style="margin:16px 0 8px">Transfers</div><div class="timeline">${tf.map(t => `<div class="tl-item"><b>${esc(t.kind)}:</b> ${esc(t.from)} to ${esc(t.to)}<div class="meta">${esc(fmtDate(t.at))} · ${esc(t.by)} · ${esc(t.reason)}</div></div>`).join('')}</div>` : ''}
+        <div class="section-t" style="margin:16px 0 8px">Documents</div><div class="row wrap"><button class="btn sm" id="cAdm" ${Rc.gate(OPT, 'print')}>${icon('file-signature')} Admission consent</button><button class="btn sm" id="cSurg" ${Rc.gate(OPT, 'print')}>${icon('file-signature')} Surgical consent</button><button class="btn sm" id="cBand" ${Rc.gate(OPT, 'print')}>${icon('printer')} Wristband</button>${Kit.scopeNote('Signature capture and email of signed copies where agreed')}</div>`,
+      foot: `<button class="btn" id="xBed" ${Rc.gate(OPT, 'edit')}>${icon('arrow-right-left')} Transfer bed</button><button class="btn" id="xTeam" ${Rc.gate(OPT, 'edit')}>${icon('users')} Change care team</button><button class="btn" id="xLeave" ${Rc.gate(OPT, 'edit')} ${lv ? 'disabled title="Already on leave"' : ''}>${icon('door-open')} Temporary leave</button><span class="grow"></span><button class="btn" id="xClr" ${Rc.gate(OPT, 'approve')} ${e.clearance === 'Cleared' ? 'disabled title="Already cleared"' : ''}>${icon('receipt')} Billing clearance</button><button class="btn primary" id="xDc" ${Rc.gate(OPT, 'edit')}>${icon('log-out')} Discharge</button>`,
+      onMount: (el, close) => {
+        const on = (id, f) => { const x = $('#' + id, el); if (x) x.addEventListener('click', f); };
+        on('cAdm', () => Rc.consentForm(p, e, 'Admission')); on('cSurg', () => Rc.consentForm(p, e, 'Surgical')); on('cBand', () => Rc.printWristband(p, e));
+        on('xBed', () => { close(); transferBed(e); }); on('xTeam', () => { close(); transferTeam(e); }); on('xLeave', () => { close(); leave(e); });
+        on('xClr', () => { close(); billClear(e); }); on('xDc', () => { close(); discharge(e); });
+      } });
+  }
+  function transferBed(e) {
+    const p = Kit.pt(e.patientId); const from = Kit.bed(e.bedId); let ward = from.wardId, to = null;
+    UI.drawer({ title: 'Transfer bed · ' + p.name, wide: true, sub: 'From ' + esc(from.no) + '. The old bed goes to cleaning.',
+      body: `<div id="tw" style="margin-bottom:12px"></div><div class="bedpick" id="tb2"></div><div class="form-grid" style="margin-top:14px">${field({ id: 'tR', label: 'Reason for transfer', type: 'select', req: true, options: ['Step up to ICU', 'Step down from ICU', 'Patient request (private room)', 'Isolation needed', 'Gender or age-appropriate ward', 'Specialty ward'].map(x => [x, x]) })}${field({ id: 'tN', label: 'Note', max: 120 })}</div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="tGo" disabled>Transfer</button>`,
+      onMount: (el, close) => {
+        const drawB = () => { $('#tb2', el).innerHTML = db.beds.filter(b => b.wardId === ward && b.status === 'Vacant' && (b.gender === 'Any' || !p.gender || b.gender === p.gender)).map(b => `<div class="bed vac ${to === b.id ? 'on' : ''}" data-b="${b.id}"><span class="b-no">${esc(b.no)}</span><span class="b-sub">Room ${esc(b.room)} · ${Kit.money(bedType(b).rate)}</span></div>`).join('') || '<div class="muted small">No vacant bed in this ward.</div>'; $$('[data-b]', el).forEach(n => n.addEventListener('click', () => { to = n.dataset.b; drawB(); chk(); })); };
+        const chk = () => { $('#tGo', el).disabled = !(to && $('#tR', el).value); };
+        Kit.seg($('#tw', el), db.wards.map(w => [w.id, w.code]), ward, (v) => { ward = v; to = null; drawB(); chk(); });
+        $('#tR', el).addEventListener('change', chk);
+        $('#tGo', el).addEventListener('click', () => {
+          const nb = Kit.bed(to); Object.assign(from, { status: 'Cleaning', patientId: null, encounterId: null }); Object.assign(nb, { status: 'Occupied', patientId: p.id, encounterId: e.id }); e.bedId = nb.id;
+          const reason = $('#tR', el).value + ($('#tN', el).value.trim() ? '. ' + $('#tN', el).value.trim() : '');
+          (db.receptionTransfers = db.receptionTransfers || []).push({ id: UI.uid('tf'), encounterId: e.id, kind: 'Bed', from: from.no, to: nb.no, reason, at: Rc.now(), by: Rc.myName() });
+          save(); audit('Transferred bed', 'Encounter', { id: e.id, label: e.no + ' ' + p.name }, [['Bed', from.no, nb.no]], { reason }); close(); toast(p.name + ' moved to ' + nb.no); draw();
+        });
+        drawB();
+      } });
+  }
+  function transferTeam(e) {
+    const p = Kit.pt(e.patientId);
+    UI.drawer({ title: 'Change care team · ' + p.name, sub: 'Current attending ' + esc(Kit.docName(e.attendingId || e.doctorId)),
+      body: `<div class="form-grid">${field({ id: 'nA', label: 'New attending doctor', type: 'select', req: true, full: true, options: db.doctors.filter(d => d.admitting && d.id !== (e.attendingId || e.doctorId)).map(d => [d.id, d.name + ' · ' + d.specialty]) })}${field({ id: 'nR', label: 'Reason', req: true, full: true, max: 160 })}</div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="nGo" disabled>Change care team</button>`,
+      onMount: (el, close) => {
+        const chk = () => { $('#nGo', el).disabled = !($('#nA', el).value && $('#nR', el).value.trim().length >= 5); };
+        $$('input,select', el).forEach(i => { i.addEventListener('input', chk); i.addEventListener('change', chk); });
+        $('#nGo', el).addEventListener('click', () => {
+          const old = Kit.docName(e.attendingId || e.doctorId); e.attendingId = $('#nA', el).value; const reason = $('#nR', el).value.trim();
+          (db.receptionTransfers = db.receptionTransfers || []).push({ id: UI.uid('tf'), encounterId: e.id, kind: 'Care team', from: old, to: Kit.docName(e.attendingId), reason, at: Rc.now(), by: Rc.myName() });
+          save(); audit('Changed care team', 'Encounter', { id: e.id, label: e.no + ' ' + p.name }, [['Attending', old, Kit.docName(e.attendingId)]], { reason }); close(); toast('Care team changed'); draw();
+        });
+      } });
+  }
+  function leave(e) {
+    const p = Kit.pt(e.patientId);
+    UI.drawer({ title: 'Temporary leave · ' + p.name, sub: 'The bed stays allocated during the leave.',
+      body: `<div style="margin-bottom:12px">${Kit.scopeNote('Scope to be confirmed: Temporary Leave Tracking is 2nd phase in SOW V4')}</div><div class="form-grid">
+        ${field({ id: 'lD', label: 'Departure', type: 'datetime-local', req: true, value: Rc.now().replace(' ', 'T') })}${field({ id: 'lR', label: 'Expected return', type: 'datetime-local', req: true })}
+        ${field({ id: 'lW', label: 'Reason and approval', full: true, req: true, max: 160, placeholder: 'For example: family event, approved by Dr. ...' })}</div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="lGo" disabled>Record departure</button>`,
+      onMount: (el, close) => {
+        const chk = () => { const d = $('#lD', el).value, r = $('#lR', el).value; $('#lGo', el).disabled = !(d && r && r > d && $('#lW', el).value.trim().length >= 5); };
+        $$('input', el).forEach(i => i.addEventListener('input', chk));
+        $('#lGo', el).addEventListener('click', () => {
+          const l = { id: UI.uid('lv'), encounterId: e.id, departAt: $('#lD', el).value.replace('T', ' '), expectedReturn: $('#lR', el).value.replace('T', ' '), returnedAt: '', reason: $('#lW', el).value.trim(), status: 'On leave', by: Rc.myName() };
+          (db.receptionLeaves = db.receptionLeaves || []).push(l); save(); audit('Recorded temporary leave', 'Encounter', { id: e.id, label: e.no + ' ' + p.name }, [['Expected return', '', l.expectedReturn]], { reason: l.reason }); close(); toast('Leave recorded'); tab = 'leave'; draw();
+        });
+      } });
+  }
+  function billClear(e) {
+    const p = Kit.pt(e.patientId); const ivs = ivOf(e); const due = Kit.sumBy(ivs, Rc.balance);
+    confirm({ title: 'Billing clearance for ' + p.name + '?', tone: due > 0 ? 'warn' : 'primary', icon: 'receipt', confirm: 'Give billing clearance', reason: due > 0,
+      body: due > 0 ? `The patient has a balance of <b>${Kit.money(due)}</b>. Collect it at the cashier, or give clearance with a reason (for example a guarantor undertaking).` : 'All interim invoices are settled. The patient can be discharged.',
+      impact: ivs.map(i => `${esc(i.no)} · total ${Kit.money(i.total)} · patient balance ${Kit.money(Rc.balance(i))}`),
+      onConfirm: (reason) => { const bf = e.clearance; e.clearance = 'Cleared'; e.clearedBy = Rc.myName(); ivs.forEach(i => { i.final = true; Rc.setInvStatus(i); }); save(); audit('Billing clearance given', 'Encounter', { id: e.id, label: e.no + ' ' + p.name }, [['Clearance', bf || '', 'Cleared'], ['Balance', '', Kit.money(due)]], reason ? { reason } : undefined); toast('Billing cleared'); draw(); } });
+  }
+  function discharge(e) {
+    const p = Kit.pt(e.patientId); const b = Kit.bed(e.bedId) || {};
+    UI.drawer({ title: 'Discharge · ' + p.name, sub: esc(e.no) + ' · bed ' + esc(b.no || ''),
+      body: `${Kit.patientBanner(p, e)}<div class="err-summary hidden"></div><div class="form-grid">
+        <div class="field full"><label>Discharge type<span class="req">*</span></label><div id="dT"></div></div>
+        ${field({ id: 'dAt', label: 'Discharge date and time', type: 'datetime-local', req: true, value: Rc.now().replace(' ', 'T') })}
+        ${field({ id: 'dDest', label: 'Destination or facility', max: 80 })}
+        ${field({ id: 'dNote', label: 'Note', full: true, max: 200 })}</div>
+        <div class="section-t" style="margin:16px 0 8px">Checks</div>
+        <div class="list-rows"><div>${e.clearance === 'Cleared' ? icon('circle-check') : icon('circle-alert')}<span class="grow">Billing clearance</span>${Kit.status(e.clearance || 'Pending billing', e.clearance === 'Cleared' ? 'ok' : 'warn')}</div>
+          <div>${icon('bed-double')}<span class="grow">Bed ${esc(b.no || '')} is released to cleaning</span><span class="badge b-warn nodot">Cleaning</span></div></div>
+        <div id="dWarn" style="margin-top:12px"></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="dGo" disabled>${icon('log-out')} Discharge and release bed</button>`,
+      onMount: (el, close) => {
+        let type = 'Routine discharge';
+        const chk = () => {
+          const needClear = /Routine|Transfer/.test(type) && e.clearance !== 'Cleared';
+          $('#dWarn', el).innerHTML = needClear ? `<div class="banner err">${icon('receipt')}<span>${esc(type)} needs billing clearance first.</span></div>` : type === 'Death' ? `<div class="banner info">${icon('info')}<span>Billing is settled after discharge. Notify the medical records office for the death notification.</span></div>` : /AMA/.test(type) ? `<div class="banner warn">${icon('triangle-alert')}<span>Ask the patient to sign the AMA form. Outstanding charges remain on the account.</span></div>` : '';
+          $('#dGo', el).disabled = needClear || !$('#dAt', el).value || (/Transfer/.test(type) && !$('#dDest', el).value.trim());
+          $('#dDest', el).closest('.field').querySelector('label').innerHTML = 'Destination or facility' + (/Transfer/.test(type) ? '<span class="req">*</span>' : '');
+        };
+        Kit.seg($('#dT', el), Rc.DISCHARGE_TYPES.map(x => [x, x.replace(' (AMA)', '')]), type, (v) => { type = v; chk(); });
+        $$('input', el).forEach(i => i.addEventListener('input', chk));
+        $('#dGo', el).addEventListener('click', () => confirm({ title: 'Discharge ' + p.name + '?', body: esc(type) + '. The admission closes and bed ' + esc(b.no || '') + ' goes to cleaning.', confirm: 'Discharge', tone: 'primary', icon: 'log-out',
+          onConfirm: () => {
+            const bf = e.status; Object.assign(e, { status: 'Discharged', end: $('#dAt', el).value.replace('T', ' '), dischargeType: type, dischargeDest: $('#dDest', el).value.trim(), dischargeNote: $('#dNote', el).value.trim(), dischargedBy: Rc.myName(), releasedBed: b.no });
+            if (b.id) Object.assign(b, { status: 'Cleaning', patientId: null, encounterId: null });
+            ivOf(e).forEach(i => { i.final = true; Rc.setInvStatus(i); });
+            (db.receptionLeaves || []).forEach(l => { if (l.encounterId === e.id && l.status === 'On leave') { l.status = 'Returned'; l.returnedAt = e.end; } });
+            save(); audit('Discharged patient', 'Encounter', { id: e.id, label: e.no + ' ' + p.name }, [['Status', bf, 'Discharged'], ['Type', '', type], ['Bed', b.no || '', 'Cleaning']]);
+            close(); toast(p.name + ' discharged. Bed ' + (b.no || '') + ' to cleaning.'); tab = 'dc'; draw();
+          } }));
+        chk();
+      } });
+  }
+  $('#newReq').addEventListener('click', () => Rc.admitRequest(null, () => { tab = 'req'; draw(); }));
+  draw();
+  const q = UI.param('req'); if (q) { const r = reqs().find(x => x.id === q); if (r) reqDetail(r); }
+  const en = UI.param('enc'); if (en) { const e = Kit.enc(en); if (e) ipDetail(e); }
+})();
+</script>
+</body>
+</html>

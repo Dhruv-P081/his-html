@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stock count and adjustment · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-material.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/material.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, drawer, confirm, field, showErrors, nowStamp, fmtDate, param } = UI;
+  const M = Material, OPT = 'material.count';
+  if (!UI.page({ opt: OPT, title: 'Stock count and adjustment', subtitle: 'Count sheets per store, variance review, approval and posting of stock adjustments.',
+    actions: M.btn({ id: 'newSc', cls: 'primary', icon: 'clipboard-pen', label: 'New count sheet', allow: can(OPT, 'add'), why: 'Needs Add permission' }) })) return;
+  const list = () => db.materialCounts;
+  const storeOpts = M.storeOpts(OPT);
+  let store = param('wh') || M.ctxWh() || (storeOpts[0] || [])[0] || '';
+  const counted = (c) => c.lines.filter(l => l.counted != null && l.counted !== '').length;
+  const varLines = (c) => c.lines.filter(l => l.counted != null && l.counted !== '' && +l.counted !== l.system);
+  const varVal = (c) => Kit.sumBy(varLines(c), l => (l.counted - l.system) * l.cost);
+
+  $('#page').innerHTML = `<div class="card card-pad" style="margin-bottom:16px"><div class="row wrap" style="gap:16px;align-items:flex-end"><div class="field" style="min-width:260px;margin:0"><label for="whSel">Store</label><select class="input" id="whSel">${storeOpts.map(o => `<option value="${o[0]}" ${o[0] === store ? 'selected' : ''}>${esc(o[1])}</option>`).join('')}</select></div>
+    <div class="small muted grow" style="padding-bottom:10px;min-width:280px">${icon('info')} Blind counts hide the system quantity from the counter. Adjustments post to stock only after a different user approves the variances.</div></div></div>
+    <div class="grid g4" style="margin-bottom:16px" id="kpis"></div><div id="tabs" style="margin-bottom:12px"></div><div id="body"></div>`;
+  let tab = 'open';
+  const TABS = [['open', 'In progress', c => /Counting|Pending approval/.test(c.status)], ['Posted', 'Posted', c => c.status === 'Posted'], ['Cancelled', 'Cancelled', c => c.status === 'Cancelled'], ['adj', 'Adjustments', null]];
+  const mine = () => list().filter(c => c.warehouseId === store);
+  const adjs = () => (db.materialAdjustments || []).filter(a => a.warehouseId === store);
+  const drawTabs = () => Kit.tabs($('#tabs'), TABS.map(([id, label, f]) => ({ id, label, count: f ? mine().filter(f).length : adjs().length })), tab, (t) => { tab = t; drawBody(); });
+  const drawKpis = () => {
+    const m = mine(), last = m.filter(c => c.status === 'Posted').sort((a, b) => b.date.localeCompare(a.date))[0];
+    const a30 = adjs().filter(a => a.date >= Kit.addDays(db.TODAY, -30));
+    $('#kpis').innerHTML = Kit.kpi('Counts in progress', m.filter(c => c.status === 'Counting').length, { icon: 'clipboard-pen', foot: 'Sheets open for counting' })
+      + Kit.kpi('Waiting for approval', m.filter(c => c.status === 'Pending approval').length, { icon: 'hourglass', foot: 'Variances to review' })
+      + Kit.kpi('Net adjustment (30 days)', Kit.money(Kit.sumBy(a30, a => a.qty * a.cost)), { icon: 'scale', foot: a30.length + ' adjustment line(s)' })
+      + Kit.kpi('Last posted count', last ? fmtDate(last.date) : 'None', { icon: 'calendar-check', foot: last ? last.no + ' · ' + last.scope : 'No count posted for this store' });
+  };
+  const drawBody = () => {
+    $('#body').innerHTML = '<div id="tbl"></div>';
+    if (tab === 'adj') {
+      UI.table($('#tbl'), {
+        columns: [
+          { label: 'Adjustment', sort: a => a.no, render: a => `<span class="mono b nw">${esc(a.no)}</span><div class="xs muted">${fmtDate(a.date)}</div>` },
+          { label: 'Item', sort: a => M.item(a.itemId).name, render: a => M.itemCell(a.itemId) },
+          { label: 'Batch', render: a => `<span class="mono nw">${esc(a.batch)}</span>` },
+          { label: 'Qty', cls: 'num', sort: a => a.qty, render: a => `<span class="num ${a.qty < 0 ? 'mm-var-neg' : 'mm-var-pos'}">${a.qty > 0 ? '+' : ''}${Kit.num(a.qty)}</span>` },
+          { label: 'Value', cls: 'num', sort: a => a.qty * a.cost, render: a => `<span class="num nw">${Kit.money(a.qty * a.cost)}</span>` },
+          { label: 'Reason', render: a => esc(a.reason) },
+          { label: 'Approved by', render: a => esc(a.by) },
+        ],
+        rows: () => adjs().slice().sort((a, b) => b.no.localeCompare(a.no)), search: a => [a.no, M.itemLabel(a.itemId), a.batch, a.reason].join(' '), searchPlaceholder: 'Search adjustment, item or batch',
+        filters: [{ label: 'Direction', options: [['gain', 'Gain'], ['loss', 'Loss']], test: (a, v) => v === 'gain' ? a.qty > 0 : a.qty < 0 }], empty: 'No adjustments posted for this store', emptyIcon: 'scale',
+      });
+      return;
+    }
+    UI.table($('#tbl'), {
+      columns: [
+        { label: 'Count no.', sort: c => c.no, render: c => `<span class="mono b nw">${esc(c.no)}</span><div class="xs muted">${fmtDate(c.date)}</div>` },
+        { label: 'Scope', render: c => `<b>${esc(c.scope)}</b><div class="xs muted">${c.blind ? 'Blind count' : 'Open count'} · ${c.lines.length} batch lines</div>` },
+        { label: 'Progress', sort: c => counted(c) / c.lines.length, render: c => `<div class="progress ${counted(c) === c.lines.length ? 'ok' : 'warn'}" style="width:100px"><i style="width:${Math.max(2, Math.round(100 * counted(c) / (c.lines.length || 1)))}%"></i></div><div class="xs muted">${counted(c)} of ${c.lines.length} counted</div>` },
+        { label: 'Variance lines', cls: 'num', render: c => c.status === 'Counting' && c.blind ? '<span class="mute">Hidden until submitted</span>' : `${varLines(c).length}` },
+        { label: 'Variance value', cls: 'num', sort: c => varVal(c), render: c => c.status === 'Counting' && c.blind ? '' : `<span class="num nw ${varVal(c) < 0 ? 'mm-var-neg' : varVal(c) > 0 ? 'mm-var-pos' : ''}">${Kit.money(varVal(c))}</span>` },
+        { label: 'Counted by', render: c => esc(c.createdBy) },
+        { label: 'Status', sort: c => c.status, render: c => M.st(c.status) },
+      ],
+      rows: () => mine().filter(TABS.find(t => t[0] === tab)[2]).slice().sort((a, b) => b.no.localeCompare(a.no)),
+      search: c => [c.no, c.scope, c.createdBy].join(' '), searchPlaceholder: 'Search count sheet',
+      onRow: open, empty: 'No count sheets in this view for ' + M.whName(store), emptyIcon: 'clipboard-pen',
+    });
+  };
+  const refresh = () => { drawTabs(); drawKpis(); drawBody(); };
+  $('#whSel').addEventListener('change', (e) => { store = e.target.value; refresh(); });
+  refresh();
+
+  function printSheet(c) {
+    M.docPrint({ title: 'Count sheet ' + c.no, heading: 'STOCK COUNT SHEET' + (c.blind ? ' (BLIND)' : ''), left: [['Store', M.whName(c.warehouseId)], ['Scope', c.scope], ['Reason', c.reason]], right: [['Count no.', c.no], ['Date', fmtDate(c.date)], ['Status', c.status]],
+      columns: ['#', 'Item code', 'Description', 'Batch', 'Expiry', 'UOM'].concat(c.blind ? [] : ['System qty']).concat(['Counted qty']),
+      rows: c.lines.map((l, i) => [i + 1, M.item(l.itemId).code, M.item(l.itemId).name, l.batch, fmtDate(l.expiry), M.item(l.itemId).uom].concat(c.blind ? [] : [Kit.num(l.system)]).concat([l.counted != null && l.counted !== '' ? Kit.num(l.counted) : '________'])),
+      sign: ['Counted by', 'Witnessed by', 'Store in-charge'] });
+  }
+
+  function open(c) {
+    const editing = c.status === 'Counting' && can(OPT, 'add');
+    const hide = c.blind && c.status === 'Counting';
+    const ap = M.canAct(OPT, 'approve', c);
+    drawer({ title: c.no, sub: `${esc(M.whName(c.warehouseId))} · ${esc(c.scope)} · ${M.st(c.status)}`, wide: true,
+      body: `${c.status === 'Pending approval' && !ap.ok ? `<div class="banner warn" style="margin-bottom:12px">${icon('lock')}<span>${esc(ap.why)}</span></div>` : ''}
+        ${c.status === 'Posted' ? `<div class="banner ok" style="margin-bottom:12px">${icon('circle-check')}<span>Approved by ${esc(c.approvedBy)} on ${fmtDate(c.approvedAt)}. ${varLines(c).length} adjustment(s) posted to stock.</span></div>` : ''}
+        ${c.recountReason ? `<div class="banner warn" style="margin-bottom:12px">${icon('rotate-ccw')}<span>Returned for recount: ${esc(c.recountReason)}</span></div>` : ''}
+        <div class="row wrap" style="margin-bottom:10px"><div class="search" style="max-width:320px">${icon('search')}<input class="input" id="cQ" placeholder="Find item or batch" aria-label="Find item or batch"></div><span class="grow"></span>${c.status !== 'Counting' ? `<label class="check small"><input type="checkbox" id="cVar"> Variances only</label>` : ''}<span class="small muted" id="cProg"></span></div>
+        <div class="table-wrap" style="max-height:52vh;overflow:auto"><table class="tbl compact"><thead><tr><th>Item</th><th>Batch</th><th>Expiry</th>${hide ? '' : '<th class="num">System</th>'}<th class="num" style="width:120px">Counted</th>${hide ? '' : '<th class="num">Variance</th><th class="num">Value</th>'}</tr></thead><tbody>
+          ${c.lines.map((l, i) => { const has = l.counted != null && l.counted !== ''; const d = has ? l.counted - l.system : 0; return `<tr data-i="${i}" data-s="${esc((M.itemLabel(l.itemId) + ' ' + l.batch).toLowerCase())}" data-v="${has && d !== 0 ? 1 : 0}"><td>${M.itemCell(l.itemId, esc(M.item(l.itemId).uom))}</td><td class="mono nw">${esc(l.batch)}</td><td>${fmtDate(l.expiry)} ${M.expTone(l.expiry) ? M.st(M.expTone(l.expiry)) : ''}</td>${hide ? '' : `<td class="num">${Kit.num(l.system)}</td>`}
+            <td class="num">${editing ? `<input class="input" type="number" min="0" value="${has ? l.counted : ''}" data-c="${i}" aria-label="Counted quantity">` : has ? Kit.num(l.counted) : '<span class="mute">-</span>'}</td>${hide ? '' : `<td class="num ${d < 0 ? 'mm-var-neg' : d > 0 ? 'mm-var-pos' : ''}" data-d="${i}">${has ? (d > 0 ? '+' : '') + Kit.num(d) : ''}</td><td class="num" data-dv="${i}">${has && d ? Kit.money(d * l.cost, false) : ''}</td>`}</tr>`; }).join('')}
+        </tbody>${hide ? '' : `<tfoot><tr><td colspan="5" style="text-align:end"><b>Net variance</b></td><td class="num"><b id="cNet">${Kit.num(Kit.sumBy(varLines(c), l => l.counted - l.system))}</b></td><td class="num"><b id="cNetV">${Kit.money(varVal(c))}</b></td></tr></tfoot>`}</table></div>`,
+      foot: `${M.btn({ id: 'cPrint', icon: 'printer', label: 'Print count sheet' })}
+        ${/Counting|Pending approval/.test(c.status) ? M.btn({ id: 'cCancel', cls: 'danger', icon: 'ban', label: 'Cancel count', allow: can(OPT, 'approve') || c.createdBy === M.meName() ? true : { ok: false, why: 'Only the counter or an approver' } }) : ''}
+        <span class="grow"></span><button class="btn" data-close>Close</button>
+        ${editing ? `<button class="btn" id="cSave">${icon('save')} Save progress</button>${M.btn({ id: 'cSubmit', cls: 'primary', icon: 'send', label: 'Submit for approval' })}` : ''}
+        ${c.status === 'Pending approval' ? M.btn({ id: 'cRecount', icon: 'rotate-ccw', label: 'Return for recount', allow: ap }) + M.btn({ id: 'cApprove', cls: 'success', icon: 'check', label: 'Approve and post', allow: ap }) : ''}`,
+      onMount: (el, close) => {
+        const on = (id, fn) => { const b = $('#' + id, el); if (b) b.addEventListener('click', fn); };
+        const prog = () => { $('#cProg', el).textContent = `${counted(c)} of ${c.lines.length} counted`; const sb = $('#cSubmit', el); if (sb) { sb.disabled = counted(c) < c.lines.length; sb.title = sb.disabled ? 'Count every line first' : ''; } };
+        $$('[data-c]', el).forEach(inp => { inp.addEventListener('input', () => { const l = c.lines[+inp.dataset.c]; l.counted = inp.value === '' ? null : Math.max(0, Number(inp.value)); prog(); }); inp.addEventListener('change', save); });
+        const filt = () => { const q = $('#cQ', el).value.toLowerCase(); const vo = $('#cVar', el) && $('#cVar', el).checked; $$('tbody tr', el).forEach(tr => { tr.style.display = tr.dataset.s.includes(q) && (!vo || tr.dataset.v === '1') ? '' : 'none'; }); };
+        $('#cQ', el).addEventListener('input', filt); const cv = $('#cVar', el); if (cv) cv.addEventListener('change', filt);
+        prog();
+        on('cPrint', () => printSheet(c));
+        on('cSave', () => { save(); toast('Count saved: ' + counted(c) + ' of ' + c.lines.length + ' lines'); refresh(); });
+        on('cSubmit', () => confirm({ title: 'Submit ' + c.no + ' for approval?', tone: 'primary', icon: 'send', confirm: 'Submit', body: 'The counts are locked and the variances are shown to the approver.',
+          impact: [`${varLines(c).length} line(s) with a variance`, 'Net value ' + Kit.money(varVal(c))],
+          onConfirm: () => { c.status = 'Pending approval'; c.submittedAt = nowStamp(); delete c.recountReason; save(); audit('Stock count submitted', 'Stock count', { id: c.id, label: c.no }, [['Status', 'Counting', 'Pending approval'], ['Variance value', '', Kit.money(varVal(c))]]); toast(c.no + ' submitted'); close(); refresh(); } }));
+        on('cRecount', () => confirm({ title: 'Return ' + c.no + ' for recount?', body: 'The sheet goes back to Counting.', confirm: 'Return for recount', tone: 'warn', reason: true,
+          onConfirm: (reason) => { c.status = 'Counting'; c.recountReason = reason; save(); audit('Stock count returned', 'Stock count', { id: c.id, label: c.no }, [['Status', 'Pending approval', 'Counting']], { reason }); toast(c.no + ' returned for recount'); close(); refresh(); } }));
+        on('cCancel', () => confirm({ title: 'Cancel ' + c.no + '?', body: 'No adjustment is posted.', confirm: 'Cancel count', reason: true,
+          onConfirm: (reason) => { const b = c.status; c.status = 'Cancelled'; c.cancelReason = reason; save(); audit('Stock count cancelled', 'Stock count', { id: c.id, label: c.no }, [['Status', b, 'Cancelled']], { reason }); toast(c.no + ' cancelled'); close(); refresh(); } }));
+        on('cApprove', () => confirm({ title: 'Approve and post ' + c.no + '?', tone: 'primary', icon: 'check', confirm: 'Approve and post', body: 'Stock is set to the counted quantity for every variance line. This cannot be undone.',
+          impact: [`${varLines(c).length} adjustment line(s)`, `Gains ${Kit.money(Kit.sumBy(varLines(c).filter(l => l.counted > l.system), l => (l.counted - l.system) * l.cost))}`, `Losses ${Kit.money(Kit.sumBy(varLines(c).filter(l => l.counted < l.system), l => (l.counted - l.system) * l.cost))}`],
+          onConfirm: () => {
+            db.materialAdjustments = db.materialAdjustments || [];
+            varLines(c).forEach(l => {
+              const d = l.counted - l.system;
+              let s = db.stock.find(x => x.id === l.stockId);
+              if (s) s.qty = Math.max(0, s.qty + d); else if (d > 0) M.addStock(l.itemId, c.warehouseId, l.batch, l.expiry, d, l.cost);
+              db.materialAdjustments.push({ id: UI.uid('mad'), no: Kit.nextNo('ADJ-26-', db.materialAdjustments), date: db.TODAY, countId: c.id, warehouseId: c.warehouseId, itemId: l.itemId, batch: l.batch, qty: d, cost: l.cost, reason: 'Stock count ' + c.no, by: M.meName() });
+            });
+            c.status = 'Posted'; c.approvedBy = M.meName(); c.approvedAt = nowStamp();
+            save(); audit('Stock adjustment posted', 'Stock count', { id: c.id, label: c.no }, [['Status', 'Pending approval', 'Posted'], ['Adjustment value', '', Kit.money(varVal(c))]]);
+            toast(c.no + ' posted. ' + varLines(c).length + ' adjustment(s).'); close(); refresh();
+          } }));
+      } });
+  }
+
+  function create() {
+    const cats = Array.from(new Set(db.stock.filter(s => s.warehouseId === store && s.qty > 0).map(s => M.item(s.itemId).category))).sort();
+    drawer({ title: 'New count sheet', sub: esc(M.whName(store)) + '. The sheet freezes the system quantity of every batch now.',
+      body: `<div class="err-summary hidden"></div><div class="form-grid">
+        ${field({ id: 'nScope', label: 'Scope', type: 'select', options: [['All items', 'All items in the store']].concat(cats.map(c => [c, c])), value: 'All items', placeholder: false, full: true })}
+        ${field({ id: 'nReason', label: 'Reason', type: 'select', options: [['Cycle count', 'Cycle count'], ['Month-end count', 'Month-end count'], ['Year-end count', 'Year-end count'], ['Spot check after discrepancy', 'Spot check after discrepancy']], value: 'Cycle count', placeholder: false })}
+        <label class="check" style="align-self:end;padding-bottom:10px"><input type="checkbox" id="nBlind" checked> Blind count (hide system quantity)</label></div>
+        <div class="small muted" id="nInfo" style="margin-top:12px"></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><span class="grow"></span><button class="btn primary" id="nGo">${icon('clipboard-pen')} Create count sheet</button>`,
+      onMount: (el, close) => {
+        const pool = () => db.stock.filter(s => s.warehouseId === store && s.qty > 0 && ($('#nScope', el).value === 'All items' || M.item(s.itemId).category === $('#nScope', el).value));
+        const info = () => { const p = pool(); $('#nInfo', el).innerHTML = `${icon('info')} ${p.length} batch line(s) of ${new Set(p.map(s => s.itemId)).size} item(s).`; $('#nGo', el).disabled = !p.length || mine().some(c => c.status === 'Counting' && c.scope === $('#nScope', el).value); if (mine().some(c => c.status === 'Counting' && c.scope === $('#nScope', el).value)) $('#nInfo', el).innerHTML += ' <b>A count with this scope is already open.</b>'; };
+        $('#nScope', el).addEventListener('change', info);
+        $('#nGo', el).addEventListener('click', () => {
+          const c = { id: UI.uid('msc'), no: M.docNo('SC-26-', 'materialCounts'), warehouseId: store, date: db.TODAY, scope: $('#nScope', el).value, blind: $('#nBlind', el).checked, status: 'Counting', createdBy: M.meName(), reason: $('#nReason', el).value,
+            lines: pool().map(s => ({ stockId: s.id, itemId: s.itemId, batch: s.batch, expiry: s.expiry, system: s.qty, counted: null, cost: M.layerCost(s) })) };
+          db.materialCounts.push(c); save(); audit('Stock count created', 'Stock count', { id: c.id, label: c.no }, [['Store', '', M.whName(store)], ['Lines', '', String(c.lines.length)]]);
+          toast(c.no + ' created'); close(); tab = 'open'; refresh(); open(c);
+        });
+        info();
+      } });
+  }
+  $('#newSc').addEventListener('click', create);
+  M.openFromQuery(list(), open);
+})();
+</script>
+</body>
+</html>

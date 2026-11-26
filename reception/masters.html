@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reception masters · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-reception.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/reception.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, $, $$ } = UI;
+  if (!UI.page({ opt: 'reception.masters', title: 'Reception masters', subtitle: 'Patient Master, bed, room and ward, triage, document types, payment modes, and tax and VAT (SOW V4 Module 1).' })) return;
+  $('#page').innerHTML = `<div style="margin-bottom:14px">${Kit.phase2('2nd phase masters, not configured here: Discount and Concession Matrix, Billing Counter and Till, Receipt and Invoice Series. The VAT masters in the 2nd phase list overlap with the Tax and VAT master below (confirmation required).')}</div><div id="m"></div>`;
+  const wards = () => db.wards.map(w => [w.id, w.code + ' · ' + w.name]);
+  Kit.masters($('#m'), { opt: 'reception.masters', defs: [
+    { id: 'idtypes', title: 'ID types', icon: 'id-card', key: 'receptionIdTypes', note: 'Patient Master: identity documents accepted at registration.',
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Name', req: true }, { key: 'format', label: 'Format rule' }, { key: 'usedFor', label: 'Used for', full: true }] },
+    { id: 'nationality', title: 'Nationalities', icon: 'flag', key: 'receptionNationalities', note: 'Patient Master: nationality list with GCC flag.',
+      fields: [{ key: 'code', label: 'ISO code', req: true }, { key: 'name', label: 'Nationality', req: true }, { key: 'gcc', label: 'GCC national', type: 'check' }], columns: ['code', 'name', 'gcc'] },
+    { id: 'relations', title: 'Relationship types', icon: 'users', key: 'receptionRelations', note: 'Patient Master: family, guarantor, dependant and corporate links.',
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Relationship', req: true }, { key: 'role', label: 'Link role', type: 'select', options: ['Family', 'Guarantor', 'Dependant', 'Corporate'], req: true }, { key: 'reciprocal', label: 'Reciprocal' }] },
+    { id: 'wards', title: 'Wards', icon: 'building', key: 'wards', note: 'Bed, room and ward master. Wards are shared with Nursing.',
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Ward name', req: true }, { key: 'floor', label: 'Floor', req: true }, { key: 'type', label: 'Ward type', type: 'select', options: ['General ward', 'Paediatric', 'ICU', 'Private', 'Maternity', 'Isolation'], req: true }] },
+    { id: 'rooms', title: 'Rooms', icon: 'door-closed', key: 'receptionRooms', note: 'Rooms per ward with gender and amenities.',
+      fields: [{ key: 'code', label: 'Room', req: true }, { key: 'wardId', label: 'Ward', type: 'select', options: wards(), req: true }, { key: 'roomType', label: 'Room type' }, { key: 'beds', label: 'Beds', type: 'number' }, { key: 'gender', label: 'Gender', type: 'select', options: ['Male', 'Female', 'Any'] }, { key: 'amenities', label: 'Amenities', full: true }], columns: ['code', 'roomType', 'beds', 'gender'] },
+    { id: 'bedtypes', title: 'Bed types and rates', icon: 'bed-double', key: 'receptionBedTypes', note: 'Daily rates link to the charge code used for room charges.',
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Bed type', req: true }, { key: 'serviceCode', label: 'Charge code', type: 'select', options: db.services.filter(s => s.category === 'Room').map(s => [s.code, s.code + ' ' + s.name]), req: true }, { key: 'rate', label: 'Daily rate (KWD)', type: 'number', money: true, req: true }, { key: 'nursing', label: 'Nursing per day (KWD)', type: 'number', money: true }, { key: 'amenities', label: 'Amenities', full: true }], columns: ['code', 'name', 'serviceCode', 'rate'] },
+    { id: 'beds', title: 'Beds', icon: 'bed', key: 'beds', code: 'no', note: 'Bed status (occupied, vacant, cleaning, reserved, blocked) is managed on the Bed Board.',
+      fields: [{ key: 'no', label: 'Bed number', req: true }, { key: 'wardId', label: 'Ward', type: 'select', options: wards(), req: true }, { key: 'room', label: 'Room', req: true }, { key: 'type', label: 'Bed type', type: 'select', options: (db.receptionBedTypes || []).map(t => t.name), req: true }, { key: 'gender', label: 'Gender', type: 'select', options: ['Male', 'Female', 'Any'], req: true }, { key: 'serviceCode', label: 'Charge code', type: 'select', options: db.services.filter(s => s.category === 'Room').map(s => [s.code, s.code]), req: true }], columns: ['no', 'room', 'type', 'gender'] },
+    { id: 'triage', title: 'Triage categories', icon: 'siren', key: 'receptionTriage', note: 'ESI 1-5 with colour codes, time to doctor and alert thresholds. Used by the ER board.',
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'level', label: 'ESI level', type: 'number', req: true }, { key: 'name', label: 'Category', req: true }, { key: 'colour', label: 'Colour', req: true }, { key: 'hex', label: 'Colour code (hex)', req: true }, { key: 'targetMins', label: 'Seen by doctor within (min)', type: 'number', req: true }, { key: 'alertMins', label: 'Alert after (min)', type: 'number' }, { key: 'area', label: 'Default area', type: 'select', options: window.Reception.AREAS, req: true }, { key: 'rule', label: 'Criteria', full: true }], columns: ['code', 'name', 'colour', 'targetMins'] },
+    { id: 'doctypes', title: 'Document types', icon: 'file-text', key: 'receptionDocTypes', note: 'Identity documents, insurance cards and clinical attachments.',
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Document type', req: true }, { key: 'category', label: 'Category', type: 'select', options: ['Identity', 'Insurance', 'Clinical', 'Consent', 'Administrative'], req: true }, { key: 'expiry', label: 'Expiry date required', type: 'check' }] },
+    { id: 'paymodes', title: 'Payment modes', icon: 'credit-card', key: 'receptionPayModes', note: 'Modes offered at the cashier. GL account mapping is confirmed with Finance.',
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Payment mode', req: true }, { key: 'type', label: 'Type', type: 'select', options: ['Cash', 'Card', 'Credit', 'Online', 'Bank'], req: true }, { key: 'refRequired', label: 'Reference required', type: 'check' }, { key: 'refundable', label: 'Refundable', type: 'check' }, { key: 'gl', label: 'GL account' }], columns: ['code', 'name', 'type', 'refRequired'] },
+    { id: 'tax', title: 'Tax and VAT', icon: 'percent', key: 'receptionTax', note: 'Scope to be confirmed: the VAT masters in the 2nd phase list overlap with this master.',
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Tax name', req: true }, { key: 'rate', label: 'Rate (%)', type: 'number', req: true }, { key: 'appliesTo', label: 'Applies to' }, { key: 'from', label: 'Effective from', type: 'date', req: true }, { key: 'note', label: 'Note', full: true }], columns: ['code', 'name', 'rate', 'from'] },
+  ] });
+  /* Beds are shared records whose status is driven by the Bed Board. Keep that status when a bed is edited here. */
+  const BED_ST = ['Occupied', 'Vacant', 'Cleaning', 'Reserved', 'Blocked'];
+  new MutationObserver(() => {
+    const no = $('.drawer #m_no'), st = $('.drawer #m_status');
+    if (no && $('.drawer #m_room') && st && !st.dataset.fixed) {
+      const b = db.beds.find(x => x.no === no.value);
+      if (b) { st.innerHTML = `<option>${b.status}</option>`; st.disabled = true; st.dataset.fixed = '1'; const lab = st.closest('.field').querySelector('label'); if (lab) lab.textContent = 'Status (managed on the Bed Board)'; }
+    }
+    let fixed = false;
+    db.beds.forEach(b => { if (!BED_ST.includes(b.status)) { b.status = 'Vacant'; b.patientId = b.patientId || null; b.encounterId = b.encounterId || null; fixed = true; } });
+    if (fixed) save();
+  }).observe(document.body, { childList: true, subtree: true });
+})();
+</script>
+</body>
+</html>

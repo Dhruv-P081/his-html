@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claim batches · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-insurance.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/insurance.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, drawer, confirm, me, nowStamp, uid } = UI;
+  const I = Insurance, OPT = 'insurance.claims.sub';
+  const canAdd = can(OPT, 'add'), canVer = can(OPT, 'verify'), canPrint = can(OPT, 'print');
+  if (!UI.page({ opt: OPT, title: 'Claim batches', subtitle: 'Create batches from eligible invoices, validate them against the authority rules, fix errors and export the claim file.',
+    actions: `<button class="btn" id="rulesBtn">${icon('list-checks')} Validation rule set</button>` })) return;
+
+  let tab = UI.param('tab') || 'eligible';
+  const selected = new Set();
+  const eligible = () => I.insured().filter(i => i.claimStatus === 'Not submitted' && i.status !== 'Interim');
+  const interim = () => I.insured().filter(i => i.claimStatus === 'Not submitted' && i.status === 'Interim');
+  const bAmount = (b) => Kit.sumBy(b.invoiceIds.map(I.inv).filter(Boolean), i => i.payerAmount);
+  const bIssues = (b) => b.invoiceIds.map(I.inv).filter(Boolean).reduce((m, i) => { const v = I.validate(i); m.e += I.errs(v); m.w += I.warns(v); if (I.errs(v)) m.bad++; return m; }, { e: 0, w: 0, bad: 0 });
+  const BST = { draft: ['Draft', 'Validated', 'Exported'], submitted: ['Submitted'], remitted: ['Remitted'] };
+
+  $('#page').innerHTML = `<div class="row wrap" style="margin-bottom:12px;gap:10px">${Kit.scopeNote('Scope to be confirmed: one local authority, its claim rule set and the agreed export file format. Shown with a proposed rule set and CSV layout.', 'SOW V4 Module 9')}</div><div id="tabs"></div><div id="body"></div>`;
+  const drawTabs = () => Kit.tabs($('#tabs'), [
+    { id: 'eligible', label: 'Eligible claims', count: eligible().length, icon: 'file-stack' },
+    { id: 'draft', label: 'Open batches', count: db.insuranceBatches.filter(b => BST.draft.includes(b.status)).length },
+    { id: 'submitted', label: 'Submitted', count: db.insuranceBatches.filter(b => b.status === 'Submitted').length },
+    { id: 'remitted', label: 'Remitted', count: db.insuranceBatches.filter(b => b.status === 'Remitted').length },
+    { id: 'all', label: 'All batches', count: db.insuranceBatches.length }], tab, (t) => { tab = t; drawBody(); });
+
+  let tb;
+  function drawBody() {
+    const host = $('#body');
+    if (tab === 'eligible') {
+      const ni = interim().length;
+      host.innerHTML = `${ni ? `<div class="banner info" style="margin-bottom:12px">${icon('info')}<span>${ni} inpatient claim${ni > 1 ? 's are' : ' is'} on an interim invoice and become eligible after the final bill at discharge.</span></div>` : ''}<div id="elT"></div>`;
+      tb = UI.table($('#elT'), {
+        columns: [
+          { label: '', render: r => `<input type="checkbox" data-ck="${r.id}" ${selected.has(r.id) ? 'checked' : ''} aria-label="Select ${esc(r.no)}">` },
+          { label: 'Claim', sort: r => r.no, render: r => `<span class="mono">${esc(r.no)}</span><div class="small muted">${esc(r.type)} · ${Kit.day(r.date)}</div>` },
+          { label: 'Patient', sort: r => Kit.ptName(r.patientId), render: r => Kit.patientCell(Kit.pt(r.patientId)) },
+          { label: 'Payer', sort: r => I.payerCode(r.payerId), render: r => `<b>${esc(I.payerCode(r.payerId))}</b><div class="small muted">${esc((Kit.plan(r.planId) || {}).name || '')}</div>` },
+          { label: 'Diagnosis', render: r => I.dx(r) ? `<span class="mono">${esc(I.dx(r))}</span>` : '<span class="badge b-err nodot">Missing</span>' },
+          { label: 'Payer share (KWD)', cls: 'num', sort: r => r.payerAmount, render: r => `<span class="num">${Kit.money(r.payerAmount, false)}</span>` },
+          { label: 'Validation', render: r => I.vBadge(I.validate(r)) },
+          { label: '', cls: 'actions', render: r => `<button class="btn xs" data-fx="${r.id}">${icon('wrench')} Check</button>` },
+        ],
+        rows: eligible, search: r => [r.no, Kit.ptName(r.patientId), (Kit.pt(r.patientId) || {}).mrn, I.payerName(r.payerId)].join(' '), searchPlaceholder: 'Search claim, patient or payer',
+        filters: [{ label: 'Payer', options: db.payers.map(p => [p.id, p.name]), test: (r, v) => r.payerId === v }, { label: 'Validation', options: [['ok', 'No errors'], ['err', 'Has errors']], test: (r, v) => (I.errs(I.validate(r)) === 0) === (v === 'ok') }],
+        toolbar: `<span class="small muted" id="selInfo"></span><button class="btn primary sm" id="mkBatch" ${canAdd ? '' : 'disabled title="Needs Add permission"'}>${icon('layers')} Create batch</button>`,
+        afterDraw: (t) => {
+          $$('[data-ck]', t).forEach(c => c.addEventListener('change', () => { c.checked ? selected.add(c.dataset.ck) : selected.delete(c.dataset.ck); selInfo(); }));
+          $$('[data-fx]', t).forEach(b => b.addEventListener('click', () => I.fixDrawer(I.inv(b.dataset.fx), () => tb.redraw())));
+        },
+        empty: 'No eligible claims', emptyIcon: 'file-stack',
+      });
+      const selInfo = () => { const n = [...selected].filter(id => eligible().some(i => i.id === id)).length; $('#selInfo').textContent = n ? n + ' selected' : 'Select claims of one payer'; if (canAdd) $('#mkBatch').disabled = !n; };
+      selInfo();
+      $('#mkBatch').addEventListener('click', createBatch);
+      return;
+    }
+    host.innerHTML = '<div id="bT"></div>';
+    tb = UI.table($('#bT'), {
+      columns: [
+        { label: 'Batch', sort: r => r.no, render: r => `<b class="mono">${esc(r.no)}</b> ${r.type === 'Resubmission' ? I.status('Resubmission') : ''}<div class="small muted">Created ${esc(Kit.when(r.createdAt))} by ${esc(r.createdBy)}</div>` },
+        { label: 'Payer', sort: r => I.payerCode(r.payerId), render: r => `<b>${esc(I.payerName(r.payerId))}</b>` },
+        { label: 'Service period', sort: r => r.from, render: r => `${Kit.day(r.from)}${r.to !== r.from ? ' to ' + Kit.day(r.to) : ''}` },
+        { label: 'Claims', cls: 'num', sort: r => r.invoiceIds.length, render: r => `<span class="num">${r.invoiceIds.length}</span>` },
+        { label: 'Payer share (KWD)', cls: 'num', sort: r => bAmount(r), render: r => `<span class="num">${Kit.money(bAmount(r), false)}</span>` },
+        { label: 'Validation', render: r => { if (!BST.draft.includes(r.status)) return '<span class="small muted">Passed at submission</span>'; const x = bIssues(r); return x.e || x.w ? `${x.e ? `<span class="badge b-err">${x.e} errors</span> ` : ''}${x.w ? `<span class="badge b-warn">${x.w} warnings</span>` : ''}` : `<span class="badge b-ok">Valid</span>`; } },
+        { label: 'Status', sort: r => r.status, render: r => I.status(r.status) },
+        { label: '', cls: 'actions', render: r => `<button class="btn xs" data-o="${r.id}">${icon('eye')} Open</button>` },
+      ],
+      rows: () => db.insuranceBatches.filter(b => tab === 'all' || (BST[tab] || []).includes(b.status)).slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+      search: r => [r.no, I.payerName(r.payerId), r.createdBy].join(' '), searchPlaceholder: 'Search batch or payer',
+      filters: [{ label: 'Payer', options: db.payers.map(p => [p.id, p.name]), test: (r, v) => r.payerId === v }, { label: 'Type', options: [['Original', 'Original'], ['Resubmission', 'Resubmission']], test: (r, v) => r.type === v }],
+      onRow: r => openBatch(r), afterDraw: (t) => $$('[data-o]', t).forEach(b => b.addEventListener('click', () => openBatch(I.batch(b.dataset.o)))),
+      empty: 'No batches in this list', emptyIcon: 'layers',
+    });
+  }
+  const refresh = () => { drawTabs(); drawBody(); };
+
+  function createBatch() {
+    const ids = [...selected].filter(id => eligible().some(i => i.id === id));
+    const invs = ids.map(I.inv);
+    const payers = Array.from(new Set(invs.map(i => i.payerId)));
+    if (payers.length !== 1) { toast('A batch is for one payer. Select claims of one payer only.', 'err'); return; }
+    const bad = invs.filter(i => I.errs(I.validate(i))).length;
+    const dates = invs.map(i => i.date).sort();
+    confirm({ title: 'Create claim batch?', body: `${invs.length} claim${invs.length > 1 ? 's' : ''} for ${esc(I.payerName(payers[0]))}, payer share ${Kit.money(Kit.sumBy(invs, i => i.payerAmount))}.`, tone: 'primary', confirm: 'Create batch',
+      impact: bad ? [`${bad} claim(s) have validation errors. Fix them in the batch before export.`] : ['All selected claims pass validation.'],
+      onConfirm: () => {
+        const b = { id: uid('icb'), no: Kit.nextNo('CB-26-', db.insuranceBatches), payerId: payers[0], type: 'Original', from: dates[0], to: dates[dates.length - 1], invoiceIds: ids, status: 'Draft', format: 'CSV', createdBy: me().displayName, createdAt: nowStamp(), validatedAt: '', exportedAt: '', exportedBy: '', submittedAt: '', submittedBy: '' };
+        db.insuranceBatches.push(b);
+        invs.forEach(i => { i.claimStatus = 'In batch'; I.cd(i.id).batchId = b.id; });
+        save(); audit('Created claim batch', 'Claim batch', { id: b.id, label: b.no }, [['Claims', '', String(ids.length)], ['Payer', '', I.payerCode(b.payerId)]]);
+        selected.clear(); toast(b.no + ' created'); tab = 'draft'; refresh(); openBatch(b);
+      } });
+  }
+
+  function openBatch(b) {
+    drawer({ title: 'Claim batch ' + b.no, sub: esc(I.payerName(b.payerId)) + ' · ' + esc(b.type), wide: true, body: '<div id="bb"></div>', foot: '<div id="bf" class="row" style="width:100%;gap:8px"></div>',
+      onMount: (el, close) => {
+        const open = new Set();
+        const draw = () => {
+          const invs = b.invoiceIds.map(I.inv).filter(Boolean);
+          const live = BST.draft.includes(b.status);
+          const x = bIssues(b);
+          $('#bb', el).innerHTML = `
+            <div class="grid g4" style="margin-bottom:14px">
+              ${Kit.kpi('Claims', invs.length, { icon: 'file-stack' })}${Kit.kpi('Payer share', Kit.money(bAmount(b), false), { icon: 'wallet', unit: 'KWD' })}
+              ${Kit.kpi('Errors', live ? x.e : 0, { icon: 'circle-x', foot: live ? x.bad + ' claims to fix' : 'Validated' })}${Kit.kpi('Warnings', live ? x.w : 0, { icon: 'triangle-alert', foot: 'Do not block export' })}
+            </div>
+            <div class="row wrap small muted" style="gap:16px;margin-bottom:10px"><span>Status ${I.status(b.status)}</span><span>Created ${esc(UI.fmtDate(b.createdAt))} by ${esc(b.createdBy)}</span>${b.validatedAt ? `<span>Validated ${esc(UI.fmtDate(b.validatedAt))}</span>` : ''}${b.exportedAt ? `<span>Exported ${esc(UI.fmtDate(b.exportedAt))} by ${esc(b.exportedBy)}</span>` : ''}${b.submittedAt ? `<span>Submitted ${esc(UI.fmtDate(b.submittedAt))}</span>` : ''}</div>
+            <div class="table-wrap"><table class="tbl compact"><thead><tr><th></th><th>Claim</th><th>Patient</th><th>Date</th><th>Diagnosis</th><th>Pre-auth</th><th class="num">Payer share</th><th>Validation</th><th>Claim status</th><th></th></tr></thead><tbody>
+            ${invs.map(i => { const v = live ? I.validate(i) : []; const c = I.cd(i.id); return `<tr><td><button class="icon-btn" data-tg="${i.id}" aria-label="Show issues" ${v.length ? '' : 'disabled'}>${icon(open.has(i.id) ? 'chevron-down' : 'chevron-right')}</button></td><td class="mono">${esc(i.no)}</td><td>${esc(Kit.ptName(i.patientId))}<div class="xs muted">${esc((Kit.pt(i.patientId) || {}).policyNo || 'No policy')}</div></td><td>${Kit.day(i.date)}</td>
+              <td>${I.dx(i) ? `<span class="mono">${esc(I.dx(i))}</span>` : '<span class="badge b-err nodot">Missing</span>'}</td><td class="mono small">${esc(c.preauthNo || '-')}</td><td class="num">${Kit.money(i.payerAmount, false)}</td><td>${live ? I.vBadge(v) : '<span class="badge b-ok">Passed</span>'}</td><td>${I.status(i.claimStatus)}</td>
+              <td class="actions">${live ? `<button class="btn xs" data-fx="${i.id}" ${canVer ? '' : 'disabled title="Needs Verify permission"'}>${icon('wrench')} Fix</button><button class="btn xs danger" data-rm="${i.id}" ${canAdd ? '' : 'disabled title="Needs Add permission"'} aria-label="Remove from batch">${icon('x')}</button>` : ''}</td></tr>
+              ${open.has(i.id) && v.length ? `<tr><td></td><td colspan="9">${I.issuesHtml(v)}</td></tr>` : ''}`; }).join('') || `<tr><td colspan="10"><div class="empty">${icon('file-stack')}<b>No claims in this batch</b></div></td></tr>`}
+            </tbody></table></div>`;
+          const f = [`<button class="btn" id="bPr" ${canPrint ? '' : 'disabled title="Needs Print permission"'}>${icon('printer')} Print summary</button>`];
+          if (b.status !== 'Draft' && b.status !== 'Validated') f.push(`<button class="btn" id="bEx2" ${canPrint ? '' : 'disabled title="Needs Print permission"'}>${icon('download')} Claim file</button>`);
+          f.push('<span class="grow"></span>');
+          if (live) {
+            f.push(`<button class="btn danger" id="bDel" ${canAdd ? '' : 'disabled title="Needs Add permission"'}>${icon('trash-2')} Delete batch</button>`);
+            f.push(`<button class="btn" id="bVal" ${canVer ? '' : 'disabled title="Needs Verify permission"'}>${icon('refresh-cw')} Re-validate</button>`);
+            if (b.status === 'Exported') f.push(`<button class="btn primary" id="bSub" ${canVer ? '' : 'disabled title="Needs Verify permission"'}>${icon('send')} Mark as submitted</button>`);
+            else f.push(`<button class="btn primary" id="bExp" ${!canVer ? 'disabled title="Needs Verify permission"' : b.status !== 'Validated' ? 'disabled title="Re-validate with no errors first"' : ''}>${icon('file-down')} Export claim file</button>`);
+          }
+          $('#bf', el).innerHTML = f.join('');
+          const on = (id, fn) => { const n = $('#' + id, el); if (n) n.addEventListener('click', fn); };
+          $$('[data-tg]', el).forEach(n => n.addEventListener('click', () => { open.has(n.dataset.tg) ? open.delete(n.dataset.tg) : open.add(n.dataset.tg); draw(); }));
+          $$('[data-fx]', el).forEach(n => n.addEventListener('click', () => I.fixDrawer(I.inv(n.dataset.fx), () => { if (b.status !== 'Draft') { b.status = 'Draft'; b.validatedAt = ''; save(); } draw(); refresh(); })));
+          $$('[data-rm]', el).forEach(n => n.addEventListener('click', () => { const i = I.inv(n.dataset.rm); confirm({ title: 'Remove claim from batch?', body: `${esc(i.no)} goes back to the eligible claims list.`, confirm: 'Remove', reason: true, onConfirm: (reason) => {
+            b.invoiceIds = b.invoiceIds.filter(id => id !== i.id); i.claimStatus = 'Not submitted'; I.cd(i.id).batchId = ''; if (b.status !== 'Draft') { b.status = 'Draft'; b.validatedAt = ''; }
+            save(); audit('Removed claim from batch', 'Claim batch', { id: b.id, label: b.no }, [['Claim', i.no, '(removed)']], { reason }); toast('Claim removed'); draw(); refresh(); } }); }));
+          on('bVal', () => { const y = bIssues(b); const before = b.status; b.status = y.e ? 'Draft' : 'Validated'; b.validatedAt = y.e ? '' : nowStamp(); save();
+            audit('Validated claim batch', 'Claim batch', { id: b.id, label: b.no }, [['Status', before, b.status], ['Errors', '', String(y.e)], ['Warnings', '', String(y.w)]]);
+            toast(y.e ? `${y.e} error(s) in ${y.bad} claim(s). Fix and re-validate.` : `Batch valid${y.w ? ' with ' + y.w + ' warning(s)' : ''}. Ready to export.`, y.e ? 'err' : undefined); y.bad && invs.filter(i => I.errs(I.validate(i))).forEach(i => open.add(i.id)); draw(); refresh(); });
+          on('bExp', () => exportPreview(b, true, () => { draw(); refresh(); }));
+          on('bEx2', () => exportPreview(b, false));
+          on('bSub', () => confirm({ title: 'Mark as submitted?', body: `Confirm that ${esc(b.no)} was sent to ${esc(I.payerName(b.payerId))} (portal upload or email).`, tone: 'primary', confirm: 'Mark submitted', onConfirm: () => {
+            Object.assign(b, { status: 'Submitted', submittedAt: nowStamp(), submittedBy: me().displayName }); invs.forEach(i => { i.claimStatus = 'Submitted'; });
+            save(); audit('Submitted claim batch', 'Claim batch', { id: b.id, label: b.no }, [['Status', 'Exported', 'Submitted'], ['Claims', '', String(invs.length)]]); toast(b.no + ' submitted'); draw(); refresh(); } }));
+          on('bDel', () => confirm({ title: 'Delete this batch?', body: `All ${invs.length} claims go back to the eligible list. The batch number is not reused.`, confirm: 'Delete batch', reason: true, onConfirm: (reason) => {
+            invs.forEach(i => { i.claimStatus = 'Not submitted'; I.cd(i.id).batchId = ''; }); db.insuranceBatches = db.insuranceBatches.filter(x => x !== b);
+            save(); audit('Deleted claim batch', 'Claim batch', { id: b.id, label: b.no }, [['Status', b.status, 'Deleted']], { reason }); toast(b.no + ' deleted'); close(); refresh(); } }));
+          on('bPr', () => { Kit.printDoc({ title: 'Claim batch ' + b.no, sub: 'Claim batch summary · ' + I.payerName(b.payerId),
+            html: `<h3>Claim batch ${esc(b.no)} · ${esc(I.payerName(b.payerId))}</h3><p>Service period ${Kit.day(b.from)} to ${Kit.day(b.to)} · ${invs.length} claims · status ${esc(b.status)}</p>
+              <table><tr><th>Claim</th><th>Patient</th><th>Policy</th><th>Date</th><th>ICD-10</th><th>Payer share (KWD)</th></tr>${invs.map(i => `<tr><td>${esc(i.no)}</td><td>${esc(Kit.ptName(i.patientId))}</td><td>${esc((Kit.pt(i.patientId) || {}).policyNo || '')}</td><td>${Kit.day(i.date)}</td><td>${esc(I.dx(i))}</td><td>${Kit.money(i.payerAmount, false)}</td></tr>`).join('')}<tr><td colspan="5"><b>Total</b></td><td><b>${Kit.money(bAmount(b), false)}</b></td></tr></table>` });
+            audit('Printed claim batch', 'Claim batch', { id: b.id, label: b.no }, []); });
+        };
+        draw();
+      } });
+  }
+
+  function exportPreview(b, mark, done) {
+    const rows = I.exportRows(b);
+    drawer({ title: 'Claim file ' + b.no, sub: 'Agreed file format: CSV, one row per claim line (' + I.EXPORT_HEAD.length + ' fields).', wide: true,
+      body: `<div class="row wrap" style="margin-bottom:12px;gap:10px">${Kit.scopeNote('Scope to be confirmed: the export file format agreed with the authority. Layout below is the proposed CSV.')}</div>
+        <div class="table-wrap scroll-x"><table class="tbl compact"><thead><tr>${I.EXPORT_HEAD.map(h => `<th class="mono xs">${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.map(r => `<tr>${r.map(v => `<td class="small" style="white-space:nowrap">${esc(v)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
+        <div class="small muted" style="margin-top:8px">${rows.length} lines · file name ${esc(b.no)}_${esc(I.payerCode(b.payerId))}.csv</div>`,
+      foot: `<button class="btn" data-close>Close</button><button class="btn primary" id="dl">${icon('download')} ${mark ? 'Download and mark exported' : 'Download CSV'}</button>`,
+      onMount: (el, close) => $('#dl', el).addEventListener('click', () => {
+        Kit.csv(b.no + '_' + I.payerCode(b.payerId), I.EXPORT_HEAD, rows);
+        if (mark) { Object.assign(b, { status: 'Exported', exportedAt: nowStamp(), exportedBy: me().displayName }); save(); }
+        audit('Exported claim file', 'Claim batch', { id: b.id, label: b.no }, [['Format', '', 'CSV'], ['Lines', '', String(rows.length)]].concat(mark ? [['Status', 'Validated', 'Exported']] : []));
+        toast(mark ? 'Claim file downloaded. Batch marked exported.' : 'Claim file downloaded'); close(); done && done();
+      }) });
+  }
+
+  function rulesDrawer() {
+    drawer({ title: 'Validation rule set', sub: 'Rules for one local authority. Errors block export; warnings do not.', wide: true,
+      body: `<div style="margin-bottom:12px">${Kit.scopeNote('Scope to be confirmed: authority and rule set. Additional authority rule sets are 2nd phase.')}</div>
+        <div class="table-wrap"><table class="tbl compact"><thead><tr><th>Rule</th><th>Check</th><th>Group</th><th>Severity</th><th>Active</th></tr></thead><tbody>
+        ${db.insuranceRules.map(r => `<tr><td class="mono">${esc(r.code)}</td><td>${esc(r.name)}</td><td>${esc(r.group)}</td><td>${r.severity === 'Error' ? '<span class="badge b-err">Error</span>' : '<span class="badge b-warn">Warning</span>'}</td><td><label class="switch"><input type="checkbox" data-rl="${r.id}" ${r.active ? 'checked' : ''} ${canVer ? '' : 'disabled'} aria-label="Active ${esc(r.code)}"><span></span></label></td></tr>`).join('')}
+        </tbody></table></div><div style="margin-top:14px">${Kit.phase2('2nd phase: additional authority rule sets and direct submission to the regulator e-claim portal.')}</div>`,
+      onMount: (el) => $$('[data-rl]', el).forEach(c => c.addEventListener('change', () => { const r = db.insuranceRules.find(x => x.id === c.dataset.rl); r.active = c.checked; save(); audit('Changed validation rule', 'Claim rule', { id: r.id, label: r.code }, [['Active', String(!c.checked), String(c.checked)]]); toast(r.code + (r.active ? ' on' : ' off')); drawBody(); })),
+    });
+  }
+  $('#rulesBtn').addEventListener('click', rulesDrawer);
+  drawTabs(); drawBody();
+})();
+</script>
+</body>
+</html>

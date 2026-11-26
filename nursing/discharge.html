@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Discharge planning · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-nursing.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/nursing.js"></script>
+<style>
+  .ck { display: flex; gap: 12px; align-items: flex-start; padding: 14px 18px; border-bottom: 1px solid var(--line); }
+  .ck:last-child { border-bottom: 0; }
+  .ck .ck-i { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; flex: none; background: var(--soft); color: var(--mute); }
+  .ck.done .ck-i { background: var(--success-bg); color: var(--success); }
+  .ck.block .ck-i { background: var(--warning-bg); color: var(--warning); }
+  .progress.big { height: 10px; }
+</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, can, toast, audit, field, showErrors, R } = UI;
+  const OPT = 'nursing.discharge';
+  if (!UI.page({ opt: OPT, title: 'Discharge planning', subtitle: 'Discharge checklist per patient: education, medicines, follow-up, transport and billing clearance.', actions: Nursing.wardSelect() })) return;
+  const canAdd = can(OPT, 'add'), canEdit = can(OPT, 'edit'), canVerify = can(OPT, 'verify');
+  const ITEMS = [
+    ['education', 'Patient and family education', 'graduation-cap', 'Teach-back on the topics below'],
+    ['medicines', 'Discharge medicines explained', 'pill', 'Home medicines reconciled and explained; supply collected from pharmacy'],
+    ['followup', 'Follow-up appointment', 'calendar-plus', 'Clinic visit booked and written on the discharge card'],
+    ['transport', 'Transport arranged', 'car', 'Mode, time and escort confirmed'],
+    ['lines', 'Lines and devices removed', 'syringe', 'IV cannula, catheter and drains removed; sites checked'],
+    ['belongings', 'Belongings and valuables returned', 'briefcase', 'Valuables from the safe returned and signed for'],
+    ['summary', 'Discharge summary received', 'file-text', 'Doctor discharge summary printed and explained'],
+  ];
+  const TOPICS = ['Medicines', 'Diet', 'Activity', 'Wound care', 'Warning signs', 'Follow-up', 'Diabetes self-care', 'Inhaler technique'];
+  const recOf = (e) => db.nursingDischarge.find(d => d.encounterId === e.id && d.status !== 'Cancelled');
+  const billingOk = (e) => /Cleared/.test(e.clearance || '');
+  function pct(e, d) { if (!d) return 0; const n = ITEMS.filter(([k]) => d.items[k] && d.items[k].done).length + (billingOk(e) ? 1 : 0); return Math.round(100 * n / (ITEMS.length + 1)); }
+
+  const api = Nursing.patientPage({
+    meta: (e) => { const d = recOf(e); return d ? `${Kit.status(d.status === 'Ready for discharge' ? 'Completed' : 'In progress').replace('Completed', 'Ready')}<span class="badge b-neutral nodot">${pct(e, d)}%</span>` : e.expectedDischarge <= Kit.addDays(db.TODAY, 1) ? `<span class="badge b-warn">Expected ${Kit.day(e.expectedDischarge)}</span>` : '<span class="badge b-neutral nodot">No plan</span>'; },
+    render,
+  });
+
+  function render(e, host) {
+    const p = Kit.pt(e.patientId), d = recOf(e);
+    if (!d) {
+      host.innerHTML = `${Kit.patientBanner(p, e)}<div class="card"><div class="empty">${icon('door-open')}<b>No discharge plan yet</b><span>Expected discharge ${Kit.day(e.expectedDischarge)}. Start planning early so education and follow-up are ready on the day.</span><div style="margin-top:12px"><button class="btn primary" id="start" ${canAdd ? '' : 'disabled title="Needs Add permission"'}>${icon('plus')} Start discharge plan</button></div></div></div>`;
+      $('#start', host).addEventListener('click', () => start(e));
+      return;
+    }
+    const pc = pct(e, d), allDone = pc === 100;
+    host.innerHTML = `${Kit.patientBanner(p, e)}
+      <div class="card" style="margin-bottom:14px"><div class="card-pad">
+        <div class="row wrap" style="gap:18px"><div><div class="xs muted">Planned discharge</div><b>${Kit.day(d.plannedDate)}</b></div><div><div class="xs muted">Started</div><b>${Kit.when(d.createdAt)}</b> <span class="small muted">${esc(d.createdBy)}</span></div><div><div class="xs muted">Encounter status</div>${Kit.status(e.status)}</div><div><div class="xs muted">Plan status</div>${Kit.status(d.status === 'Ready for discharge' ? 'Completed' : 'In progress').replace('Completed', 'Ready for discharge')}</div><span class="grow"></span>
+          <button class="btn" id="pr">${icon('printer')} Print checklist</button><button class="btn danger" id="cx" ${canEdit && d.status !== 'Ready for discharge' ? '' : 'disabled title="' + (canEdit ? 'Plan already signed off' : 'Needs Edit permission') + '"'}>${icon('x')} Cancel plan</button></div>
+        <div class="row" style="margin-top:14px;gap:12px"><div class="progress big ${allDone ? 'ok' : 'warn'} grow"><i style="width:${Math.max(2, pc)}%"></i></div><b>${pc}%</b></div>
+        ${d.status === 'Ready for discharge' ? `<div class="banner ok" style="margin-top:12px">${icon('circle-check')}<span>Nursing sign-off by ${esc(d.signedBy)} at ${Kit.when(d.signedAt)}. Reception completes the discharge in Admissions and Discharge.</span></div>` : ''}
+      </div></div>
+      <div class="card"><div class="card-head"><h3>${icon('list-checks')} Discharge checklist</h3></div>
+        ${ITEMS.map(([k, t, ic, hint]) => { const it = d.items[k] || {}; return `<div class="ck ${it.done ? 'done' : ''}"><span class="ck-i">${icon(it.done ? 'check' : ic)}</span><div class="grow"><b>${esc(t)}</b><div class="small muted">${esc(hint)}</div>${detail(k, it, e)}${it.done ? `<div class="xs muted" style="margin-top:4px">Done by ${esc(it.by)} · ${Kit.when(it.at)}${it.note ? ' · ' + esc(it.note) : ''}</div>` : ''}</div>
+          <button class="btn sm ${it.done ? 'ghost' : ''}" data-item="${k}" ${canEdit && d.status !== 'Ready for discharge' ? '' : 'disabled'}>${it.done ? icon('pencil') + ' Update' : icon('check') + ' Complete'}</button></div>`; }).join('')}
+        <div class="ck ${billingOk(e) ? 'done' : 'block'}"><span class="ck-i">${icon(billingOk(e) ? 'check' : 'receipt')}</span><div class="grow"><b>Billing clearance</b><div class="small muted">Set by the cashier when the interim bill is settled or approved by the payer.</div><div style="margin-top:4px">${Kit.status(e.clearance || 'Pending billing')}</div></div><a class="btn sm" href="${R('reception/admissions.html')}">${icon('arrow-right')} Admissions</a></div>
+      </div>
+      <div class="sticky-foot"><span class="grow small muted">${allDone ? 'All items complete.' : 'Complete every item, including billing clearance, before sign-off.'}</span><button class="btn primary" id="sign" ${allDone && canVerify && d.status !== 'Ready for discharge' ? '' : 'disabled'} ${canVerify ? '' : 'title="Needs Verify permission"'}>${icon('shield-check')} Nurse sign-off: ready for discharge</button></div>`;
+    $$('[data-item]', host).forEach(b => b.addEventListener('click', () => complete(e, d, b.dataset.item)));
+    $('#pr', host).addEventListener('click', () => print(e, d));
+    $('#cx', host).addEventListener('click', () => UI.confirm({ title: 'Cancel discharge plan?', body: 'The checklist is kept in history and the patient returns to the inpatient list without a plan.', reason: true, confirm: 'Cancel plan',
+      onConfirm: (reason) => { d.status = 'Cancelled'; d.cancelReason = reason; d.cancelledBy = Nursing.myName(); save(); audit('Discharge plan cancelled', 'Discharge plan', { id: d.id, label: p.name }, [['Status', 'In progress', 'Cancelled']], { reason }); toast('Discharge plan cancelled'); api.refresh(); } }));
+    $('#sign', host).addEventListener('click', () => UI.confirm({ title: 'Sign off as ready for discharge?', body: `${esc(p.name)} has completed every item on the nursing discharge checklist.`, tone: 'primary', icon: 'shield-check', confirm: 'Sign off',
+      onConfirm: () => { d.status = 'Ready for discharge'; d.signedBy = Nursing.myName(); d.signedAt = Nursing.now(); save(); audit('Discharge checklist signed off', 'Discharge plan', { id: d.id, label: p.name }, [['Status', 'In progress', 'Ready for discharge']]); toast('Signed off. Reception can complete the discharge.'); api.refresh(); } }));
+  }
+  function detail(k, it, e) {
+    if (k === 'education' && (it.topics || []).length) return `<div class="row wrap" style="gap:4px;margin-top:6px">${it.topics.map(t => `<span class="tag">${esc(t)}</span>`).join('')}${it.method ? `<span class="small muted">${esc(it.method)}, ${esc(it.language || '')}</span>` : ''}</div>`;
+    if (k === 'medicines') return `<div class="small" style="margin-top:6px">${Nursing.medOrders(e).map(o => esc((Kit.item(o.itemId) || {}).generic || o.name) + ' ' + esc(o.dose)).join(' · ') || '<span class="muted">No active medicine orders</span>'}</div>`;
+    if (k === 'followup' && it.date) return `<div class="small" style="margin-top:6px">${Kit.day(it.date)} with ${esc(Kit.docName(it.doctorId))}</div>`;
+    if (k === 'transport' && it.mode) return `<div class="small" style="margin-top:6px">${esc(it.mode)}${it.time ? ' at ' + esc(it.time) : ''}${it.escort ? ', escort ' + esc(it.escort) : ''}</div>`;
+    return '';
+  }
+  function start(e) {
+    UI.drawer({ title: 'Start discharge plan', sub: esc(Kit.ptName(e.patientId)),
+      body: `<div class="err-summary hidden"></div><div class="form-grid">${field({ id: 'sd', label: 'Planned discharge date', type: 'date', req: true, value: e.expectedDischarge < db.TODAY ? db.TODAY : e.expectedDischarge, attrs: `min="${db.TODAY}"` })}</div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="ss">Start plan</button>`,
+      onMount: (el, close) => $('#ss', el).addEventListener('click', () => {
+        const v = $('#sd', el).value; if (!showErrors(el, !v ? { sd: 'Date is required.' } : v < db.TODAY ? { sd: 'Date cannot be in the past.' } : {})) return;
+        const d = { id: UI.uid('nd'), encounterId: e.id, patientId: e.patientId, plannedDate: v, status: 'In progress', createdBy: Nursing.myName(), createdAt: Nursing.now(), items: {} };
+        ITEMS.forEach(([k]) => d.items[k] = { done: false }); db.nursingDischarge.push(d); save();
+        audit('Discharge plan started', 'Discharge plan', { id: d.id, label: Kit.ptName(e.patientId) }, [['Planned date', '', v]]); close(); toast('Discharge plan started'); api.refresh();
+      }) });
+  }
+  function complete(e, d, k) {
+    const it = d.items[k] = d.items[k] || { done: false }, title = ITEMS.find(x => x[0] === k)[1];
+    const p = Kit.pt(e.patientId);
+    const extra = k === 'education' ? `<div class="field full"><label>Topics covered<span class="req">*</span></label><div class="row wrap" style="gap:10px">${TOPICS.map(t => `<label class="check"><input type="checkbox" data-topic="${esc(t)}" ${(it.topics || []).includes(t) ? 'checked' : ''}> ${esc(t)}</label>`).join('')}</div></div>
+        ${field({ id: 'eM', label: 'Method', type: 'select', value: it.method || 'Teach-back', placeholder: false, options: ['Teach-back', 'Demonstration', 'Leaflet and verbal', 'Video'].map(x => [x, x]) })}${field({ id: 'eL', label: 'Language', type: 'select', value: it.language || p.lang || 'Arabic', placeholder: false, options: ['Arabic', 'English', 'Hindi', 'Urdu', 'Tagalog', 'Malayalam'].map(x => [x, x]) })}`
+      : k === 'followup' ? `${field({ id: 'fD', label: 'Follow-up date', type: 'date', req: true, value: it.date || Kit.addDays(d.plannedDate, 7), attrs: `min="${d.plannedDate}"` })}${field({ id: 'fDr', label: 'Doctor', type: 'select', req: true, value: it.doctorId || e.doctorId, options: db.doctors.filter(x => x.clinicId).map(x => [x.id, `${x.name} (${x.specialty})`]) })}<div class="full small"><a href="${R('appointments/book.html')}" target="_blank" rel="noopener">${icon('calendar-plus')} Open the appointment book</a></div>`
+      : k === 'transport' ? `${field({ id: 'tM', label: 'Mode', type: 'select', req: true, value: it.mode || '', options: ['Family car', 'Taxi', 'Hospital ambulance', 'Private ambulance', 'Wheelchair to car park'].map(x => [x, x]) })}${field({ id: 'tT', label: 'Pickup time', type: 'time', value: it.time || '12:00' })}${field({ id: 'tE', label: 'Escort', value: it.escort || (p.emergency || {}).name || '', max: 60 })}`
+      : '';
+    UI.drawer({ title, sub: esc(p.name) + ' · Bed ' + esc(Nursing.bedNo(e)),
+      body: `<div class="err-summary hidden"></div><div class="form-grid">${extra}${field({ id: 'cN', label: 'Note', type: 'textarea', full: true, max: 300, value: it.note || '' })}<label class="check full"><input type="checkbox" id="cDone" ${it.done ? 'checked' : ''}> Mark this item as complete</label></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="cS">Save</button>`,
+      onMount: (el, close) => $('#cS', el).addEventListener('click', () => {
+        const errs = {}, done = $('#cDone', el).checked;
+        const topics = $$('[data-topic]', el).filter(c => c.checked).map(c => c.dataset.topic);
+        if (done && k === 'education' && !topics.length) errs.eM = 'Select at least one topic.';
+        if (k === 'followup' && done) { if (!$('#fD', el).value) errs.fD = 'Date is required.'; if (!$('#fDr', el).value) errs.fDr = 'Doctor is required.'; }
+        if (k === 'transport' && done && !$('#tM', el).value) errs.tM = 'Mode is required.';
+        if (!showErrors(el, errs)) return;
+        const before = it.done ? 'Done' : 'Open';
+        Object.assign(it, { done, note: $('#cN', el).value.trim(), by: Nursing.myName(), at: Nursing.now() });
+        if (k === 'education') Object.assign(it, { topics, method: $('#eM', el).value, language: $('#eL', el).value });
+        if (k === 'followup') Object.assign(it, { date: $('#fD', el).value, doctorId: $('#fDr', el).value });
+        if (k === 'transport') Object.assign(it, { mode: $('#tM', el).value, time: $('#tT', el).value, escort: $('#tE', el).value.trim() });
+        save(); audit('Discharge checklist updated', 'Discharge plan', { id: d.id, label: `${title}, ${p.name}` }, [[title, before, done ? 'Done' : 'Open']]);
+        close(); toast(done ? title + ' complete' : 'Saved'); api.refresh();
+      }) });
+  }
+  function print(e, d) {
+    const p = Kit.pt(e.patientId);
+    Kit.printDoc({ title: 'Discharge planning checklist', sub: `${p.name} · ${p.mrn} · Bed ${Nursing.bedNo(e)} · ${e.no}`,
+      html: `<p>Planned discharge <b>${esc(Kit.day(d.plannedDate))}</b> · ${esc(Kit.docName(e.doctorId))} · ${esc(e.reason)}</p><table><thead><tr><th>Item</th><th>Status</th><th>By</th><th>Details</th></tr></thead><tbody>${ITEMS.map(([k, t]) => { const it = d.items[k] || {}; return `<tr><td>${esc(t)}</td><td>${it.done ? 'Done' : 'Open'}</td><td>${esc(it.by || '')} ${esc(it.at || '')}</td><td>${esc([(it.topics || []).join(', '), it.date, it.mode, it.note].filter(Boolean).join(' · '))}</td></tr>`; }).join('')}<tr><td>Billing clearance</td><td>${esc(e.clearance || 'Pending')}</td><td></td><td></td></tr></tbody></table>${d.signedBy ? `<p>Nursing sign-off: <b>${esc(d.signedBy)}</b> at ${esc(d.signedAt)}</p>` : '<p>Nursing sign-off: ______________________</p>'}` });
+  }
+})();
+</script>
+</body>
+</html>

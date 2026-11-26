@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Calendar Management · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<style>
+  .mx td.cellx { cursor: pointer; min-width: 92px; vertical-align: top; }
+  .mx td.cellx:hover { background: var(--hover); }
+  .mx td.wkend { background: var(--soft); }
+  .mx td:first-child { min-width: 190px; }
+  .mx .chip { margin: 2px 0; font-size: 11px; padding: 2px 7px; white-space: nowrap; }
+  .mx .chip.pend { border-style: dashed; color: var(--warning); }
+</style>
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-appointments.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/appointments.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, drawer, confirm, field, showErrors, fmtDate } = UI;
+  const OPT = 'appointments.sched.roster';
+  const canAdd = can(OPT, 'add'), canEdit = can(OPT, 'edit'), canApprove = can(OPT, 'approve');
+  if (!UI.page({ opt: OPT, title: 'Calendar Management', subtitle: 'Doctor sessions, shift assignment, resource calendars, leave and holiday overrides. Every change needs approval by another user.', wide: true })) return;
+  const T = Appt.T, me = Appt.meName();
+  const ORDER = [0, 1, 2, 3, 4, 5, 6];
+  const st = { tab: UI.param('tab') || 'doctors' };
+  const docs = () => db.doctors.filter(d => d.clinicId);
+  const pending = () => db.appointmentsOverrides.filter(o => o.status === 'Pending approval').length + db.appointmentsChanges.filter(c => c.status === 'Pending approval').length;
+  const who = (x) => x.doctorId ? Kit.docName(x.doctorId) : x.resourceCode ? ((Appt.resource(x.resourceCode) || {}).name || x.resourceCode) : 'All doctors';
+  const shiftTxt = (code) => { const s = Appt.shift(code); return s ? `${s.code.replace('SH-', '')} ${s.start.replace(':00', '')}-${s.end.replace(':00', '')}` : code; };
+
+  $('#page').innerHTML = `<div id="tabs" style="margin-bottom:14px"></div><div id="body"></div>`;
+  function drawTabs() {
+    Kit.tabs($('#tabs'), [
+      { id: 'doctors', label: 'Doctor sessions and shifts', icon: 'stethoscope' }, { id: 'resources', label: 'Resource calendars', icon: 'wrench' },
+      { id: 'overrides', label: 'Leave and holiday overrides', icon: 'calendar-x', count: db.appointmentsOverrides.filter(o => o.status === 'Approved' && o.to >= T).length },
+      { id: 'approvals', label: 'Approvals', icon: 'badge-check', count: pending() },
+    ], st.tab, (id) => { st.tab = id; drawBody(); });
+  }
+
+  /* ---------- Weekly matrix (doctors or resources) ---------- */
+  function matrix(kind) {
+    const isDoc = kind === 'doctor';
+    const rows = isDoc ? docs() : db.appointmentsResources.filter(r => r.status !== 'Inactive');
+    const sess = (id, w) => isDoc ? db.appointmentsSessions.filter(s => s.doctorId === id && s.weekday === w && s.status !== 'Inactive') : db.appointmentsResourceCal.filter(s => s.resourceCode === id && s.weekday === w && s.status !== 'Inactive');
+    const pend = (id, w) => db.appointmentsChanges.filter(c => c.status === 'Pending approval' && c.weekday === w && (isDoc ? c.doctorId === id : c.resourceCode === id));
+    const key = (r) => isDoc ? r.id : r.code;
+    const wkBook = (r) => db.appointmentsBookings.filter(a => a.resourceCode === r.code && a.date >= T && a.date <= Kit.addDays(T, 6) && Appt.ACTIVE(a)).length;
+    return `<div class="card"><div class="card-head"><h3>${icon(isDoc ? 'calendar-range' : 'wrench')} ${isDoc ? 'Weekly sessions and shift assignment' : 'Resource calendars (technicians and machines)'}</h3>
+        <div class="actions"><span class="small muted">Click a day to add, change or remove a session.</span></div></div>
+      <div class="table-wrap"><table class="tbl compact mx"><thead><tr><th>${isDoc ? 'Doctor' : 'Resource'}</th>${ORDER.map(w => `<th>${Appt.DOW3[w]}</th>`).join('')}${isDoc ? '' : '<th>Booked next 7 days</th>'}</tr></thead><tbody>
+      ${rows.map(r => `<tr><td><b>${esc(r.name)}</b><div class="xs muted">${isDoc ? esc(r.specialty) + ' · ' + esc((UI.L.branch(r.branchId) || {}).code || '') + ' · <span class="mono">' + esc((db.appointmentsSessions.find(s => s.doctorId === r.id) || {}).slotCode || 'No slot') + '</span>' : esc(r.kind) + ' · ' + esc(UI.L.clName(r.clinicId))}</div></td>
+        ${ORDER.map(w => { const ss = sess(key(r), w), pp = pend(key(r), w); return `<td class="cellx ${w === 5 || w === 6 ? 'wkend' : ''}" data-k="${key(r)}" data-w="${w}" tabindex="0" role="button" aria-label="${esc(r.name)} ${Appt.DOW[w]}">${ss.map(s => `<span class="chip" title="${esc((Appt.shift(s.shiftCode) || {}).name || '')}">${esc(shiftTxt(s.shiftCode))}</span>`).join('<br>')}${pp.map(c => `<br><span class="chip pend" title="${esc(c.no + ': ' + c.summary)}">${icon('hourglass')} ${esc(c.kind)}</span>`).join('')}${!ss.length && !pp.length ? '<span class="xs mute">Off</span>' : ''}</td>`; }).join('')}
+        ${isDoc ? '' : `<td><b class="num">${wkBook(r)}</b></td>`}</tr>`).join('')}
+      </tbody></table></div></div>`;
+  }
+  function cellDrawer(kind, id, w) {
+    const isDoc = kind === 'doctor';
+    const name = isDoc ? Kit.docName(id) : (Appt.resource(id) || {}).name;
+    const list = isDoc ? db.appointmentsSessions.filter(s => s.doctorId === id && s.weekday === w && s.status !== 'Inactive') : db.appointmentsResourceCal.filter(s => s.resourceCode === id && s.weekday === w && s.status !== 'Inactive');
+    const shifts = db.appointmentsShifts.filter(s => s.status !== 'Inactive');
+    const pend = db.appointmentsChanges.filter(c => c.status === 'Pending approval' && c.weekday === w && (isDoc ? c.doctorId === id : c.resourceCode === id));
+    drawer({ title: `${name}, ${Appt.DOW[w]}`, sub: 'Changes are sent for approval. Another user with Approve permission must approve them.',
+      body: `<div class="card"><div class="card-head"><h3>${icon('calendar-clock')} Current sessions</h3></div>
+          ${list.length ? `<div class="list-rows pad">${list.map(s => { const sh = Appt.shift(s.shiftCode) || {}; return `<div><div class="grow"><b>${esc(sh.name || s.shiftCode)}</b><div class="small muted">${esc(sh.start)} to ${esc(sh.end)}${s.slotCode ? ' · ' + esc(s.slotCode) : ''}${s.room ? ' · ' + esc(s.room) : ''}</div></div><input type="radio" name="pickS" value="${s.shiftCode}" aria-label="Select ${esc(sh.name || '')}"></div>`; }).join('')}</div>` : '<div class="card-pad small muted">No session on this day.</div>'}</div>
+        ${pend.length ? `<div class="banner warn" style="margin-top:12px">${icon('hourglass')}<span>${pend.map(c => esc(c.no + ': ' + c.summary)).join('<br>')}</span></div>` : ''}
+        <div class="err-summary hidden" style="margin-top:12px"></div>
+        <div class="form-grid" style="margin-top:14px">
+          ${field({ id: 'chKind', label: 'Change', type: 'select', req: true, options: [['Add session', 'Add a session'], ['Change shift', 'Change the selected session shift'], ['Remove session', 'Remove the selected session']] })}
+          ${field({ id: 'chShift', label: 'Shift', type: 'select', options: shifts.map(s => [s.code, `${s.name} (${s.start}-${s.end})`]) })}
+          ${field({ id: 'chFrom', label: 'Effective from', type: 'date', req: true, value: Kit.addDays(T, 1), attrs: `min="${T}"` })}
+          ${field({ id: 'chWhy', label: 'Reason', type: 'textarea', req: true, full: true, max: 300 })}
+          <div class="full" id="chImpact"></div>
+        </div>`,
+      foot: `<button class="btn" data-close>Cancel</button><span class="grow"></span><button class="btn primary" id="chGo" disabled ${canAdd || canEdit ? '' : 'title="Needs Add or Edit permission"'}>${icon('send')} Submit for approval</button>`,
+      onMount: (el, close) => {
+        const go = $('#chGo', el);
+        const sel = () => (($('input[name=pickS]:checked', el) || {}).value || '');
+        const sync = () => {
+          const k = $('#chKind', el).value, sh = $('#chShift', el).value, from = sel();
+          const needSel = k === 'Change shift' || k === 'Remove session';
+          $('#chShift', el).closest('.field').style.display = k === 'Remove session' ? 'none' : '';
+          let ok = k && $('#chFrom', el).value && $('#chWhy', el).value.trim().length >= 3 && (canAdd || canEdit);
+          if (needSel && !from) ok = false;
+          if (k !== 'Remove session' && !sh) ok = false;
+          if (k === 'Add session' && list.some(s => s.shiftCode === sh)) ok = false;
+          go.disabled = !ok;
+          // Impact on booked appointments when a session is removed or changed.
+          let imp = '';
+          if (isDoc && needSel && from) {
+            const s0 = Appt.shift(from), s1 = k === 'Change shift' ? Appt.shift(sh) : null;
+            const hit = db.appointmentsBookings.filter(a => a.doctorId === id && a.date >= ($('#chFrom', el).value || T) && Appt.dow(a.date) === w && /Booked|Confirmed/.test(a.status) && a.time >= s0.start && a.time < s0.end && !(s1 && a.time >= s1.start && a.time < s1.end));
+            imp = hit.length ? `<div class="banner warn">${icon('triangle-alert')}<span>${hit.length} booked appointment${hit.length > 1 ? 's' : ''} fall outside the new schedule and must be rescheduled after approval.</span></div>` : `<div class="banner ok">${icon('circle-check')}<span>No booked appointments are affected.</span></div>`;
+          }
+          if (k === 'Add session' && list.some(s => s.shiftCode === sh)) imp = `<div class="banner err">${icon('circle-alert')}<span>This shift is already assigned on ${Appt.DOW[w]}.</span></div>`;
+          $('#chImpact', el).innerHTML = imp;
+        };
+        $$('input,select,textarea', el).forEach(i => { i.addEventListener('input', sync); i.addEventListener('change', sync); });
+        sync();
+        go.addEventListener('click', () => {
+          const k = $('#chKind', el).value, sh = k === 'Remove session' ? '' : $('#chShift', el).value, from = sel();
+          const c = { id: UI.uid('sc'), no: Kit.nextNo('SCR-26-', db.appointmentsChanges), kind: k, doctorId: isDoc ? id : '', resourceCode: isDoc ? '' : id, weekday: w, fromShift: k === 'Add session' ? '' : from, shiftCode: sh,
+            effectiveFrom: $('#chFrom', el).value, summary: `${k} for ${name} on ${Appt.DOW[w]}${k === 'Add session' ? ': ' + shiftTxt(sh) : k === 'Change shift' ? ': ' + shiftTxt(from) + ' to ' + shiftTxt(sh) : ': ' + shiftTxt(from)}`,
+            reason: $('#chWhy', el).value.trim(), status: 'Pending approval', requestedBy: me, requestedAt: Appt.stamp(), decidedBy: '', decidedAt: '', decisionNote: '' };
+          db.appointmentsChanges.unshift(c); save();
+          audit('Schedule change requested', 'Schedule change', { id: c.id, label: c.no }, [['Change', '', c.summary]], { reason: c.reason });
+          close(); toast(c.no + ' sent for approval'); refresh();
+        });
+      } });
+  }
+
+  /* ---------- Overrides ---------- */
+  function affected(o) {
+    return db.appointmentsBookings.filter(a => /Booked|Confirmed/.test(a.status) && a.date >= o.from && a.date <= o.to &&
+      (o.kind === 'Holiday closure' ? (!o.branchId || a.branchId === o.branchId) : o.kind === 'Resource unavailable' ? a.resourceCode === o.resourceCode : a.doctorId === o.doctorId) &&
+      (!o.start || (a.time >= o.start && a.time < o.end)));
+  }
+  function overridesBody() {
+    const host = $('#body');
+    host.innerHTML = `<div class="banner info" style="margin-bottom:12px">${icon('info')}<span>Leave and holiday overrides block slots in the Appointment Book once approved. The Holiday / Exception Calendar master is 2nd phase scope; this override is part of the system foundation (SOW V4 Module 2 confirmation note).</span></div><div id="ovT"></div>`;
+    UI.table($('#ovT'), {
+      columns: [
+        { label: 'Reference', sort: (o) => o.no, render: (o) => `<span class="mono">${esc(o.no)}</span>` },
+        { label: 'Type', sort: (o) => o.kind, render: (o) => `<b>${esc(o.kind)}</b>` },
+        { label: 'Applies to', sort: (o) => who(o), render: (o) => esc(o.kind === 'Holiday closure' ? (o.branchId ? UI.L.bName(o.branchId) : 'All branches') : who(o)) },
+        { label: 'Period', sort: (o) => o.from, render: (o) => `${esc(fmtDate(o.from))}${o.to !== o.from ? ' to ' + esc(fmtDate(o.to)) : ''}<div class="xs muted">${o.start ? esc(o.start + ' to ' + o.end) : 'Full day'}</div>` },
+        { label: 'Reason', render: (o) => `<span class="small">${esc(o.reason)}</span>` },
+        { label: 'Booked in period', render: (o) => { const n = affected(o).length; return n ? `<span class="badge b-warn">${n}</span>` : '<span class="mute">0</span>'; } },
+        { label: 'Status', sort: (o) => o.status, render: (o) => Kit.status(o.status, o.status === 'Pending approval' ? 'warn' : o.status === 'Withdrawn' ? 'neutral' : null) + `<div class="xs muted">${esc(o.requestedBy)}</div>` },
+        { label: '', cls: 'actions', render: (o) => o.status === 'Pending approval' && o.requestedBy === me ? `<button class="btn xs danger" data-wd="${o.id}">${icon('undo-2')} Withdraw</button>` : '' },
+      ],
+      rows: () => db.appointmentsOverrides.slice().sort((a, b) => b.from.localeCompare(a.from)), search: (o) => [o.no, o.kind, who(o), o.reason, o.requestedBy].join(' '), searchPlaceholder: 'Search overrides',
+      filters: [{ label: 'Type', options: ['Doctor leave', 'Session block', 'Resource unavailable', 'Holiday closure'].map(x => [x, x]), test: (o, v) => o.kind === v }, { label: 'Status', options: ['Pending approval', 'Approved', 'Rejected', 'Withdrawn'].map(x => [x, x]), test: (o, v) => o.status === v }],
+      toolbar: `<button class="btn primary sm" id="ovAdd" ${canAdd ? '' : 'disabled title="Needs Add permission"'}>${icon('plus')} Add override</button>`,
+      onRow: (o) => requestDrawer('ov', o), empty: 'No overrides',
+      afterDraw: (tb) => $$('[data-wd]', tb).forEach(b => b.addEventListener('click', () => withdraw(db.appointmentsOverrides.find(o => o.id === b.dataset.wd)))),
+    });
+    $('#ovAdd').addEventListener('click', addOverride);
+  }
+  function withdraw(o) {
+    confirm({ title: 'Withdraw ' + o.no + '?', body: 'The request is closed without a decision.', confirm: 'Withdraw', reason: true, onConfirm: (why) => {
+      o.status = 'Withdrawn'; o.decisionNote = why; o.decidedAt = Appt.stamp(); o.decidedBy = me;
+      save(); audit('Override withdrawn', 'Calendar override', { id: o.id, label: o.no }, [['Status', 'Pending approval', 'Withdrawn']], { reason: why }); toast('Request withdrawn'); refresh();
+    } });
+  }
+  function addOverride() {
+    drawer({ title: 'Add leave or holiday override', sub: 'Blocks slots after approval. Booked appointments in the period are listed for rescheduling.', wide: true,
+      body: `<div class="err-summary hidden"></div><div class="form-grid">
+        ${field({ id: 'oKind', label: 'Type', type: 'select', req: true, options: ['Doctor leave', 'Session block', 'Resource unavailable', 'Holiday closure'].map(x => [x, x]) })}
+        <div class="field" id="oDocW"><label for="oDoc">Doctor<span class="req">*</span></label><select class="input" id="oDoc"><option value="">Select doctor</option>${docs().map(d => `<option value="${d.id}">${esc(d.name)} · ${esc(d.specialty)}</option>`).join('')}</select></div>
+        <div class="field hidden" id="oResW"><label for="oRes">Resource<span class="req">*</span></label><select class="input" id="oRes"><option value="">Select resource</option>${db.appointmentsResources.map(r => `<option value="${r.code}">${esc(r.name)}</option>`).join('')}</select></div>
+        <div class="field hidden" id="oBrW"><label for="oBr">Branch</label><select class="input" id="oBr"><option value="">All branches</option>${db.branches.filter(b => b.status === 'Active' && b.companyId === 'co_01').map(b => `<option value="${b.id}">${esc(b.name)}</option>`).join('')}</select></div>
+        ${field({ id: 'oFrom', label: 'From', type: 'date', req: true, value: Kit.addDays(T, 1), attrs: `min="${T}"` })}
+        ${field({ id: 'oTo', label: 'To', type: 'date', req: true, value: Kit.addDays(T, 1), attrs: `min="${T}"` })}
+        ${field({ id: 'oStart', label: 'Start time', type: 'time', hint: 'Leave empty for the full day.' })}
+        ${field({ id: 'oEnd', label: 'End time', type: 'time' })}
+        ${field({ id: 'oWhy', label: 'Reason', req: true, full: true, max: 160, placeholder: 'For example: annual leave, conference, maintenance' })}
+        <div class="full" id="oImp"></div></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><span class="grow"></span><button class="btn primary" id="oGo" disabled>${icon('send')} Submit for approval</button>`,
+      onMount: (el, close) => {
+        const go = $('#oGo', el);
+        const val = () => ({ kind: $('#oKind', el).value, doctorId: $('#oDoc', el).value, resourceCode: $('#oRes', el).value, branchId: $('#oBr', el).value, from: $('#oFrom', el).value, to: $('#oTo', el).value, start: $('#oStart', el).value, end: $('#oEnd', el).value, reason: $('#oWhy', el).value.trim() });
+        const errsOf = (v) => {
+          const e = {};
+          if (v.to && v.from && v.to < v.from) e.oTo = 'To date must be on or after the from date.';
+          if ((v.start && !v.end) || (!v.start && v.end)) e.oEnd = 'Enter both start and end time, or neither.';
+          if (v.start && v.end && v.end <= v.start) e.oEnd = 'End time must be after start time.';
+          if (v.kind === 'Session block' && !v.start) e.oStart = 'A session block needs a start and end time.';
+          return e;
+        };
+        const sync = () => {
+          const v = val();
+          $('#oDocW', el).classList.toggle('hidden', !(v.kind === 'Doctor leave' || v.kind === 'Session block'));
+          $('#oResW', el).classList.toggle('hidden', v.kind !== 'Resource unavailable');
+          $('#oBrW', el).classList.toggle('hidden', v.kind !== 'Holiday closure');
+          const target = v.kind === 'Holiday closure' || (v.kind === 'Resource unavailable' ? v.resourceCode : v.doctorId);
+          go.disabled = !(v.kind && target && v.from && v.to && v.reason.length >= 3 && !Object.keys(errsOf(v)).length);
+          if (v.kind && target && v.from && v.to) {
+            const hit = affected(Object.assign({}, v, { doctorId: v.kind === 'Holiday closure' ? '' : v.doctorId }));
+            $('#oImp', el).innerHTML = hit.length ? `<div class="banner warn">${icon('triangle-alert')}<span><b>${hit.length} booked appointment${hit.length > 1 ? 's' : ''}</b> in this period: ${hit.slice(0, 5).map(a => esc(`${a.no} ${Kit.ptName(a.patientId)} ${fmtDate(a.date)} ${a.time}`)).join('; ')}${hit.length > 5 ? '; ...' : ''}. Reschedule them after approval.</span></div>` : `<div class="banner ok">${icon('circle-check')}<span>No booked appointments in this period.</span></div>`;
+          } else $('#oImp', el).innerHTML = '';
+        };
+        $$('input,select', el).forEach(i => { i.addEventListener('input', sync); i.addEventListener('change', sync); });
+        sync();
+        go.addEventListener('click', () => {
+          const v = val();
+          if (!showErrors(el, errsOf(v))) return;
+          const o = Object.assign({ id: UI.uid('ov'), no: Kit.nextNo('OVR-26-', db.appointmentsOverrides) }, v, { doctorId: /Doctor leave|Session block/.test(v.kind) ? v.doctorId : '', resourceCode: v.kind === 'Resource unavailable' ? v.resourceCode : '', branchId: v.kind === 'Holiday closure' ? v.branchId : (v.doctorId ? (Kit.doc(v.doctorId) || {}).branchId : 'br_01'),
+            status: 'Pending approval', requestedBy: me, requestedAt: Appt.stamp(), decidedBy: '', decidedAt: '', decisionNote: '' });
+          db.appointmentsOverrides.unshift(o); save();
+          audit('Calendar override requested', 'Calendar override', { id: o.id, label: o.no }, [['Type', '', o.kind], ['Applies to', '', who(o)], ['Period', '', o.from + ' to ' + o.to]], { reason: o.reason });
+          close(); toast(o.no + ' sent for approval'); refresh();
+        });
+      } });
+  }
+
+  /* ---------- Approvals (maker-checker) ---------- */
+  function approvalsBody() {
+    const host = $('#body');
+    const items = db.appointmentsOverrides.map(o => ({ src: 'ov', rec: o, title: `${o.kind}: ${who(o)}`, detail: `${fmtDate(o.from)}${o.to !== o.from ? ' to ' + fmtDate(o.to) : ''}${o.start ? ', ' + o.start + '-' + o.end : ''} · ${o.reason}` }))
+      .concat(db.appointmentsChanges.map(c => ({ src: 'sc', rec: c, title: c.summary, detail: `Effective ${fmtDate(c.effectiveFrom)} · ${c.reason}` })));
+    const pend = items.filter(x => x.rec.status === 'Pending approval').sort((a, b) => a.rec.requestedAt.localeCompare(b.rec.requestedAt));
+    const done = items.filter(x => x.rec.status !== 'Pending approval').sort((a, b) => (b.rec.decidedAt || '').localeCompare(a.rec.decidedAt || ''));
+    const btns = (x) => {
+      const self = x.rec.requestedBy === me;
+      const t = !canApprove ? 'Needs Approve permission' : self ? 'You raised this request. Another user must approve it.' : '';
+      return `<button class="btn sm success" data-ap="${x.src}|${x.rec.id}" ${t ? `disabled title="${t}"` : ''}>${icon('check')} Approve</button><button class="btn sm danger" data-rj="${x.src}|${x.rec.id}" ${t ? `disabled title="${t}"` : ''}>${icon('x')} Reject</button>`;
+    };
+    host.innerHTML = `<div class="card" style="margin-bottom:16px"><div class="card-head"><h3>${icon('badge-check')} Waiting for approval</h3><div class="actions">${Kit.scopeNote('No self-approval: the requester cannot approve their own change.')}</div></div>
+        ${pend.length ? `<div class="list-rows pad">${pend.map(x => `<div style="align-items:flex-start"><span class="tag mono">${esc(x.rec.no)}</span><div class="grow" style="min-width:0"><b>${esc(x.title)}</b><div class="small muted">${esc(x.detail)}</div>
+          <div class="xs muted" style="margin-top:3px">Requested by ${esc(x.rec.requestedBy)}, ${esc(fmtDate(x.rec.requestedAt))}${x.rec.requestedBy === me ? ' <span class="badge b-warn nodot">Your request</span>' : ''}${x.src === 'ov' ? (() => { const n = affected(x.rec).length; return n ? ` · <b style="color:var(--warning)">${n} booked appointment${n > 1 ? 's' : ''} affected</b>` : ''; })() : ''}</div></div>
+          <div class="row" style="gap:6px"><button class="btn sm" data-vw="${x.src}|${x.rec.id}">View</button>${btns(x)}</div></div>`).join('')}</div>` : `<div class="empty">${icon('badge-check')}<b>Nothing waiting</b><span>All schedule changes are decided.</span></div>`}</div>
+      <div class="card"><div class="card-head"><h3>${icon('history')} Decided</h3></div><div class="table-wrap"><table class="tbl compact"><thead><tr><th>Reference</th><th>Request</th><th>Requested by</th><th>Decision</th><th>Decided by</th><th>Note</th></tr></thead><tbody>
+        ${done.map(x => `<tr class="click" data-vw="${x.src}|${x.rec.id}"><td class="mono">${esc(x.rec.no)}</td><td>${esc(x.title)}</td><td>${esc(x.rec.requestedBy)}</td><td>${Kit.status(x.rec.status, x.rec.status === 'Withdrawn' ? 'neutral' : null)}</td><td>${esc(x.rec.decidedBy)}<div class="xs muted">${esc(fmtDate(x.rec.decidedAt))}</div></td><td class="small">${esc(x.rec.decisionNote || '')}</td></tr>`).join('')}
+      </tbody></table></div></div>`;
+    const find = (v) => { const [src, id] = v.split('|'); return { src, rec: (src === 'ov' ? db.appointmentsOverrides : db.appointmentsChanges).find(r => r.id === id) }; };
+    $$('[data-ap]', host).forEach(b => b.addEventListener('click', () => { const f = find(b.dataset.ap); approve(f.src, f.rec); }));
+    $$('[data-rj]', host).forEach(b => b.addEventListener('click', () => { const f = find(b.dataset.rj); reject(f.src, f.rec); }));
+    $$('[data-vw]', host).forEach(b => b.addEventListener('click', () => { const f = find(b.dataset.vw); requestDrawer(f.src, f.rec); }));
+  }
+  function applyChange(c) {
+    const isDoc = !!c.doctorId;
+    const listKey = isDoc ? 'appointmentsSessions' : 'appointmentsResourceCal';
+    const match = (s) => (isDoc ? s.doctorId === c.doctorId : s.resourceCode === c.resourceCode) && s.weekday === c.weekday && s.status !== 'Inactive';
+    if (c.kind === 'Add session') {
+      if (isDoc) { const d = Kit.doc(c.doctorId); const ex = db.appointmentsSessions.find(s => s.doctorId === d.id) || {}; db.appointmentsSessions.push({ id: UI.uid('ss'), doctorId: d.id, weekday: c.weekday, shiftCode: c.shiftCode, slotCode: ex.slotCode || '', clinicId: d.clinicId, branchId: d.branchId, room: d.room, status: 'Active' }); }
+      else db.appointmentsResourceCal.push({ id: UI.uid('rc'), resourceCode: c.resourceCode, weekday: c.weekday, shiftCode: c.shiftCode, status: 'Active' });
+    } else {
+      const s = db[listKey].find(x => match(x) && x.shiftCode === c.fromShift);
+      if (s) { if (c.kind === 'Remove session') s.status = 'Inactive'; else s.shiftCode = c.shiftCode; }
+    }
+  }
+  function approve(src, r) {
+    if (r.requestedBy === me) { toast('You cannot approve your own request.', 'err'); return; }
+    const n = src === 'ov' ? affected(r).length : 0;
+    confirm({ title: 'Approve ' + r.no + '?', tone: 'primary', icon: 'badge-check', confirm: 'Approve',
+      body: src === 'ov' ? `${esc(r.kind)} for ${esc(who(r))}. Slots in the period are blocked in the Appointment Book.` : esc(r.summary) + '. The weekly calendar is updated.',
+      impact: n ? [`${n} booked appointment${n > 1 ? 's' : ''} in the period must be rescheduled from Appointment Tracking.`] : null,
+      onConfirm: () => {
+        r.status = 'Approved'; r.decidedBy = me; r.decidedAt = Appt.stamp();
+        if (src === 'sc') applyChange(r);
+        save(); audit(src === 'ov' ? 'Calendar override approved' : 'Schedule change approved', src === 'ov' ? 'Calendar override' : 'Schedule change', { id: r.id, label: r.no }, [['Status', 'Pending approval', 'Approved'], ['Requested by', '', r.requestedBy]]);
+        toast(r.no + ' approved'); refresh();
+      } });
+  }
+  function reject(src, r) {
+    confirm({ title: 'Reject ' + r.no + '?', body: 'The requester sees the reason.', confirm: 'Reject', reason: true, onConfirm: (why) => {
+      r.status = 'Rejected'; r.decidedBy = me; r.decidedAt = Appt.stamp(); r.decisionNote = why;
+      save(); audit(src === 'ov' ? 'Calendar override rejected' : 'Schedule change rejected', src === 'ov' ? 'Calendar override' : 'Schedule change', { id: r.id, label: r.no }, [['Status', 'Pending approval', 'Rejected']], { reason: why });
+      toast(r.no + ' rejected'); refresh();
+    } });
+  }
+  function requestDrawer(src, r) {
+    const hit = src === 'ov' ? affected(r) : [];
+    drawer({ title: r.no, sub: Kit.status(r.status, r.status === 'Pending approval' ? 'warn' : r.status === 'Withdrawn' ? 'neutral' : null), wide: true,
+      body: `<div class="card card-pad"><dl class="kv">
+          ${src === 'ov' ? `<dt>Type</dt><dd>${esc(r.kind)}</dd><dt>Applies to</dt><dd>${esc(r.kind === 'Holiday closure' ? (r.branchId ? UI.L.bName(r.branchId) : 'All branches') : who(r))}</dd><dt>Period</dt><dd>${esc(fmtDate(r.from))} to ${esc(fmtDate(r.to))}${r.start ? ', ' + esc(r.start + ' to ' + r.end) : ', full day'}</dd>`
+            : `<dt>Change</dt><dd>${esc(r.summary)}</dd><dt>Effective from</dt><dd>${esc(fmtDate(r.effectiveFrom))}</dd>`}
+          <dt>Reason</dt><dd>${esc(r.reason)}</dd><dt>Requested</dt><dd>${esc(r.requestedBy)} · ${esc(fmtDate(r.requestedAt))}</dd>
+          ${r.decidedBy ? `<dt>Decision</dt><dd>${esc(r.status)} by ${esc(r.decidedBy)} · ${esc(fmtDate(r.decidedAt))}${r.decisionNote ? `<div class="small muted">${esc(r.decisionNote)}</div>` : ''}</dd>` : ''}
+        </dl></div>
+        ${src === 'ov' ? `<div class="card" style="margin-top:14px"><div class="card-head"><h3>${icon('calendar-x')} Booked appointments in the period</h3><div class="actions"><span class="badge ${hit.length ? 'b-warn' : 'b-ok'}">${hit.length}</span></div></div>
+          ${hit.length ? `<div class="table-wrap"><table class="tbl compact"><thead><tr><th>Ref</th><th>Patient</th><th>Doctor</th><th>When</th><th></th></tr></thead><tbody>${hit.slice(0, 30).map(a => `<tr><td class="mono">${esc(a.no)}</td><td>${esc(Kit.ptName(a.patientId))}</td><td>${esc(Kit.docName(a.doctorId))}</td><td>${esc(fmtDate(a.date))} ${esc(a.time)}</td><td class="actions"><button class="btn xs" data-rs="${a.id}" ${can('appointments.book.slot', 'edit') ? '' : 'disabled title="Needs Edit permission on Appointment Book"'}>${icon('calendar-sync')} Reschedule</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="card-pad small muted">None.</div>'}</div>` : ''}`,
+      foot: `<span class="grow"></span><button class="btn" data-close>Close</button>`,
+      onMount: (el, close) => $$('[data-rs]', el).forEach(b => b.addEventListener('click', () => { close(); Appt.rescheduleDrawer(Appt.appt(b.dataset.rs), refresh); })) });
+  }
+
+  function drawBody() {
+    const host = $('#body');
+    if (st.tab === 'doctors') { host.innerHTML = matrix('doctor'); wireMatrix('doctor'); }
+    else if (st.tab === 'resources') { host.innerHTML = `<div class="banner info" style="margin-bottom:12px">${icon('info')}<span>Resource bookings for operating theatres, procedure rooms and equipment are supported by the system foundation. The Rooms / Stations master is 2nd phase scope.</span></div>` + matrix('resource'); wireMatrix('resource'); }
+    else if (st.tab === 'overrides') overridesBody();
+    else approvalsBody();
+  }
+  function wireMatrix(kind) {
+    $$('[data-k]', $('#body')).forEach(td => { const go = () => cellDrawer(kind, td.dataset.k, +td.dataset.w); td.addEventListener('click', go); td.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); }); });
+  }
+  function refresh() { drawTabs(); drawBody(); }
+  refresh();
+})();
+</script>
+</body>
+</html>

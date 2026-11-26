@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Purchase orders · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-material.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/material.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, drawer, confirm, field, showErrors, nowStamp, fmtDate, param } = UI;
+  const M = Material, OPT = 'material.po';
+  if (!UI.page({ opt: OPT, title: 'Purchase orders', subtitle: 'Raise POs from approved requisitions or directly, approve them, print and track delivery.',
+    actions: M.btn({ id: 'newPo', cls: 'primary', icon: 'plus', label: 'New purchase order', allow: can(OPT, 'add'), why: 'Needs Add permission' }) })) return;
+  const LV = db.materialSettings.poLevels;
+  const amt = (p) => M.total(p.lines, 'qty', 'price');
+  const list = () => db.materialPOs;
+  const rcvPct = (p) => { const q = Kit.sumBy(p.lines, l => l.qty); return q ? Math.round(100 * Kit.sumBy(p.lines, l => l.received || 0) / q) : 0; };
+  const late = (p) => /Approved|Partially received/.test(p.status) && p.deliveryDate < db.TODAY;
+
+  $('#page').innerHTML = `<div class="grid g4" style="margin-bottom:16px" id="kpis"></div><div id="tabs" style="margin-bottom:12px"></div><div id="tbl"></div>
+    <div class="row" style="margin-top:10px">${Kit.scopeNote('PO approval: ' + LV.map(l => `L${l.level} ${l.name}${l.from ? ' from ' + Kit.money(l.from) : ''}`).join(', ') + '. The buyer who raised the PO cannot approve it.')}</div>`;
+  let tab = param('tab') || 'open';
+  const TABS = [['open', 'Open', p => /Draft|Pending approval|Approved|Partially received/.test(p.status)], ['Pending approval', 'Pending approval', p => p.status === 'Pending approval'], ['delivery', 'Awaiting delivery', p => /Approved|Partially received/.test(p.status)], ['done', 'Received or closed', p => /Received|Closed/.test(p.status)], ['Cancelled', 'Cancelled or rejected', p => /Cancelled|Rejected/.test(p.status)], ['all', 'All', () => true]];
+  const drawTabs = () => Kit.tabs($('#tabs'), TABS.map(([id, label, f]) => ({ id, label, count: list().filter(f).length })), tab, (t) => { tab = t; t1.redraw(); });
+  const drawKpis = () => {
+    const open = list().filter(TABS[0][2]);
+    $('#kpis').innerHTML = Kit.kpi('Open POs', open.length, { icon: 'shopping-bag', foot: Kit.money(Kit.sumBy(open, amt)) + ' committed' })
+      + Kit.kpi('Waiting for approval', list().filter(p => p.status === 'Pending approval').length, { icon: 'hourglass', foot: list().filter(p => p.status === 'Pending approval' && M.canAct(OPT, 'approve', p).ok).length + ' you can approve' })
+      + Kit.kpi('Late deliveries', list().filter(late).length, { icon: 'truck', foot: 'Past the promised date' })
+      + Kit.kpi('Approved PRs to convert', db.materialPRs.filter(p => p.status === 'Approved').length, { icon: 'file-plus-2', foot: 'Use New purchase order', href: R('material/pr.html?tab=Approved') });
+  };
+  const t1 = UI.table($('#tbl'), {
+    columns: [
+      { label: 'PO no.', sort: p => p.no, render: p => `<span class="mono b nw">${esc(p.no)}</span><div class="xs muted">${fmtDate(p.date)}</div>` },
+      { label: 'Vendor', sort: p => M.vendorName(p.vendorId), render: p => `<b>${esc(M.vendorName(p.vendorId))}</b><div class="xs muted">${p.prIds.length ? 'From ' + p.prIds.map(id => (db.materialPRs.find(x => x.id === id) || {}).no).join(', ') : 'Direct PO'}</div>` },
+      { label: 'Store', sort: p => M.whName(p.warehouseId), render: p => esc(M.whName(p.warehouseId)) },
+      { label: 'Value', cls: 'num', sort: p => amt(p), render: p => `<span class="num nw">${Kit.money(amt(p))}</span>` },
+      { label: 'Delivery', sort: p => p.deliveryDate, render: p => `<span class="nw" style="${late(p) ? 'color:var(--error);font-weight:700' : ''}">${fmtDate(p.deliveryDate)}</span>${late(p) ? '<div class="xs" style="color:var(--error)">Late</div>' : ''}` },
+      { label: 'Received', sort: p => rcvPct(p), render: p => `<div class="progress ${rcvPct(p) === 100 ? 'ok' : rcvPct(p) ? 'warn' : ''}" style="width:90px"><i style="width:${Math.max(2, rcvPct(p))}%"></i></div><div class="xs muted">${rcvPct(p)}%</div>` },
+      { label: 'Status', sort: p => p.status, render: p => { const n = M.nextLevel(p, LV, amt(p)); return M.st(p.status) + (p.status === 'Pending approval' && n ? `<div class="xs muted">L${n.level} ${esc(n.name)}</div>` : ''); } },
+    ],
+    rows: () => list().filter(TABS.find(t => t[0] === tab)[2]).slice().sort((a, b) => b.no.localeCompare(a.no)),
+    search: p => [p.no, M.vendorName(p.vendorId), p.createdBy, p.lines.map(l => M.itemLabel(l.itemId)).join(' ')].join(' '),
+    searchPlaceholder: 'Search PO no., vendor or item',
+    filters: [{ label: 'Vendor', options: M.vendorOpts(), test: (p, v) => p.vendorId === v }, { label: 'Source', options: [['pr', 'From PR'], ['direct', 'Direct']], test: (p, v) => v === 'pr' ? p.prIds.length > 0 : !p.prIds.length }],
+    onRow: open, empty: 'No purchase orders in this view', emptyIcon: 'shopping-bag',
+  });
+  const refresh = () => { drawTabs(); drawKpis(); t1.redraw(); };
+  drawTabs(); drawKpis();
+
+  function printPo(p) {
+    const v = Kit.vendor(p.vendorId) || {};
+    M.docPrint({ title: 'Purchase order ' + p.no, heading: 'PURCHASE ORDER', sub: 'Procurement · Material Management',
+      left: [['Vendor', v.name], ['Vendor code', v.code], ['Contact', v.contact + ' · ' + v.phone], ['Payment terms', p.paymentTerms + ' days'], ['Delivery terms', p.deliveryTerms]],
+      right: [['PO no.', p.no], ['Date', fmtDate(p.date)], ['Deliver to', M.whName(p.warehouseId)], ['Delivery by', fmtDate(p.deliveryDate)], ['Status', p.status]],
+      columns: ['#', 'Item code', 'Description', 'UOM', 'Qty', 'Unit price', 'Amount'],
+      rows: p.lines.map((l, i) => [i + 1, M.item(l.itemId).code, M.item(l.itemId).name, M.item(l.itemId).uom, Kit.num(l.qty), Kit.money(l.price, false), Kit.money(l.qty * l.price, false)]),
+      foot: ['', '', '', '', '', 'Total KWD', Kit.money(amt(p), false)],
+      note: (p.notes ? p.notes + ' ' : '') + 'Quote the PO number on the delivery note and invoice. Batch number and expiry must be printed on every pack. Goods are accepted subject to inspection.',
+      sign: ['Prepared by: ' + p.createdBy, 'Approved by: ' + ((p.approvals || []).filter(a => a.decision === 'Approved').map(a => a.by).join(', ') || '-'), 'Vendor acknowledgement'] });
+    audit('PO printed', 'Purchase order', { id: p.id, label: p.no }, []);
+  }
+
+  function open(p) {
+    const total = amt(p), next = M.nextLevel(p, LV, total);
+    const ap = M.canAct(OPT, 'approve', p);
+    const grns = db.materialGRNs.filter(g => g.poId === p.id), invs = db.materialInvoices.filter(x => x.poId === p.id);
+    const anyRcv = p.lines.some(l => (l.received || 0) > 0);
+    drawer({ title: p.no, sub: `${esc(M.vendorName(p.vendorId))} · ${M.st(p.status)}`, wide: true,
+      body: `<div class="grid g-side"><div class="stack">
+        ${p.status === 'Pending approval' && next ? `<div class="banner ${ap.ok ? 'info' : 'warn'}">${icon(ap.ok ? 'info' : 'lock')}<span>Waiting for <b>Level ${next.level}: ${esc(next.name)}</b>. ${ap.ok ? 'You can approve or reject.' : esc(ap.why)}</span></div>` : ''}
+        ${p.status === 'Cancelled' ? `<div class="banner err">${icon('ban')}<span>Cancelled: ${esc(p.cancelReason || '')}</span></div>` : ''}
+        ${p.status === 'Rejected' ? `<div class="banner err">${icon('circle-x')}<span>Rejected: ${esc((p.approvals.find(a => a.decision === 'Rejected') || {}).note || '')}</span></div>` : ''}
+        ${late(p) ? `<div class="banner warn">${icon('truck')}<span>Delivery was due ${fmtDate(p.deliveryDate)}. Follow up with the vendor.</span></div>` : ''}
+        <div class="card card-pad">${M.kv([['Vendor', esc(M.vendorName(p.vendorId)) + ((Kit.vendor(p.vendorId) || {}).status === 'On hold' ? ' ' + M.st('On hold') : '')], ['Source', p.prIds.length ? p.prIds.map(id => { const r = db.materialPRs.find(x => x.id === id) || {}; return `<a class="mono" href="${R('material/pr.html?id=' + r.id)}">${esc(r.no)}</a>`; }).join(', ') : 'Direct PO'], ['Deliver to', esc(M.whName(p.warehouseId))], ['Delivery date', fmtDate(p.deliveryDate)], ['Payment terms', p.paymentTerms + ' days'], ['Delivery terms', esc(p.deliveryTerms)], ['Notes', esc(p.notes)], ['Raised by', esc(p.createdBy) + ' · ' + fmtDate(p.createdAt)]])}</div>
+        <div class="card"><div class="card-head"><h3>${icon('list')} Lines</h3></div><div class="table-wrap"><table class="tbl compact"><thead><tr><th>Item</th><th class="num">Ordered</th><th class="num">Received</th><th class="num">Unit price</th><th class="num">Amount</th></tr></thead><tbody>
+          ${p.lines.map(l => `<tr><td>${M.itemCell(l.itemId, esc(M.item(l.itemId).uom))}</td><td class="num">${Kit.num(l.qty)}</td><td class="num">${Kit.num(l.received || 0)}${(l.received || 0) < l.qty && (l.received || 0) > 0 ? ' <span class="badge b-warn nodot">Part</span>' : ''}</td><td class="num">${Kit.money(l.price, false)}</td><td class="num">${Kit.money(l.qty * l.price, false)}</td></tr>`).join('')}
+          </tbody><tfoot><tr><td colspan="4" style="text-align:end"><b>Total</b></td><td class="num"><b>${Kit.money(total)}</b></td></tr></tfoot></table></div></div>
+        ${grns.length || invs.length ? `<div class="card"><div class="card-head"><h3>${icon('package-check')} Receipts and invoices</h3></div><div class="list-rows pad">
+          ${grns.map(g => `<div><a class="mono b" href="${R('material/grn.html?id=' + g.id)}">${esc(g.no)}</a><span class="small muted">${fmtDate(g.date)} · ${g.lines.length} line(s)</span><span class="grow"></span>${M.st(g.status)}</div>`).join('')}
+          ${invs.map(x => `<div><a class="mono b" href="${R('material/invoice-match.html?id=' + x.id)}">${esc(x.no)}</a><span class="small muted">Vendor invoice ${esc(x.vendorInvNo)} · ${Kit.money(M.total(x.lines))}</span><span class="grow"></span>${M.st(x.status)}</div>`).join('')}</div></div>` : ''}
+      </div><div class="card card-pad"><div class="section-t">Approval cycle</div>${M.approvalTrail(p, LV, total)}</div></div>`,
+      foot: `${p.status === 'Draft' ? M.btn({ id: 'dEdit', icon: 'pencil', label: 'Edit', allow: can(OPT, 'edit'), why: 'Needs Edit permission' }) : ''}
+        ${/Draft|Pending approval|Approved/.test(p.status) ? M.btn({ id: 'dCancel', cls: 'danger', icon: 'ban', label: 'Cancel PO', allow: can(OPT, 'cancel') && !anyRcv ? true : { ok: false, why: anyRcv ? 'Goods are already received. Return them first.' : 'Needs Cancel permission' } }) : ''}
+        ${M.btn({ id: 'dPrint', icon: 'printer', label: 'Print PO', allow: can(OPT, 'print') && !/Draft/.test(p.status) ? true : { ok: false, why: p.status === 'Draft' ? 'Submit the PO first' : 'Needs Print permission' } })}
+        <span class="grow"></span><button class="btn" data-close>Close</button>
+        ${p.status === 'Draft' ? M.btn({ id: 'dSubmit', cls: 'primary', icon: 'send', label: 'Submit for approval', allow: can(OPT, 'add') || can(OPT, 'edit') }) : ''}
+        ${p.status === 'Pending approval' ? M.btn({ id: 'dReject', cls: 'destructive', icon: 'circle-x', label: 'Reject', allow: ap }) + M.btn({ id: 'dApprove', cls: 'success', icon: 'check', label: 'Approve level ' + (next ? next.level : ''), allow: ap }) : ''}
+        ${/Approved|Partially received/.test(p.status) ? `<a class="btn primary" href="${R('material/grn.html?po=' + p.id)}">${icon('package-check')} Receive goods</a>` : ''}`,
+      onMount: (el, close) => {
+        const on = (id, fn) => { const b = $('#' + id, el); if (b) b.addEventListener('click', fn); };
+        on('dEdit', () => { close(); edit(p); });
+        on('dPrint', () => printPo(p));
+        on('dSubmit', () => { p.status = 'Pending approval'; save(); audit('PO submitted', 'Purchase order', { id: p.id, label: p.no }, [['Status', 'Draft', 'Pending approval']]); toast(p.no + ' submitted for approval'); close(); refresh(); });
+        let note = '';
+        on('dApprove', () => confirm({ title: `Approve ${p.no} at level ${next.level}?`, tone: 'primary', icon: 'check', confirm: 'Approve', body: `${esc(next.name)} approval for ${Kit.money(total)} to ${esc(M.vendorName(p.vendorId))}.`,
+          extra: `<div class="field" style="margin-top:12px"><label for="apNote">Comment (optional)</label><textarea class="input" id="apNote" maxlength="300"></textarea></div>`,
+          onMount: (m) => $('#apNote', m).addEventListener('input', (e) => { note = e.target.value.trim(); }),
+          onConfirm: () => { p.approvals.push({ level: next.level, by: M.meName(), at: nowStamp(), decision: 'Approved', note }); const after = M.nextLevel(p, LV, total); if (!after) p.status = 'Approved';
+            save(); audit('PO approved, level ' + next.level, 'Purchase order', { id: p.id, label: p.no }, [['Status', 'Pending approval', p.status]]); toast(after ? `Level ${next.level} approved. Next: ${after.name}` : p.no + ' approved. It can be sent to the vendor.'); close(); refresh(); } }));
+        on('dReject', () => confirm({ title: 'Reject ' + p.no + '?', body: 'The buyer is told the reason. Linked requisitions return to Approved so a new PO can be raised.', confirm: 'Reject PO', reason: true,
+          onConfirm: (reason) => { p.approvals.push({ level: next.level, by: M.meName(), at: nowStamp(), decision: 'Rejected', note: reason }); p.status = 'Rejected'; releasePrs(p);
+            save(); audit('PO rejected', 'Purchase order', { id: p.id, label: p.no }, [['Status', 'Pending approval', 'Rejected']], { reason }); toast(p.no + ' rejected'); close(); refresh(); } }));
+        on('dCancel', () => confirm({ title: 'Cancel ' + p.no + '?', body: 'The vendor must be told. The PO stays in history with the reason.', impact: [p.prIds.length ? 'Linked requisitions return to Approved.' : 'No requisitions are linked.', 'Open quantity ' + Kit.num(Kit.sumBy(p.lines, l => l.qty)) + ' is removed from on-order stock.'], confirm: 'Cancel PO', reason: true,
+          onConfirm: (reason) => { const b = p.status; p.status = 'Cancelled'; p.cancelReason = reason; releasePrs(p); save(); audit('PO cancelled', 'Purchase order', { id: p.id, label: p.no }, [['Status', b, 'Cancelled']], { reason }); toast(p.no + ' cancelled'); close(); refresh(); } }));
+      } });
+  }
+  function releasePrs(p) { p.prIds.forEach(id => { const r = db.materialPRs.find(x => x.id === id); if (r && r.status === 'PO raised') { r.status = 'Approved'; r.poNo = ''; } }); }
+
+  /* ---------- Create / edit ---------- */
+  function edit(p, prePr) {
+    const isNew = !p;
+    let src = p ? (p.prIds.length ? 'pr' : 'direct') : (prePr ? 'pr' : 'pr');
+    let picked = p ? p.prIds.slice() : prePr ? [prePr] : [];
+    const v = p || { vendorId: '', warehouseId: M.ctxWh() || 'wh_01', deliveryDate: Kit.addDays(db.TODAY, 10), paymentTerms: '', deliveryTerms: 'Delivered to store (DDP)', notes: '', lines: [] };
+    const approved = () => db.materialPRs.filter(r => r.status === 'Approved' || picked.includes(r.id));
+    let le;
+    drawer({ title: isNew ? 'New purchase order' : 'Edit ' + p.no, sub: 'Choose the source, the vendor and confirm prices.', wide: true,
+      body: `<div class="err-summary hidden"></div>
+        <div class="row" style="margin-bottom:12px"><span class="small b">Source</span><div id="fSrc"></div></div>
+        <div id="fPrBox" class="card card-pad" style="margin-bottom:14px"></div>
+        <div class="form-grid c4">
+          ${field({ id: 'fVen', label: 'Vendor', type: 'select', options: M.vendorOpts(), value: v.vendorId, req: true })}
+          ${field({ id: 'fWh', label: 'Deliver to store', type: 'select', options: M.storeOpts(), value: v.warehouseId, req: true })}
+          ${field({ id: 'fDel', label: 'Delivery date', type: 'date', value: v.deliveryDate, req: true, attrs: `min="${db.TODAY}"` })}
+          ${field({ id: 'fPay', label: 'Payment terms (days)', type: 'number', value: v.paymentTerms, req: true, attrs: 'min="0" max="180"' })}
+          ${field({ id: 'fTerms', label: 'Delivery terms', type: 'select', options: [['Delivered to store (DDP)', 'Delivered to store (DDP)'], ['Ex-works, hospital collects', 'Ex-works, hospital collects'], ['Delivered to laboratory, cold chain', 'Delivered to laboratory, cold chain']], value: v.deliveryTerms, placeholder: false })}
+          ${field({ id: 'fNotes', label: 'Notes to vendor', value: v.notes, max: 200, full: false })}
+          <div class="field span2" id="fVenInfo"></div>
+        </div>
+        <div class="section-t" style="margin-top:16px">Lines and prices</div><div id="fLines"></div><div class="small muted" id="fLv" style="margin-top:8px"></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><span class="grow"></span><button class="btn" id="fDraft">${icon('save')} Save draft</button><button class="btn primary" id="fSubmit" disabled>${icon('send')} Submit for approval</button>`,
+      onMount: (el, close) => {
+        const ven = () => Kit.vendor($('#fVen', el).value);
+        const upd = () => {
+          const vv = ven();
+          $('#fVenInfo', el).innerHTML = vv ? `<label>Vendor details</label><div class="small">${esc(vv.code)} · ${esc(vv.category)} · ${esc(vv.contact)} · ${esc(vv.phone)} ${vv.status === 'On hold' ? `<div class="banner warn" style="margin-top:6px">${icon('triangle-alert')}<span>This vendor is on hold in the Vendor Master. A PO cannot be submitted.</span></div>` : ''}</div>` : '';
+          const ok = le && le.valid() && vv && vv.status !== 'On hold' && $('#fWh', el).value && $('#fDel', el).value >= db.TODAY && $('#fPay', el).value !== '' && (src === 'direct' || picked.length);
+          $('#fSubmit', el).disabled = !ok;
+          const tot = le ? M.total(le.get()) : 0;
+          $('#fLv', el).innerHTML = `${icon('git-branch')} ${Kit.money(tot)} needs ${M.levelsFor(tot, LV).map(l => 'L' + l.level + ' ' + l.name).join(', then ')}.`;
+        };
+        const drawPr = () => {
+          const box = $('#fPrBox', el);
+          if (src === 'direct') { box.innerHTML = `<div class="small muted">${icon('info')} Direct PO: enter the lines below. Use this for rate-contract call-offs and emergency purchases.</div>`; return; }
+          const ap = approved();
+          box.innerHTML = ap.length ? `<div class="small b" style="margin-bottom:6px">Approved requisitions (lines are merged by item)</div><div class="mm-chk">${ap.map(r => `<label class="check"><input type="checkbox" value="${r.id}" ${picked.includes(r.id) ? 'checked' : ''}> <span class="mono">${esc(r.no)}</span> <span class="small muted">${esc(M.deptName(r.deptId))} · ${r.lines.length} line(s) · ${Kit.money(M.total(r.lines))} · deliver to ${esc(M.whName(r.warehouseId))}</span></label>`).join('')}</div>`
+            : `<div class="empty" style="padding:14px">${icon('file-plus-2')}<b>No approved requisitions waiting</b><span>Switch to a direct PO or approve requisitions first.</span></div>`;
+          $$('input[type=checkbox]', box).forEach(c => c.addEventListener('change', () => { picked = $$('input[type=checkbox]:checked', box).map(x => x.value); merge(); }));
+        };
+        const merge = () => {
+          const m = {};
+          picked.forEach(id => { const r = db.materialPRs.find(x => x.id === id); if (!r) return; r.lines.forEach(l => { m[l.itemId] = m[l.itemId] || { itemId: l.itemId, qty: 0, price: l.price }; m[l.itemId].qty += l.qty; }); const pr0 = db.materialPRs.find(x => x.id === picked[0]); if (pr0 && $('#fWh', el)) $('#fWh', el).value = pr0.warehouseId; });
+          le.set(Object.values(m)); upd();
+        };
+        Kit.seg($('#fSrc', el), [['pr', 'From approved PRs', 'file-check'], ['direct', 'Direct PO', 'pen-line']], src, (s) => { src = s; if (s === 'direct') picked = []; drawPr(); if (s === 'pr') merge(); upd(); });
+        le = M.lineEditor($('#fLines', el), { lines: v.lines, price: true, onChange: upd });
+        drawPr(); if (isNew && picked.length) merge();
+        $('#fVen', el).addEventListener('change', () => { const vv = ven(); if (vv && !$('#fPay', el).value) $('#fPay', el).value = vv.paymentTerms; upd(); });
+        $$('input,select', $('.form-grid', el)).forEach(i => i.addEventListener('input', upd));
+        const store = (status) => {
+          const errs = {}; const vv = ven();
+          if (!vv) errs.fVen = 'Choose a vendor.'; else if (vv.status === 'On hold' && status !== 'Draft') errs.fVen = 'The vendor is on hold.';
+          if (!$('#fWh', el).value) errs.fWh = 'Choose the delivery store.';
+          if (!$('#fDel', el).value || $('#fDel', el).value < db.TODAY) errs.fDel = 'Delivery date must be today or later.';
+          if ($('#fPay', el).value === '') errs.fPay = 'Payment terms are required.';
+          if (src === 'pr' && !picked.length) errs.fSrc = 'Select at least one approved requisition, or switch to Direct PO.';
+          le.problems().forEach((m, i) => { errs['ln' + i] = m; });
+          if (!showErrors(el, errs)) return;
+          const rec = p || { id: UI.uid('mpo'), no: M.docNo('PO-26-', 'materialPOs'), date: db.TODAY, createdBy: M.meName(), createdAt: nowStamp(), approvals: [] };
+          const beforePrs = p ? p.prIds.slice() : [];
+          Object.assign(rec, { vendorId: vv.id, warehouseId: $('#fWh', el).value, deliveryDate: $('#fDel', el).value, paymentTerms: +$('#fPay', el).value, deliveryTerms: $('#fTerms', el).value, notes: $('#fNotes', el).value.trim(), prIds: src === 'pr' ? picked.slice() : [], status,
+            lines: le.get().map(l => ({ id: 'ln_' + UI.uid('l').slice(2), itemId: l.itemId, qty: l.qty, price: l.price, received: 0 })) });
+          if (isNew) db.materialPOs.push(rec);
+          beforePrs.filter(id => !rec.prIds.includes(id)).forEach(id => { const r = db.materialPRs.find(x => x.id === id); if (r) { r.status = 'Approved'; r.poNo = ''; } });
+          rec.prIds.forEach(id => { const r = db.materialPRs.find(x => x.id === id); if (r) { r.status = 'PO raised'; r.poNo = rec.no; } });
+          save(); audit(isNew ? 'PO created' : 'PO updated', 'Purchase order', { id: rec.id, label: rec.no }, [['Status', isNew ? '' : 'Draft', status], ['Vendor', '', M.vendorName(rec.vendorId)], ['Value', '', Kit.money(amt(rec))]]);
+          toast(status === 'Draft' ? rec.no + ' saved as draft' : rec.no + ' submitted for approval'); close(); refresh();
+        };
+        $('#fDraft', el).addEventListener('click', () => store('Draft'));
+        $('#fSubmit', el).addEventListener('click', () => store('Pending approval'));
+        upd();
+      } });
+  }
+  $('#newPo').addEventListener('click', () => edit(null));
+  if (param('pr') && can(OPT, 'add')) { const r = db.materialPRs.find(x => x.id === param('pr') && x.status === 'Approved'); if (r) edit(null, r.id); }
+  M.openFromQuery(list(), open);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clinical masters · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-emr.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/emr.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, $ } = UI;
+  if (!UI.page({ opt: 'emr.masters', title: 'Clinical masters', subtitle: 'Master data for consultation, CPOE and clinical decision support (SOW V4 Module 3).' })) return;
+  // The shared ICD-10 list has no record ids; give each row a stable id so it can be edited here.
+  let fixed = false;
+  db.icd10.forEach(r => { if (!r.id) { r.id = 'icd_' + r.code.replace(/\W/g, ''); fixed = true; } if (!r.chapter) { r.chapter = chapter(r.code); fixed = true; } });
+  if (fixed) save();
+  function chapter(c) { const l = c[0]; return { A: 'Infectious diseases', D: 'Blood', E: 'Endocrine and metabolic', F: 'Mental and behavioural', H: 'Eye and ear', I: 'Circulatory system', J: 'Respiratory system', K: 'Digestive system', L: 'Skin', M: 'Musculoskeletal', N: 'Genitourinary', O: 'Pregnancy and childbirth', R: 'Symptoms and signs', S: 'Injury', Z: 'Health status and services' }[l] || 'Other'; }
+  const specs = ['General', 'Cardiology', 'Paediatrics', 'Internal Medicine', 'Orthopaedics', 'Obstetrics and Gynaecology', 'ENT', 'General Surgery', 'Dermatology', 'Emergency Medicine', 'Dental', 'Ophthalmology'];
+  Kit.masters($('#page'), { opt: 'emr.masters', defs: [
+    { id: 'dx', title: 'Diagnosis (ICD-10)', icon: 'tag', key: 'icd10', note: 'Shared ICD-10 code list used for diagnosis coding, claims and reports. ICD-11 is 2nd phase.', columns: ['code', 'name', 'chapter'],
+      fields: [{ key: 'code', label: 'ICD-10 code', req: true }, { key: 'name', label: 'Description', req: true, full: true }, { key: 'chapter', label: 'Chapter', type: 'select', options: ['Infectious diseases', 'Blood', 'Endocrine and metabolic', 'Mental and behavioural', 'Eye and ear', 'Circulatory system', 'Respiratory system', 'Digestive system', 'Skin', 'Musculoskeletal', 'Genitourinary', 'Pregnancy and childbirth', 'Symptoms and signs', 'Injury', 'Health status and services', 'Other'] }] },
+    { id: 'cc', title: 'Chief Complaint', icon: 'message-square-text', key: 'emrComplaints', columns: ['code', 'name', 'specialty', 'icd10'], note: 'Shown first for the doctor\'s specialty in the console. The ICD-10 link suggests a diagnosis.',
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Complaint', req: true }, { key: 'specialty', label: 'Specialty', type: 'select', options: specs, req: true }, { key: 'icd10', label: 'Suggested ICD-10 code' }] },
+    { id: 'vp', title: 'Vital Sign Parameter', icon: 'activity', key: 'emrVitalParams', columns: ['code', 'name', 'unit', 'low', 'high', 'critHigh'], note: 'Normal ranges flag a reading as abnormal; critical limits raise a critical flag.',
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Name', req: true }, { key: 'unit', label: 'Unit', req: true }, { key: 'decimals', label: 'Decimals', type: 'number' }, { key: 'low', label: 'Normal low', type: 'number', req: true }, { key: 'high', label: 'Normal high', type: 'number', req: true }, { key: 'critLow', label: 'Critical low', type: 'number' }, { key: 'critHigh', label: 'Critical high', type: 'number' }, { key: 'mandatory', label: 'Mandatory at capture', type: 'check', full: true }] },
+    { id: 'tpl', title: 'Clinical Template', icon: 'clipboard-list', key: 'emrTemplates', columns: ['code', 'name', 'specialty', 'phase'], note: 'Departmental physical exam and system review. General, Cardiology and Paediatrics are agreed; OB/GYN, Dental and Ophthalmology are 2nd phase.',
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Template name', req: true }, { key: 'specialty', label: 'Specialty', type: 'select', options: specs, req: true }, { key: 'phase', label: 'Phase', type: 'select', options: ['Phase 1', '2nd phase'], req: true }, { key: 'examText', label: 'Examination items (comma separated)', type: 'textarea', req: true, full: true }, { key: 'rosText', label: 'System review items (comma separated)', type: 'textarea', req: true, full: true }] },
+    { id: 'al', title: 'Allergy', icon: 'shield-alert', key: 'emrAllergies', columns: ['code', 'name', 'type', 'severity', 'matches'], note: 'Drug class map for the CDSS allergy check. Matching drugs stop the order until overridden with a reason; cross-reactive drugs warn.',
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Allergen', req: true }, { key: 'type', label: 'Type', type: 'select', options: ['Drug', 'Food', 'Environmental'], req: true }, { key: 'severity', label: 'Default severity', type: 'select', options: ['Mild', 'Moderate', 'Severe'], req: true }, { key: 'matches', label: 'Blocked drugs or classes (generic names, comma separated)', type: 'textarea', full: true }, { key: 'cross', label: 'Cross-reactive drugs (warning)', type: 'textarea', full: true }] },
+    { id: 'rr', title: 'Referral Reason', icon: 'arrow-right-left', key: 'emrReferralReasons', columns: ['code', 'name', 'type'],
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Reason', req: true }, { key: 'type', label: 'Used for', type: 'select', options: ['Referral', 'Consultation', 'Transfer'], req: true }] },
+    { id: 'med', title: 'Medicine', icon: 'pill', key: 'items', columns: ['code', 'name', 'brand', 'category', 'schedule'], note: 'Shared item master (owned by Pharmacy and Material Management). EMR prescribes Drug items; controlled drugs need approval in CPOE.',
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Name', req: true, full: true }, { key: 'type', label: 'Item type', type: 'select', options: ['Drug', 'Consumable', 'Reagent', 'General'], req: true }, { key: 'generic', label: 'Generic name' }, { key: 'brand', label: 'Brand' }, { key: 'form', label: 'Form' }, { key: 'strength', label: 'Strength' }, { key: 'route', label: 'Route' }, { key: 'category', label: 'Drug class' }, { key: 'schedule', label: 'Controlled schedule', type: 'select', options: ['Schedule II', 'Schedule III', 'Schedule IV'] }, { key: 'price', label: 'Price (KWD)', type: 'number', money: true }] },
+    { id: 'nt', title: 'Doctor\'s Note Template', icon: 'notebook-pen', key: 'emrNoteTemplates', columns: ['code', 'name', 'type', 'specialty'], note: 'Inserted into HPI, progress notes, discharge summaries and medical reports. Use ___ for text the doctor must complete.',
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Name', req: true }, { key: 'type', label: 'Used in', type: 'select', options: ['Consultation', 'Progress', 'Discharge', 'Medical report'], req: true }, { key: 'specialty', label: 'Specialty', type: 'select', options: ['All'].concat(specs), req: true }, { key: 'body', label: 'Template text', type: 'textarea', req: true, full: true }] },
+  ] });
+})();
+</script>
+</body>
+</html>

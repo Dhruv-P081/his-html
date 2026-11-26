@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lab reports · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-lab.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/lab.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, $ } = UI;
+  const OPT = 'lab.reports';
+  if (!UI.page({ opt: OPT, title: 'Lab reports', subtitle: 'Laboratory operational and quality reports (SOW V4 Module 5, Annexure B).' })) return;
+  const sections = [...new Set(db.labTests.map(t => t.section))].map(s => [s, s]);
+  const D = (id, label) => ({ id, label, type: 'date' });
+  const inR = (s, f) => !!s && s.slice(0, 10) >= (f.from || '0') && s.slice(0, 10) <= (f.to || '9');
+  const L = () => Lab.orders();
+  const pt = (id) => Kit.pt(id) || {};
+  const median = (a) => { if (!a.length) return 0; const s = a.slice().sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
+  const sec = (o) => Lab.test(o.code).section;
+  const ORD = (o, id) => o || db.orders.find(x => x.id === id);
+  Kit.reportCatalog($('#page'), { module: 'lab', opt: OPT, reports: [
+    { id: 'LAB-R01', title: 'Test volume by section', purpose: 'Orders, completed and pending tests per section and test.', filters: [D('from', 'From'), D('to', 'To'), { id: 'sec', label: 'Section', type: 'select', options: sections }, { id: 'set', label: 'Setting', type: 'select', options: [['OPD', 'OPD'], ['ER', 'ER'], ['IPD', 'IPD']] }],
+      columns: ['Section', 'Test', 'Orders', 'Approved', 'Pending', 'Rejected or cancelled'],
+      rows: f => { const l = L().filter(o => inR(o.orderedAt, f) && (!f.sec || sec(o) === f.sec) && (!f.set || Lab.setting(o) === f.set)); return Object.entries(Kit.groupBy(l, o => o.code)).map(([c, os]) => [Lab.test(c).section, Lab.test(c).name, os.length, os.filter(o => o.status === 'Verified').length, os.filter(Lab.isOpen).length, os.filter(o => /Rejected|Cancelled/.test(o.status)).length]).sort((a, b) => a[0].localeCompare(b[0]) || b[2] - a[2]); },
+      totals: r => ['Total', '', Kit.sumBy(r, x => x[2]), Kit.sumBy(r, x => x[3]), Kit.sumBy(r, x => x[4]), Kit.sumBy(r, x => x[5])] },
+    { id: 'LAB-R02', title: 'Turnaround time (TAT) compliance', purpose: 'Order-to-result time against the target of each test.', filters: [D('from', 'From'), D('to', 'To'), { id: 'sec', label: 'Section', type: 'select', options: sections }, { id: 'pri', label: 'Priority', type: 'select', options: [['STAT', 'STAT'], ['Urgent', 'Urgent'], ['Routine', 'Routine']] }],
+      columns: ['Test', 'Section', 'Target', 'Resulted', 'Within target', '% within target', 'Median TAT (min)'],
+      rows: f => { const l = L().filter(o => o.resultedAt && inR(o.orderedAt, f) && (!f.sec || sec(o) === f.sec) && (!f.pri || o.priority === f.pri)); return Object.entries(Kit.groupBy(l, o => o.code)).map(([c, os]) => { const ok = os.filter(o => !Lab.tat(o).late).length; return [Lab.test(c).name, Lab.test(c).section, Lab.dur(Lab.test(c).tatHours * 60), os.length, ok, Math.round(100 * ok / os.length) + '%', median(os.map(o => Lab.tat(o).used))]; }); },
+      totals: r => ['Total', '', '', Kit.sumBy(r, x => x[3]), Kit.sumBy(r, x => x[4]), r.length ? Math.round(100 * Kit.sumBy(r, x => x[4]) / Math.max(1, Kit.sumBy(r, x => x[3]))) + '%' : '', ''] },
+    { id: 'LAB-R03', title: 'Pending worklist by stage', purpose: 'Open orders with their stage and elapsed time.', filters: [{ id: 'sec', label: 'Section', type: 'select', options: sections }, { id: 'stage', label: 'Stage', type: 'select', options: Lab.STAGES.slice(0, 7).map(s => [s[0], s[1]]) }, { id: 'late', label: 'TAT', type: 'select', options: [['late', 'Over target'], ['ok', 'Within target']] }],
+      columns: ['Accession', 'Patient', 'MRN', 'Test', 'Priority', 'Stage', 'Ordered', 'Elapsed', 'Over target'],
+      rows: f => L().filter(Lab.isOpen).filter(o => (!f.sec || sec(o) === f.sec) && (!f.stage || Lab.stageKey(o) === f.stage) && (!f.late || (Lab.tat(o).late ? 'late' : 'ok') === f.late)).map(o => [Lab.acc(o), pt(o.patientId).name, pt(o.patientId).mrn, o.name, o.priority, Lab.STAGES.find(s => s[0] === Lab.stageKey(o))[1], UI.fmtDate(o.orderedAt), Lab.dur(Lab.tat(o).used), Lab.tat(o).late ? 'Yes' : 'No']) },
+    { id: 'LAB-R04', title: 'Critical results notification log', purpose: 'Every telephone notification of a critical value with read-back and time to notify.', filters: [D('from', 'From'), D('to', 'To'), { id: 'out', label: 'Outcome', type: 'select', options: [['Reached', 'Reached'], ['No answer', 'No answer'], ['Busy', 'Busy'], ['Escalated', 'Escalated']] }],
+      columns: ['Date and time', 'Patient', 'MRN', 'Value', 'Called by', 'Person called', 'Role', 'Outcome', 'Read-back', 'Minutes to notify'],
+      rows: f => (db.labCalls || []).filter(c => inR(c.at, f) && (!f.out || c.outcome === f.out)).sort((a, b) => (a.at < b.at ? 1 : -1)).map(c => { const o = c.orderId && ORD(null, c.orderId); const p = pt(o ? o.patientId : c.patientId); return [UI.fmtDate(c.at), p.name || '', p.mrn || '', (c.param || '') + ' ' + (c.value || ''), c.by, c.to, c.role, c.outcome, c.kind === 'Call' ? (c.readBack ? 'Yes' : 'No') : '', c.minsToNotify != null ? c.minsToNotify : o && c.outcome === 'Reached' ? Lab.mins(o.resultedAt, c.at) : '']; }) },
+    { id: 'LAB-R05', title: 'Sample rejection log', purpose: 'Rejected samples by reason, for pre-analytical quality monitoring.', filters: [D('from', 'From'), D('to', 'To'), { id: 'code', label: 'Reason', type: 'select', options: (db.labRejectReasons || []).filter(r => /Sample|Both/.test(r.appliesTo)).map(r => [r.code, r.name]) }],
+      columns: ['Date and time', 'Patient', 'MRN', 'Test', 'Reason', 'Rejected by', 'Note'],
+      rows: f => (db.labSampleRejects || []).filter(r => inR(r.at, f) && (!f.code || r.code === f.code)).map(r => { const o = r.orderId && ORD(null, r.orderId); const p = pt(o ? o.patientId : r.patientId); return [UI.fmtDate(r.at), p.name || '', p.mrn || '', o ? o.name : Lab.test(r.test).name, r.reason, r.by, r.note || '']; }),
+      totals: r => ['Total rejected', '', '', '', r.length, '', ''] },
+    { id: 'LAB-R06', title: 'Order rejections and cancellations', purpose: 'Orders rejected or cancelled by the laboratory with the reason.', filters: [D('from', 'From'), D('to', 'To'), { id: 'st', label: 'Type', type: 'select', options: [['Rejected', 'Rejected'], ['Cancelled', 'Cancelled']] }],
+      columns: ['Date', 'Order', 'Patient', 'Test', 'Type', 'Reason', 'By', 'Ordering doctor'],
+      rows: f => L().filter(o => /Rejected|Cancelled/.test(o.status) && inR(o.rejectedAt || o.cancelledAt || o.orderedAt, f) && (!f.st || o.status === f.st)).map(o => [UI.fmtDate(o.rejectedAt || o.cancelledAt), o.no, pt(o.patientId).name, o.name, o.status, o.rejectReason || o.cancelReason || '', o.rejectedBy || o.cancelledBy || '', Kit.docName(o.by)]) },
+    { id: 'LAB-R07', title: 'Abnormal results summary', purpose: 'High, low and critical results per parameter.', filters: [D('from', 'From'), D('to', 'To'), { id: 'test', label: 'Test', type: 'select', options: db.labTests.map(t => [t.code, t.name]) }],
+      columns: ['Test', 'Parameter', 'Results', 'High', 'Low', 'Critical', '% abnormal'],
+      rows: f => { const m = {}; L().filter(o => o.results && inR(o.resultedAt, f) && (!f.test || o.code === f.test)).forEach(o => o.results.forEach(r => { const k = o.name + '|' + r.name; const x = m[k] = m[k] || [o.name, r.name, 0, 0, 0, 0]; x[2]++; if (r.flag === 'H' || r.flag === 'A') x[3]++; if (r.flag === 'L') x[4]++; if (r.critical) x[5]++; })); return Object.values(m).map(x => x.concat([Math.round(100 * (x[3] + x[4]) / x[2]) + '%'])); } },
+    { id: 'LAB-R08', title: 'Test revenue', purpose: 'Gross charges for laboratory tests (KWD), cash and insured.', filters: [D('from', 'From'), D('to', 'To'), { id: 'sec', label: 'Section', type: 'select', options: sections }, { id: 'pay', label: 'Payer', type: 'select', options: [['Cash', 'Cash'], ['Insurance', 'Insurance']] }],
+      columns: ['Test', 'Section', 'Count', 'Unit price (KWD)', 'Gross (KWD)'],
+      rows: f => { const l = L().filter(o => !/Rejected|Cancelled/.test(o.status) && inR(o.orderedAt, f) && (!f.sec || sec(o) === f.sec) && (!f.pay || (pt(o.patientId).payerId ? 'Insurance' : 'Cash') === f.pay)); return Object.entries(Kit.groupBy(l, o => o.code)).map(([c, os]) => [Lab.test(c).name, Lab.test(c).section, os.length, +Lab.test(c).price.toFixed(3), +(os.length * Lab.test(c).price).toFixed(3)]).sort((a, b) => b[4] - a[4]); },
+      totals: r => ['Total', '', Kit.sumBy(r, x => x[2]), '', +Kit.sumBy(r, x => x[4]).toFixed(3)] },
+    { id: 'LAB-R09', title: 'Orders by requesting doctor', purpose: 'Laboratory workload by the ordering doctor.', filters: [D('from', 'From'), D('to', 'To'), { id: 'set', label: 'Setting', type: 'select', options: [['OPD', 'OPD'], ['ER', 'ER'], ['IPD', 'IPD']] }],
+      columns: ['Doctor', 'Specialty', 'Orders', 'STAT or urgent', 'Approved', 'Rejected or cancelled'],
+      rows: f => { const l = L().filter(o => inR(o.orderedAt, f) && (!f.set || Lab.setting(o) === f.set)); return Object.entries(Kit.groupBy(l, o => o.by)).map(([d, os]) => [Kit.docName(d), (Kit.doc(d) || {}).specialty || '', os.length, os.filter(o => o.priority !== 'Routine').length, os.filter(o => o.status === 'Verified').length, os.filter(o => /Rejected|Cancelled/.test(o.status)).length]).sort((a, b) => b[2] - a[2]); },
+      totals: r => ['Total', '', Kit.sumBy(r, x => x[2]), Kit.sumBy(r, x => x[3]), Kit.sumBy(r, x => x[4]), Kit.sumBy(r, x => x[5])] },
+    { id: 'LAB-R10', title: 'Report delivery (print and e-send) log', purpose: 'Every printed or e-sent report with channel and delivery status.', filters: [D('from', 'From'), D('to', 'To'), { id: 'ch', label: 'Channel', type: 'select', options: ['Email', 'SMS', 'Patient app', 'Referring doctor', 'Printed'].map(x => [x, x]) }, { id: 'st', label: 'Status', type: 'select', options: ['Sent', 'Delivered', 'Failed', 'Printed'].map(x => [x, x]) }],
+      columns: ['Date and time', 'Accession', 'Patient', 'Test', 'Channel', 'To', 'Status', 'By'],
+      rows: f => (db.labDispatch || []).filter(x => inR(x.at, f) && (!f.ch || x.channel === f.ch) && (!f.st || x.status === f.st)).sort((a, b) => (a.at < b.at ? 1 : -1)).map(x => { const o = ORD(null, x.orderId) || {}; return [UI.fmtDate(x.at), o.no ? Lab.acc(o) : '', pt(o.patientId).name || '', o.name || '', x.channel, x.to, x.status, x.by]; }) },
+  ] });
+})();
+</script>
+</body>
+</html>

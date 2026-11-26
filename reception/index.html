@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reception overview · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-reception.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/reception.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, esc, icon, $, $$, R } = UI;
+  const Rc = window.Reception;
+  if (!UI.page({ module: 'reception', title: 'Reception overview', subtitle: 'Today at the front desk, emergency and wards (SOW V4 Module 1).',
+    actions: `<a class="btn" href="${R('reception/er.html')}">${icon('siren')} ER board</a><a class="btn" href="${R('reception/opd.html?new=1')}">${icon('clipboard-plus')} New OPD visit</a><a class="btn primary" href="${R('reception/patients.html?new=1')}">${icon('user-plus')} Register patient</a>` })) return;
+  const T = db.TODAY;
+  const opd = db.encounters.filter(e => e.type === 'OPD' && e.start.startsWith(T) && !/Cancelled|No-show/.test(e.status));
+  const er = db.encounters.filter(e => e.type === 'ER' && !/Discharged|Cancelled|Left without being seen|Admitted/.test(e.status));
+  const beds = db.beds;
+  const vac = beds.filter(b => b.status === 'Vacant').length;
+  const waiting = opd.filter(e => /Waiting|Checked in/.test(e.status));
+  const waits = waiting.map(e => Rc.mins(Rc.qStart(e)));
+  const reqs = (db.receptionAdmRequests || []).filter(r => !/Admitted|Cancelled/.test(r.status));
+  const sh = Rc.myShift();
+  const collected = Kit.sumBy((db.receptionPayments || []).filter(p => p.at.startsWith(T)), p => p.amount);
+  const hours = Array.from({ length: 11 }, (_, i) => 8 + i);
+  $('#page').innerHTML = `
+    <div class="grid g4" style="margin-bottom:16px">
+      ${Kit.kpi('OPD visits today', opd.length, { icon: 'clipboard-list', foot: opd.filter(e => e.status === 'Completed').length + ' completed · ' + opd.filter(e => e.source === 'Walk-in').length + ' walk-in', href: R('reception/opd.html?tab=all') })}
+      ${Kit.kpi('Waiting now', waiting.length, { icon: 'clock', foot: waits.length ? 'Longest wait ' + Rc.dur(Math.max.apply(null, waits)) : 'Nobody waiting', href: R('reception/opd.html') })}
+      ${Kit.kpi('In emergency', er.length, { icon: 'siren', foot: er.filter(e => e.triage && e.triage <= 2).length + ' at ESI 1-2 · ' + er.filter(e => !e.triage).length + ' awaiting triage', href: R('reception/er.html') })}
+      ${Kit.kpi('Bed occupancy', Math.round(100 * (beds.filter(b => b.status === 'Occupied').length) / beds.length) + '%', { icon: 'bed-double', foot: vac + ' vacant of ' + beds.length + ' · ' + reqs.length + ' admission requests', href: R('reception/beds.html') })}
+    </div>
+    <div class="grid g2" style="margin-bottom:16px">
+      <div class="card"><div class="card-head"><h3>${icon('chart-column')} OPD arrivals by hour</h3><div class="actions"><span class="small muted">Today</span></div></div><div class="card-pad">
+        ${Kit.barChart({ labels: hours.map(h => h + ':00'), values: hours.map(h => opd.filter(e => +e.start.slice(11, 13) === h).length), color: '#2F6BC5', height: 220, title: 'OPD arrivals by hour' })}</div></div>
+      <div class="card"><div class="card-head"><h3>${icon('bed-double')} Beds by status</h3><div class="actions"><a class="btn sm" href="${R('reception/beds.html')}">Bed board ${icon('arrow-right')}</a></div></div><div class="card-pad">
+        <div class="grid g2" style="align-items:center;gap:24px">
+          ${Kit.donut([['Occupied', beds.filter(b => b.status === 'Occupied').length, '#2F6BC5'], ['Vacant', vac, '#0E9F6E'], ['Cleaning', beds.filter(b => b.status === 'Cleaning').length, '#E0A100'], ['Reserved', beds.filter(b => b.status === 'Reserved').length, '#7C4DDB'], ['Blocked', beds.filter(b => b.status === 'Blocked').length, '#8794A7']], { centerLabel: 'Beds' })}
+          <div><div class="section-t" style="margin:0 0 10px">Occupancy by ward</div>${Kit.barList(db.wards.map(w => { const a = beds.filter(b => b.wardId === w.id); const pct = a.length ? Math.round(100 * a.filter(b => b.status === 'Occupied').length / a.length) : 0; return [w.name, pct, pct > 85 ? 'err' : pct > 60 ? 'warn' : 'ok']; }), { max: 100, fmt: (v) => v + '%' })}</div>
+        </div>
+        <div class="row" style="margin-top:16px;border-top:1px solid var(--line);padding-top:12px">${icon('banknote', 'mute')}<span class="grow small">Collected today <b>${Kit.money(collected)}</b></span><a class="btn sm" href="${R('reception/cashier.html')}">${sh ? 'Shift ' + esc(sh.no) : 'Open shift'}</a></div></div></div>
+    </div>
+    <div class="grid g-side">
+      <div class="card"><div class="card-head"><h3>${icon('users')} Waiting for the doctor</h3><div class="actions"><a class="btn sm" href="${R('reception/opd.html')}">Open OPD queue ${icon('arrow-right')}</a></div></div>
+        <div class="table-wrap"><table class="tbl"><thead><tr><th>Token</th><th>Patient</th><th>Doctor</th><th>Arrived</th><th>Waiting</th><th>Status</th></tr></thead><tbody>
+        ${waiting.length ? waiting.slice().sort((a, b) => a.start.localeCompare(b.start)).slice(0, 6).map(e => { const w = Rc.mins(Rc.qStart(e)); return `<tr class="click" data-href="${R('reception/patient.html?id=' + e.patientId)}"><td><span class="token">${esc(e.token)}</span></td><td>${Kit.patientCell(Kit.pt(e.patientId))}</td><td>${esc(Kit.docName(e.doctorId))}<div class="small muted">${esc(UI.L.clName(e.clinicId))}</div></td><td>${Kit.time(e.start)}</td><td><span class="badge ${w > 60 ? 'b-err' : w > 30 ? 'b-warn' : 'b-ok'} nodot">${Rc.dur(w)}</span></td><td>${Kit.status(e.status)}</td></tr>`; }).join('') : `<tr><td colspan="6"><div class="empty">${icon('circle-check')}<b>Nobody waiting</b></div></td></tr>`}
+        </tbody></table></div></div>
+      <div class="card"><div class="card-head"><h3>${icon('inbox')} Admission requests</h3><div class="actions"><a class="btn sm" href="${R('reception/admissions.html')}">Open ${icon('arrow-right')}</a></div></div>
+        ${reqs.length ? `<div class="list-rows pad">${reqs.slice(0, 5).map(r => { const p = Kit.pt(r.patientId) || {}; return `<div class="click" data-href="${R('reception/admissions.html?req=' + r.id)}" style="cursor:pointer;align-items:flex-start"><div class="grow" style="min-width:0"><b class="small">${esc(p.name || 'Unknown patient')}</b><div class="xs muted"><span class="mono">${esc(p.mrn || '')}</span> · ${esc(r.bedType)}</div></div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex:none">${Kit.status(r.status === 'Cleared' ? 'Cleared' : 'Pending', r.status === 'Cleared' ? 'ok' : 'warn')}${r.type === 'Emergency' ? '<span class="badge b-err nodot">Emergency</span>' : ''}</div></div>`; }).join('')}</div>` : `<div class="empty" style="padding:24px">${icon('circle-check')}<b>No open requests</b></div>`}</div>
+    </div>`;
+  $$('[data-href]').forEach(n => n.addEventListener('click', () => { location.href = n.dataset.href; }));
+})();
+</script>
+</body>
+</html>

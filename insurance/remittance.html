@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Remittance and reconciliation · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-insurance.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/insurance.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, drawer, confirm, field, showErrors, me, nowStamp, uid } = UI;
+  const I = Insurance, OPT = 'insurance.remit';
+  const canAdd = can(OPT, 'add'), canApr = can(OPT, 'approve');
+  if (!UI.page({ opt: OPT, title: 'Remittance and reconciliation', subtitle: 'Upload the payer remittance file, reconcile it line by line and post payments, short-payments and denials to the claims.' })) return;
+
+  const HEAD = ['invoice_no', 'claimed', 'paid', 'denial_code', 'remark'];
+  $('#page').innerHTML = `
+    <div class="grid g-side" style="margin-bottom:16px">
+      <div class="card"><div class="card-head"><h3>${icon('file-up')} Upload remittance</h3></div><div class="card-pad">
+        <div class="err-summary hidden" style="margin-bottom:10px"></div>
+        <div class="form-grid">
+          ${field({ id: 'uPy', label: 'Payer', type: 'select', options: db.payers.map(p => [p.id, p.name]), req: true })}
+          ${field({ id: 'uBt', label: 'Claim batch', type: 'select', options: [], placeholder: 'Any submitted batch' })}
+          ${field({ id: 'uRef', label: 'Payer remittance reference', req: true, max: 30, placeholder: 'For example GIG-RA-8830' })}
+          ${field({ id: 'uDt', label: 'Received on', type: 'date', value: db.TODAY, req: true })}
+          <div class="field full"><label for="uCsv">Remittance file (CSV)<span class="req">*</span></label><textarea class="input mono" id="uCsv" style="min-height:150px;font-size:12px" placeholder="${HEAD.join(',')}"></textarea><div class="hint">Columns: ${HEAD.join(', ')}. Paste the file or choose it below.</div><div class="err hidden" data-err="uCsv"></div></div>
+        </div>
+        <div class="row wrap" style="margin-top:12px;gap:8px"><label class="btn sm" style="cursor:pointer">${icon('upload')} Choose file<input type="file" id="uFile" accept=".csv,text/csv" style="display:none"></label><button class="btn sm" id="uSample">${icon('file-text')} Load sample file</button><span class="grow"></span><button class="btn primary" id="uGo" ${canAdd ? '' : 'disabled title="Needs Add permission"'}>${icon('scale')} Reconcile</button></div>
+      </div></div>
+      <div class="card"><div class="card-head"><h3>${icon('info')} How it works</h3></div><div class="card-pad stack">
+        <div class="list-rows"><div>${icon('file-up')}<div class="grow"><b>1. Upload</b><div class="small muted">Paste or choose the CSV file received from the payer or TPA.</div></div></div>
+        <div>${icon('scale')}<div class="grow"><b>2. Reconcile</b><div class="small muted">Each line is matched to a submitted claim: paid, short-paid, denied or unmatched.</div></div></div>
+        <div>${icon('check')}<div class="grow"><b>3. Post</b><div class="small muted">Posting updates the claim status. Denied claims move to the rejected claims worklist.</div></div></div></div>
+        ${Kit.phase2('2nd phase: automated electronic remittance advice (ERA) parsing and direct payer integration.')}
+      </div></div>
+    </div>
+    <div id="tabs"></div><div id="list"></div>`;
+
+  const payerSel = $('#uPy'), batchSel = $('#uBt');
+  const fillBatches = () => { const py = payerSel.value; batchSel.innerHTML = `<option value="">Any submitted batch</option>` + db.insuranceBatches.filter(b => b.payerId === py && b.status === 'Submitted').map(b => `<option value="${b.id}">${esc(b.no)} · ${b.invoiceIds.length} claims · ${Kit.money(Kit.sumBy(b.invoiceIds.map(I.inv).filter(Boolean), i => i.payerAmount), false)}</option>`).join(''); };
+  payerSel.addEventListener('change', fillBatches); fillBatches();
+  $('#uFile').addEventListener('change', (e) => { const f = e.target.files[0]; if (!f) return; const rd = new FileReader(); rd.onload = () => { $('#uCsv').value = String(rd.result).replace(/^﻿/, ''); toast('Loaded ' + f.name); }; rd.readAsText(f); });
+  $('#uSample').addEventListener('click', () => {
+    let b = I.batch(batchSel.value);
+    if (!b) { const sub = db.insuranceBatches.filter(x => x.status === 'Submitted').sort((x, y) => y.invoiceIds.length - x.invoiceIds.length); b = sub.find(x => !payerSel.value || x.payerId === payerSel.value) || sub[0]; }
+    if (!b) { toast('No submitted batch to build a sample from.', 'err'); return; }
+    payerSel.value = b.payerId; fillBatches(); batchSel.value = b.id;
+    const lines = b.invoiceIds.map(I.inv).filter(Boolean).map((i, j) => { const k = j % 4; const paid = k === 1 ? Math.round(i.payerAmount * 850) / 1000 : k === 2 ? 0 : i.payerAmount; return [i.no, i.payerAmount.toFixed(3), paid.toFixed(3), k === 1 ? 'CR-08' : k === 2 ? 'CR-03' : '', k === 1 ? 'Paid at contract tariff' : k === 2 ? 'No pre-authorization on file' : ''].join(','); });
+    lines.push(['INV-26-99001', '12.000', '12.000', '', 'Not our claim'].join(','));
+    $('#uCsv').value = HEAD.join(',') + '\n' + lines.join('\n');
+    $('#uRef').value = I.payerCode(b.payerId) + '-RA-' + (9000 + db.insuranceRemittances.length);
+    toast('Sample remittance loaded for ' + b.no);
+  });
+
+  function parse(text) {
+    const rows = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean).map(l => l.split(',').map(x => x.trim().replace(/^"|"$/g, '')));
+    if (rows.length && /invoice/i.test(rows[0][0])) rows.shift();
+    return rows;
+  }
+  function matchLine(r, payerId) {
+    const [no, claimed, paid, code, remark] = r;
+    const inv = db.invoices.find(i => i.no === no);
+    const l = { invoiceNo: no, invoiceId: inv ? inv.id : '', claimed: Number(claimed) || 0, paid: Number(paid) || 0, denialCode: code || '', remark: remark || '', status: '' };
+    if (!inv || inv.payerId !== payerId) { l.status = 'Unmatched'; l.remark = l.remark || (inv ? 'Claim belongs to another payer' : 'Claim not found'); return l; }
+    if (/Paid|Partially paid|Rejected|Final denial/.test(inv.claimStatus)) { l.status = 'Duplicate'; l.remark = 'Claim already settled (' + inv.claimStatus + ')'; return l; }
+    if (inv.claimStatus !== 'Submitted') { l.status = 'Unmatched'; l.remark = 'Claim not submitted yet (' + inv.claimStatus + ')'; return l; }
+    l.status = l.paid + 0.0005 >= l.claimed ? 'Paid' : l.paid > 0 ? 'Short-paid' : 'Denied';
+    return l;
+  }
+  $('#uGo').addEventListener('click', () => {
+    const host = $('#page');
+    const e = {}, py = payerSel.value, rows = parse($('#uCsv').value);
+    if (!py) e.uPy = 'Choose the payer.';
+    if (!$('#uRef').value.trim()) e.uRef = 'Enter the payer reference.';
+    else if (db.insuranceRemittances.some(r => r.payerRef === $('#uRef').value.trim())) e.uRef = 'This remittance reference was already uploaded.';
+    if (!rows.length) e.uCsv = 'Paste or choose the remittance file.';
+    else if (rows.some(r => r.length < 3 || isNaN(Number(r[1])) || isNaN(Number(r[2])))) e.uCsv = 'Each line needs invoice_no, claimed and paid amounts.';
+    if (!showErrors(host.querySelector('.card'), e)) return;
+    const lines = rows.map(r => matchLine(r, py));
+    const rm = { id: uid('ira'), no: Kit.nextNo('RA-26-', db.insuranceRemittances), payerId: py, batchId: batchSel.value || '', payerRef: $('#uRef').value.trim(), receivedAt: $('#uDt').value + ' ' + nowStamp().slice(11), fileName: ($('#uFile').files[0] || {}).name || 'pasted_remittance.csv', lines,
+      claimed: I.r3(Kit.sumBy(lines, l => l.claimed)), paid: I.r3(Kit.sumBy(lines, l => l.paid)), status: 'Uploaded', uploadedBy: me().displayName, uploadedAt: nowStamp(), postedBy: '', postedAt: '' };
+    db.insuranceRemittances.unshift(rm); save();
+    audit('Uploaded remittance', 'Remittance', { id: rm.id, label: rm.no }, [['Lines', '', String(lines.length)], ['Paid', '', Kit.money(rm.paid)]]);
+    $('#uCsv').value = ''; $('#uRef').value = ''; toast(rm.no + ' uploaded. Review and post.'); tab = 'Uploaded'; drawTabs(); tb.redraw(); openRm(rm);
+  });
+
+  const cnt = (rm, s) => rm.lines.filter(l => l.status === s).length;
+  let tab = 'Uploaded';
+  const drawTabs = () => Kit.tabs($('#tabs'), [{ id: 'Uploaded', label: 'To reconcile and post', count: db.insuranceRemittances.filter(r => r.status === 'Uploaded').length }, { id: 'Posted', label: 'Posted', count: db.insuranceRemittances.filter(r => r.status === 'Posted').length }, { id: 'Discarded', label: 'Discarded', count: db.insuranceRemittances.filter(r => r.status === 'Discarded').length }, { id: 'all', label: 'All', count: db.insuranceRemittances.length }], tab, (t) => { tab = t; tb.redraw(); });
+  const tb = UI.table($('#list'), {
+    columns: [
+      { label: 'Remittance', sort: r => r.no, render: r => `<b class="mono">${esc(r.no)}</b><div class="small muted">${esc(r.payerRef)} · ${esc(r.fileName)}</div>` },
+      { label: 'Payer', sort: r => I.payerCode(r.payerId), render: r => `<b>${esc(I.payerName(r.payerId))}</b><div class="small muted">${r.batchId ? esc((I.batch(r.batchId) || {}).no || '') : 'Any batch'}</div>` },
+      { label: 'Received', sort: r => r.receivedAt, render: r => esc(Kit.when(r.receivedAt)) },
+      { label: 'Claimed (KWD)', cls: 'num', sort: r => r.claimed, render: r => `<span class="num">${Kit.money(r.claimed, false)}</span>` },
+      { label: 'Paid (KWD)', cls: 'num', sort: r => r.paid, render: r => `<span class="num"><b>${Kit.money(r.paid, false)}</b></span>` },
+      { label: 'Lines', render: r => `<div class="row wrap" style="gap:4px">${['Paid', 'Short-paid', 'Denied', 'Unmatched', 'Duplicate'].filter(s => cnt(r, s)).map(s => `<span class="badge b-${s === 'Paid' ? 'ok' : s === 'Short-paid' ? 'warn' : 'err'} nodot">${cnt(r, s)} ${s.toLowerCase()}</span>`).join('')}</div>` },
+      { label: 'Status', sort: r => r.status, render: r => I.status(r.status) },
+      { label: '', cls: 'actions', render: r => `<button class="btn xs" data-o="${r.id}">${icon('eye')} Open</button>` },
+    ],
+    rows: () => db.insuranceRemittances.filter(r => tab === 'all' || r.status === tab), search: r => [r.no, r.payerRef, I.payerName(r.payerId), r.fileName].join(' '), searchPlaceholder: 'Search remittance or payer reference',
+    filters: [{ label: 'Payer', options: db.payers.map(p => [p.id, p.name]), test: (r, v) => r.payerId === v }],
+    onRow: r => openRm(r), afterDraw: (t) => $$('[data-o]', t).forEach(b => b.addEventListener('click', () => openRm(db.insuranceRemittances.find(x => x.id === b.dataset.o)))),
+    empty: 'No remittances in this list', emptyIcon: 'receipt',
+  });
+  drawTabs();
+
+  function openRm(rm) {
+    drawer({ title: 'Remittance ' + rm.no, sub: esc(I.payerName(rm.payerId)) + ' · ' + esc(rm.payerRef), wide: true, body: '<div id="rb"></div>', foot: '<div id="rf" class="row" style="width:100%;gap:8px"></div>',
+      onMount: (el, close) => {
+        const draw = () => {
+          const short = Kit.sumBy(rm.lines.filter(l => l.status === 'Short-paid'), l => l.claimed - l.paid), denied = Kit.sumBy(rm.lines.filter(l => l.status === 'Denied'), l => l.claimed);
+          const bad = rm.lines.filter(l => /Unmatched|Duplicate/.test(l.status)).length;
+          $('#rb', el).innerHTML = `
+            <div class="grid g4" style="margin-bottom:14px">${Kit.kpi('Claimed', Kit.money(rm.claimed, false), { icon: 'file-stack', unit: 'KWD', foot: rm.lines.length + ' lines' })}${Kit.kpi('Paid', Kit.money(rm.paid, false), { icon: 'circle-check', unit: 'KWD', foot: cnt(rm, 'Paid') + ' paid in full' })}${Kit.kpi('Short-paid', Kit.money(short, false), { icon: 'triangle-alert', unit: 'KWD', foot: cnt(rm, 'Short-paid') + ' lines' })}${Kit.kpi('Denied', Kit.money(denied, false), { icon: 'circle-x', unit: 'KWD', foot: cnt(rm, 'Denied') + ' claims' })}</div>
+            ${bad ? `<div class="banner warn" style="margin-bottom:12px">${icon('triangle-alert')}<span>${bad} line(s) could not be matched to an open claim of this payer. They are not posted; follow up with the payer.</span></div>` : ''}
+            ${rm.status === 'Posted' ? `<div class="banner ok" style="margin-bottom:12px">${icon('circle-check')}<span>Posted by ${esc(rm.postedBy)} on ${esc(UI.fmtDate(rm.postedAt))}.</span></div>` : rm.status === 'Uploaded' ? `<div class="small muted" style="margin-bottom:8px">Uploaded by ${esc(rm.uploadedBy)} on ${esc(UI.fmtDate(rm.uploadedAt))}.</div>` : ''}
+            <div class="table-wrap"><table class="tbl compact"><thead><tr><th>Claim</th><th>Patient</th><th>Claim status</th><th class="num">Claimed</th><th class="num">Paid</th><th class="num">Difference</th><th>Code</th><th>Remark</th><th>Result</th></tr></thead><tbody>
+            ${rm.lines.map(l => { const i = I.inv(l.invoiceId); const rr = I.reason(l.denialCode); return `<tr><td class="mono">${esc(l.invoiceNo)}</td><td>${i ? esc(Kit.ptName(i.patientId)) : '<span class="muted">-</span>'}</td><td>${i ? I.status(i.claimStatus) : ''}</td><td class="num">${Kit.money(l.claimed, false)}</td><td class="num"><b>${Kit.money(l.paid, false)}</b></td><td class="num" style="${l.claimed - l.paid > 0.0005 ? 'color:var(--error);font-weight:700' : ''}">${Kit.money(l.claimed - l.paid, false)}</td><td>${l.denialCode ? `<span class="mono" title="${esc(rr ? rr.name : '')}">${esc(l.denialCode)}</span>` : ''}</td><td class="small">${esc(l.remark || (rr ? rr.name : ''))}</td><td>${I.status(l.status)}</td></tr>`; }).join('')}
+            </tbody></table></div>`;
+          const f = [`<button class="btn" id="rCsv">${icon('download')} Download reconciliation</button><span class="grow"></span>`];
+          if (rm.status === 'Uploaded') {
+            f.push(`<button class="btn danger" id="rDis" ${canAdd ? '' : 'disabled title="Needs Add permission"'}>${icon('trash-2')} Discard upload</button>`);
+            f.push(`<button class="btn primary" id="rPost" ${canApr ? '' : 'disabled title="Needs Approve permission"'}>${icon('check')} Post ${rm.lines.length - bad} line(s)</button>`);
+          }
+          $('#rf', el).innerHTML = f.join('');
+          const on = (id, fn) => { const n = $('#' + id, el); if (n) n.addEventListener('click', fn); };
+          on('rCsv', () => Kit.csv(rm.no + '_reconciliation', ['remittance', 'invoice_no', 'claimed', 'paid', 'difference', 'denial_code', 'remark', 'result'], rm.lines.map(l => [rm.no, l.invoiceNo, l.claimed.toFixed(3), l.paid.toFixed(3), (l.claimed - l.paid).toFixed(3), l.denialCode, l.remark, l.status])));
+          on('rDis', () => confirm({ title: 'Discard this upload?', body: 'Nothing is posted. You can upload a corrected file again.', confirm: 'Discard', reason: true, onConfirm: (reason) => { rm.status = 'Discarded'; save(); audit('Discarded remittance', 'Remittance', { id: rm.id, label: rm.no }, [['Status', 'Uploaded', 'Discarded']], { reason }); toast('Upload discarded'); close(); drawTabs(); tb.redraw(); } }));
+          on('rPost', () => {
+            const post = rm.lines.filter(l => /Paid|Short-paid|Denied/.test(l.status));
+            confirm({ title: 'Post this remittance?', body: `${post.length} claim(s) are updated. This cannot be undone from this screen.`, tone: 'primary', confirm: 'Post',
+              impact: [`${cnt(rm, 'Paid')} marked Paid`, `${cnt(rm, 'Short-paid')} marked Partially paid (short ${Kit.money(short)})`, `${cnt(rm, 'Denied')} marked Rejected and sent to the rejected claims worklist`],
+              onConfirm: () => {
+                const changes = [];
+                post.forEach(l => {
+                  const i = I.inv(l.invoiceId); const c = I.cd(i.id); const before = i.claimStatus;
+                  if (l.status === 'Paid') { i.claimStatus = 'Paid'; c.paidAmount = l.paid; }
+                  if (l.status === 'Short-paid') { i.claimStatus = 'Partially paid'; c.paidAmount = l.paid; c.shortAmount = I.r3(l.claimed - l.paid); c.rejectCode = l.denialCode; c.rejectNote = l.remark; }
+                  if (l.status === 'Denied') { i.claimStatus = 'Rejected'; c.paidAmount = 0; c.rejectCode = l.denialCode || 'CR-09'; c.rejectNote = l.remark || ((I.reason(c.rejectCode) || {}).name || ''); c.rejectedAt = nowStamp(); c.corrected = false; }
+                  c.remittanceId = rm.id;
+                  changes.push([i.no, before, i.claimStatus]);
+                });
+                db.insuranceBatches.filter(b => b.status === 'Submitted').forEach(b => { if (b.invoiceIds.map(I.inv).filter(Boolean).every(i => i.claimStatus !== 'Submitted')) { b.status = 'Remitted'; changes.push([b.no, 'Submitted', 'Remitted']); } });
+                Object.assign(rm, { status: 'Posted', postedBy: me().displayName, postedAt: nowStamp() });
+                save(); audit('Posted remittance', 'Remittance', { id: rm.id, label: rm.no }, changes);
+                toast(rm.no + ' posted'); draw(); drawTabs(); tb.redraw(); fillBatches();
+              } });
+          });
+        };
+        draw();
+      } });
+  }
+})();
+</script>
+</body>
+</html>

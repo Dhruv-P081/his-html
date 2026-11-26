@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Purchase returns · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-material.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/material.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, drawer, confirm, field, showErrors, nowStamp, fmtDate, param } = UI;
+  const M = Material, OPT = 'material.returns';
+  if (!UI.page({ opt: OPT, title: 'Purchase returns', subtitle: 'Return goods to the vendor by batch, raise a debit note and reduce stock on approval.',
+    actions: M.btn({ id: 'newRt', cls: 'primary', icon: 'package-x', label: 'New return', allow: can(OPT, 'add'), why: 'Needs Add permission' }) })) return;
+  const REASONS = ['Damaged in transit', 'Expired', 'Near expiry', 'Quality issue', 'Wrong item supplied', 'Product recall', 'Excess delivery'];
+  const list = () => db.materialReturns;
+  const val = (r) => M.total(r.lines, 'qty', 'cost');
+  const grn = (id) => db.materialGRNs.find(g => g.id === id) || {};
+
+  $('#page').innerHTML = `<div class="grid g4" style="margin-bottom:16px" id="kpis"></div><div id="tabs" style="margin-bottom:12px"></div><div id="tbl"></div>
+    <div class="row" style="margin-top:10px">${Kit.scopeNote('Stock is reduced and the debit note is raised only when the return is approved. The person who raised the return cannot approve it.')}</div>`;
+  let tab = 'Pending approval';
+  const TABS = [['Pending approval', 'Pending approval', r => r.status === 'Pending approval'], ['Approved', 'Approved', r => r.status === 'Approved'], ['Rejected', 'Rejected', r => r.status === 'Rejected'], ['all', 'All', () => true]];
+  const drawTabs = () => Kit.tabs($('#tabs'), TABS.map(([id, label, f]) => ({ id, label, count: list().filter(f).length })), tab, (t) => { tab = t; t1.redraw(); });
+  const drawKpis = () => {
+    const month = list().filter(r => r.status === 'Approved' && r.date.slice(0, 7) === db.TODAY.slice(0, 7));
+    const byReason = Kit.groupBy(list().filter(r => r.status !== 'Rejected'), r => r.reason);
+    const top = Object.entries(byReason).sort((a, b) => b[1].length - a[1].length)[0];
+    $('#kpis').innerHTML = Kit.kpi('Waiting for approval', list().filter(r => r.status === 'Pending approval').length, { icon: 'hourglass', foot: Kit.money(Kit.sumBy(list().filter(r => r.status === 'Pending approval'), val)) })
+      + Kit.kpi('Debit notes this month', month.length, { icon: 'file-minus', foot: Kit.money(Kit.sumBy(month, val)) })
+      + Kit.kpi('Expired or near-expiry batches', db.stock.filter(s => s.qty > 0 && M.expTone(s.expiry)).length, { icon: 'calendar-x', foot: 'Candidates for return', href: R('material/stock.html?view=batch&exp=1') })
+      + Kit.kpi('Top return reason', top ? top[0] : '-', { icon: 'tag', foot: top ? top[1].length + ' return(s)' : '' });
+  };
+  const t1 = UI.table($('#tbl'), {
+    columns: [
+      { label: 'Return no.', sort: r => r.no, render: r => `<span class="mono b nw">${esc(r.no)}</span><div class="xs muted">${fmtDate(r.date)}</div>` },
+      { label: 'Vendor', sort: r => M.vendorName(r.vendorId), render: r => `<b>${esc(M.vendorName(r.vendorId))}</b><div class="xs muted">${r.grnId ? 'Against ' + esc(grn(r.grnId).no) : 'Not linked to a GRN'}</div>` },
+      { label: 'Store', render: r => esc(M.whName(r.warehouseId)) },
+      { label: 'Reason', sort: r => r.reason, render: r => `<span class="tag">${esc(r.reason)}</span>` },
+      { label: 'Items', render: r => `${esc(r.lines.map(l => M.item(l.itemId).name).join(', '))}<div class="xs muted">${Kit.num(Kit.sumBy(r.lines, l => l.qty))} units</div>` },
+      { label: 'Value', cls: 'num', sort: r => val(r), render: r => `<span class="num nw">${Kit.money(val(r))}</span>` },
+      { label: 'Debit note', render: r => r.debitNote ? `<span class="mono">${esc(r.debitNote)}</span>` : '<span class="mute">-</span>' },
+      { label: 'Status', sort: r => r.status, render: r => M.st(r.status) },
+    ],
+    rows: () => list().filter(TABS.find(t => t[0] === tab)[2]).slice().sort((a, b) => b.no.localeCompare(a.no)),
+    search: r => [r.no, r.debitNote, M.vendorName(r.vendorId), r.reason, r.lines.map(l => M.itemLabel(l.itemId) + ' ' + l.batch).join(' ')].join(' '),
+    searchPlaceholder: 'Search return, debit note, vendor, item or batch',
+    filters: [{ label: 'Reason', options: REASONS.map(x => [x, x]), test: (r, v) => r.reason === v }, { label: 'Vendor', options: M.vendorOpts(), test: (r, v) => r.vendorId === v }],
+    onRow: open, empty: 'No returns in this view', emptyIcon: 'package-x',
+  });
+  const refresh = () => { drawTabs(); drawKpis(); t1.redraw(); };
+  drawTabs(); drawKpis();
+
+  function printDebit(r) {
+    const v = Kit.vendor(r.vendorId) || {};
+    M.docPrint({ title: 'Debit note ' + r.debitNote, heading: 'DEBIT NOTE', left: [['To', v.name], ['Vendor code', v.code], ['Return no.', r.no], ['Reason', r.reason]], right: [['Debit note', r.debitNote], ['Date', fmtDate(r.approvedAt || r.date)], ['GRN', r.grnId ? grn(r.grnId).no : '-'], ['Store', M.whName(r.warehouseId)]],
+      columns: ['#', 'Item', 'Batch', 'Expiry', 'Qty', 'Unit cost', 'Amount'], rows: r.lines.map((l, i) => [i + 1, M.itemLabel(l.itemId), l.batch, fmtDate(l.expiry), Kit.num(l.qty), Kit.money(l.cost, false), Kit.money(l.qty * l.cost, false)]),
+      foot: ['', '', '', '', '', 'Debit KWD', Kit.money(val(r), false)], note: 'Please issue a credit note for the amount above or adjust it against your next invoice. ' + (r.note || ''), sign: ['Store keeper: ' + r.createdBy, 'Approved by: ' + (r.approvedBy || ''), 'Vendor received goods'] });
+  }
+
+  function open(r) {
+    const ap = M.canAct(OPT, 'approve', r);
+    const short = r.lines.filter(l => { const s = db.stock.find(x => x.id === l.stockId); return !s || s.qty < l.qty; });
+    drawer({ title: r.no, sub: `${esc(M.vendorName(r.vendorId))} · ${M.st(r.status)}`, wide: true,
+      body: `${r.status === 'Rejected' ? `<div class="banner err" style="margin-bottom:12px">${icon('circle-x')}<span>Rejected by ${esc(r.approvedBy)}: ${esc(r.rejectReason || '')}</span></div>` : ''}
+        ${r.status === 'Approved' ? `<div class="banner ok" style="margin-bottom:12px">${icon('circle-check')}<span>Approved by ${esc(r.approvedBy)} on ${fmtDate(r.approvedAt)}. Debit note <b>${esc(r.debitNote)}</b> raised and stock reduced.</span></div>` : ''}
+        ${r.status === 'Pending approval' && !ap.ok ? `<div class="banner warn" style="margin-bottom:12px">${icon('lock')}<span>${esc(ap.why)}</span></div>` : ''}
+        ${r.status === 'Pending approval' && short.length ? `<div class="banner err" style="margin-bottom:12px">${icon('triangle-alert')}<span>Not enough stock in the batch for ${short.map(l => esc(M.item(l.itemId).code)).join(', ')}. Stock may have been issued since the return was raised.</span></div>` : ''}
+        <div class="card card-pad" style="margin-bottom:14px">${M.kv([['Vendor', esc(M.vendorName(r.vendorId))], ['Goods receipt', r.grnId ? `<a class="mono" href="${R('material/grn.html?id=' + r.grnId)}">${esc(grn(r.grnId).no)}</a>` : ''], ['Store', esc(M.whName(r.warehouseId))], ['Reason', esc(r.reason)], ['Details', esc(r.note)], ['Raised by', esc(r.createdBy) + ' · ' + fmtDate(r.createdAt)]])}</div>
+        <div class="card"><div class="card-head"><h3>${icon('list')} Batches returned</h3></div><div class="table-wrap"><table class="tbl compact"><thead><tr><th>Item</th><th>Batch</th><th>Expiry</th><th class="num">Qty</th><th class="num">In store now</th><th class="num">Unit cost</th><th class="num">Amount</th></tr></thead><tbody>
+          ${r.lines.map(l => { const s = db.stock.find(x => x.id === l.stockId); return `<tr><td>${M.itemCell(l.itemId)}</td><td class="mono nw">${esc(l.batch)}</td><td>${fmtDate(l.expiry)} ${M.expTone(l.expiry) ? M.st(M.expTone(l.expiry)) : ''}</td><td class="num">${Kit.num(l.qty)}</td><td class="num">${s ? Kit.num(s.qty) : '-'}</td><td class="num">${Kit.money(l.cost, false)}</td><td class="num">${Kit.money(l.qty * l.cost, false)}</td></tr>`; }).join('')}
+        </tbody><tfoot><tr><td colspan="6" style="text-align:end"><b>Debit value</b></td><td class="num"><b>${Kit.money(val(r))}</b></td></tr></tfoot></table></div></div>`,
+      foot: `${r.status === 'Approved' ? M.btn({ id: 'dPrint', icon: 'printer', label: 'Print debit note', allow: can(OPT, 'print'), why: 'Needs Print permission' }) : ''}<span class="grow"></span><button class="btn" data-close>Close</button>
+        ${r.status === 'Pending approval' ? M.btn({ id: 'dReject', cls: 'destructive', icon: 'circle-x', label: 'Reject', allow: ap }) + M.btn({ id: 'dApprove', cls: 'success', icon: 'check', label: 'Approve and raise debit note', allow: short.length ? { ok: false, why: 'Not enough stock in the batch' } : ap }) : ''}`,
+      onMount: (el, close) => {
+        const on = (id, fn) => { const b = $('#' + id, el); if (b) b.addEventListener('click', fn); };
+        on('dPrint', () => printDebit(r));
+        on('dReject', () => confirm({ title: 'Reject ' + r.no + '?', body: 'The goods stay in stock.', confirm: 'Reject return', reason: true,
+          onConfirm: (reason) => { r.status = 'Rejected'; r.rejectReason = reason; r.approvedBy = M.meName(); r.approvedAt = nowStamp(); save(); audit('Purchase return rejected', 'Purchase return', { id: r.id, label: r.no }, [['Status', 'Pending approval', 'Rejected']], { reason }); toast(r.no + ' rejected'); close(); refresh(); } }));
+        on('dApprove', () => confirm({ title: 'Approve ' + r.no + '?', tone: 'primary', icon: 'check', confirm: 'Approve', body: 'Stock is reduced now and a debit note is raised to the vendor.',
+          impact: r.lines.map(l => `${Kit.num(l.qty)} × ${esc(M.item(l.itemId).name)} (batch ${esc(l.batch)}) leave ${esc(M.whName(r.warehouseId))}`).concat(['Debit note value ' + Kit.money(val(r))]),
+          onConfirm: () => {
+            r.lines.forEach(l => M.deduct(l.stockId, l.qty));
+            r.status = 'Approved'; r.approvedBy = M.meName(); r.approvedAt = nowStamp(); r.debitNote = Kit.nextNo('DN-26-', db.materialReturns, 'debitNote');
+            save(); audit('Purchase return approved', 'Purchase return', { id: r.id, label: r.no }, [['Status', 'Pending approval', 'Approved'], ['Debit note', '', r.debitNote], ['Value', '', Kit.money(val(r))]]);
+            toast(r.debitNote + ' raised. Stock reduced.'); close(); refresh(); if (can(OPT, 'print')) printDebit(r);
+          } }));
+      } });
+  }
+
+  function create() {
+    const whDef = M.ctxWh() || 'wh_01';
+    drawer({ title: 'New purchase return', sub: 'Choose the vendor and the batches to send back.', wide: true,
+      body: `<div class="err-summary hidden"></div><div class="form-grid c4">
+        ${field({ id: 'rVen', label: 'Vendor', type: 'select', options: M.vendorOpts(), req: true })}
+        ${field({ id: 'rGrn', label: 'Goods receipt (optional)', type: 'select', options: [], placeholder: 'Not linked' })}
+        ${field({ id: 'rWh', label: 'Store', type: 'select', options: M.storeOpts(), value: whDef, req: true })}
+        ${field({ id: 'rReason', label: 'Reason', type: 'select', options: REASONS.map(x => [x, x]), req: true })}
+        ${field({ id: 'rNote', label: 'Details', type: 'textarea', full: true, max: 300 })}</div>
+        <div class="section-t" style="margin-top:14px">Batches</div><div id="rLines"></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><span class="grow"></span><button class="btn primary" id="rSave" disabled>${icon('send')} Submit for approval</button>`,
+      onMount: (el, close) => {
+        let rows = [];
+        const drawGrn = () => {
+          const v = $('#rVen', el).value;
+          const gs = db.materialGRNs.filter(g => g.status === 'Posted' && g.vendorId === v);
+          $('#rGrn', el).innerHTML = `<option value="">Not linked</option>` + gs.map(g => `<option value="${g.id}">${esc(g.no)} · ${fmtDate(g.date)}</option>`).join('');
+          drawRows();
+        };
+        const drawRows = () => {
+          const w = $('#rWh', el).value, g = grn($('#rGrn', el).value);
+          const pool = db.stock.filter(s => s.warehouseId === w && s.qty > 0 && (!g.id || g.lines.some(l => l.itemId === s.itemId && l.batch === s.batch)));
+          rows = pool.map(s => ({ s, qty: 0 }));
+          $('#rLines', el).innerHTML = rows.length ? `<div class="search" style="margin-bottom:8px;max-width:340px">${icon('search')}<input class="input" id="rQ" placeholder="Filter by item or batch" aria-label="Filter batches"></div><div class="table-wrap" style="max-height:340px;overflow:auto"><table class="tbl compact"><thead><tr><th>Item</th><th>Batch</th><th>Expiry</th><th class="num">On hand</th><th style="width:110px">Return qty</th></tr></thead><tbody>
+            ${rows.map((r, i) => `<tr data-i="${i}" data-s="${esc((M.itemLabel(r.s.itemId) + ' ' + r.s.batch).toLowerCase())}"><td>${M.itemCell(r.s.itemId)}</td><td class="mono nw">${esc(r.s.batch)}</td><td>${fmtDate(r.s.expiry)} ${M.expTone(r.s.expiry) ? M.st(M.expTone(r.s.expiry)) : ''}</td><td class="num">${Kit.num(r.s.qty)}</td><td><input class="input" type="number" min="0" max="${r.s.qty}" value="" aria-label="Return quantity"></td></tr>`).join('')}</tbody></table></div><div class="small muted" id="rSum" style="margin-top:8px"></div>`
+            : `<div class="empty">${icon('package')}<b>No stock to return</b><span>${g.id ? 'The batches of this GRN are no longer in the selected store.' : 'Choose another store.'}</span></div>`;
+          $$('#rLines tbody input', el).forEach(inp => inp.addEventListener('input', () => { rows[+inp.closest('tr').dataset.i].qty = Number(inp.value || 0); check(); }));
+          const q = $('#rQ', el); if (q) q.addEventListener('input', () => $$('#rLines tbody tr', el).forEach(tr => { tr.style.display = tr.dataset.s.includes(q.value.toLowerCase()) ? '' : 'none'; }));
+          check();
+        };
+        const problems = () => {
+          const e = {};
+          if (!$('#rVen', el).value) e.rVen = 'Choose the vendor.';
+          if (!$('#rWh', el).value) e.rWh = 'Choose the store.';
+          if (!$('#rReason', el).value) e.rReason = 'Choose a reason.';
+          const use = rows.filter(r => r.qty > 0);
+          if (!use.length) e.rL = 'Enter a return quantity on at least one batch.';
+          use.forEach(r => { if (r.qty > r.s.qty) e['q' + r.s.id] = M.item(r.s.itemId).code + ': more than the batch on hand (' + r.s.qty + ').'; });
+          return e;
+        };
+        const check = () => { const use = rows.filter(r => r.qty > 0); const s = $('#rSum', el); if (s) s.textContent = `${use.length} batch(es) · ${Kit.money(Kit.sumBy(use, r => r.qty * r.s.cost))}`; $('#rSave', el).disabled = Object.keys(problems()).length > 0; };
+        $('#rVen', el).addEventListener('change', drawGrn);
+        $('#rGrn', el).addEventListener('change', () => { const g = grn($('#rGrn', el).value); if (g.id) $('#rWh', el).value = g.warehouseId; drawRows(); });
+        $('#rWh', el).addEventListener('change', drawRows);
+        $('#rReason', el).addEventListener('change', check);
+        $('#rSave', el).addEventListener('click', () => {
+          if (!showErrors(el, problems())) return;
+          const r = { id: UI.uid('mrt'), no: M.docNo('PRN-26-', 'materialReturns'), date: db.TODAY, vendorId: $('#rVen', el).value, grnId: $('#rGrn', el).value, warehouseId: $('#rWh', el).value, reason: $('#rReason', el).value, note: $('#rNote', el).value.trim(), status: 'Pending approval', debitNote: '', createdBy: M.meName(), createdAt: nowStamp(),
+            lines: rows.filter(x => x.qty > 0).map(x => ({ stockId: x.s.id, itemId: x.s.itemId, batch: x.s.batch, expiry: x.s.expiry, qty: x.qty, cost: M.layerCost(x.s) })) };
+          db.materialReturns.push(r); save(); audit('Purchase return raised', 'Purchase return', { id: r.id, label: r.no }, [['Vendor', '', M.vendorName(r.vendorId)], ['Value', '', Kit.money(val(r))]]);
+          toast(r.no + ' sent for approval'); close(); tab = 'Pending approval'; refresh();
+        });
+        drawGrn();
+      } });
+  }
+  $('#newRt').addEventListener('click', create);
+  M.openFromQuery(list(), open);
+})();
+</script>
+</body>
+</html>

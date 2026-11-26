@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Administration · Tibbi Orbit</title>
+<link rel="stylesheet" href="assets/styles.css">
+<script src="assets/icons.js"></script><script src="assets/data.js"></script><script src="assets/data-core.js"></script><script src="assets/ui.js"></script><script src="assets/kit.js"></script>
+<style>
+.adm-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.adm-tile { flex-direction: row; align-items: center; gap: 14px; min-height: 0; padding: 16px 18px; }
+.adm-tile .tile { flex: none; }
+.adm-tile > div { min-width: 0; flex: 1; }
+.adm-tile > div > span:not(.tag) { display: block; margin-top: 2px; }
+.adm-tile .tag { margin-top: 8px; width: fit-content; }
+#page a.adm-tile { color: var(--ink); }
+.att-ic { width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center; flex: none; }
+.att-ic .ico { width: 16px; height: 16px; }
+.att-ic.warn { background: var(--warning-bg); color: var(--warning); }
+.att-ic.err { background: var(--error-bg); color: var(--error); }
+@media (max-width: 1100px) { .adm-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+</style>
+</head>
+<body>
+<script>
+const { db, $, icon, esc, page, can } = UI;
+if (page({ active: 'admin.html', title: 'Administration', crumbs: [['Home', 'home.html'], ['Administration']], subtitle: 'Organization, masters, roles, users and access. You see only the screens you are permitted to use here.', body: '' })) {
+  if (!UI.hasAnyAdmin()) location.replace('access-denied.html?from=Administration');
+  const cards = [
+    ['admin.org.company', 'companies.html', 'building-2', 't-sky', 'Company and Branch Master', 'Legal entities, sites, contact details and social links', db.companies.length + ' companies · ' + db.branches.length + ' branches'],
+    ['admin.org.rules', 'entity-rules.html', 'sliders-horizontal', 't-lilac', 'Entity Rule Screen', 'Versioned settings with company and branch overrides', db.rules.length + ' rules · ' + db.ruleVersions.filter(v => v.status === 'Scheduled').length + ' scheduled'],
+    ['admin.masters.dept', 'departments.html', 'layers', 't-mint', 'Department Master', 'Departments, HOD, clinics and finance accounts', db.departments.length + ' departments'],
+    ['admin.masters.wh', 'warehouses.html', 'warehouse', 't-peach', 'Warehouse Master', 'Stock locations and custodians', db.warehouses.length + ' warehouses'],
+    ['admin.security.roles', 'roles.html', 'shield', 't-lilac', 'Role Master', 'Roles and module, screen and action rights', db.roles.length + ' roles'],
+    ['admin.security.users', 'users.html', 'users', 't-sky', 'User Master', 'Accounts, HR lifecycle and professional profiles', db.users.length + ' users'],
+    ['admin.security.mapping', 'access-mapping.html', 'key-round', 't-mint', 'Access Mapping', 'Who can work where, with which role', db.assignments.filter(a => a.status === 'Active').length + ' active assignments'],
+    ['admin.reports.view', 'reports.html', 'chart-column', 't-peach', 'Administration Reports', 'Access certification and setup reports', db.reports.length + ' reports'],
+    ['admin.reports.audit', 'audit.html', 'history', 't-rose', 'Audit Log', 'Who changed what, when and why', db.audit.length + ' events'],
+  ].filter(c => can(c[0], 'view'));
+  const attention = [];
+  const exp = db.assignments.filter(a => a.status === 'Active' && a.to && a.to >= UI.today() && a.to <= '2026-12-31').length;
+  if (exp) attention.push(['clock', 'warn', `${exp} assignment${exp === 1 ? '' : 's'} end${exp === 1 ? 's' : ''} before 31 Dec 2026`, 'report.html?id=RPT-08']);
+  const sep = db.employees.filter(e => e.hrStatus === 'Pending separation').length;
+  if (sep) attention.push(['user-x', 'warn', `${sep} employee${sep === 1 ? '' : 's'} with a pending HR separation`, 'report.html?id=RPT-12']);
+  const locked = db.users.filter(u => u.status === 'Locked' || u.blocked).length;
+  if (locked) attention.push(['lock', 'err', `${locked} user${locked === 1 ? '' : 's'} locked or blocked`, 'users.html']);
+  const badAcc = db.departments.filter(d => Object.values(d.acc).some(id => id !== 'NA' && (UI.L.account(id) || {}).status !== 'Active')).length;
+  if (badAcc) attention.push(['wallet', 'err', `${badAcc} department${badAcc === 1 ? ' has' : 's have'} an inactive finance account`, 'report.html?id=RPT-14']);
+  const usable = db.assignments.filter(a => UI.assignmentUsable(a).ok).length;
+  $('#page').innerHTML = `<div class="grid g4" style="margin-bottom:18px">
+      ${Kit.kpi('Active users', db.users.filter(u => u.status === 'Active').length, { icon: 'users', href: can('admin.security.users', 'view') ? 'users.html' : '', foot: 'of ' + db.users.length + ' accounts' })}
+      ${Kit.kpi('Usable assignments', usable, { icon: 'key-round', href: can('admin.security.mapping', 'view') ? 'access-mapping.html' : '', foot: (db.assignments.length - usable) + ' expired, revoked or not started' })}
+      ${Kit.kpi('Active roles', db.roles.filter(r => r.status === 'Active').length, { icon: 'shield', href: can('admin.security.roles', 'view') ? 'roles.html' : '', foot: 'of ' + db.roles.length + ' roles' })}
+      ${Kit.kpi('Items need attention', attention.length, { icon: 'triangle-alert', foot: attention.length ? 'Review the list below' : 'Nothing to review' })}</div>
+    ${attention.length ? `<div class="card" style="margin-bottom:18px"><div class="card-head"><h3>${icon('triangle-alert')} Needs attention</h3><div class="actions"><span class="tag">${attention.length}</span></div></div><div class="list-rows pad">${attention.map(a => `<div><span class="att-ic ${a[1]}">${icon(a[0])}</span><span class="grow b">${esc(a[2])}</span><a class="btn sm" href="${a[3]}">Review ${icon('arrow-right')}</a></div>`).join('')}</div></div>` : ''}
+    <div class="adm-tiles">${cards.map(c => `<a class="mod adm-tile" href="${c[1]}"><span class="tile ${c[3]}">${icon(c[2])}</span><div><b>${esc(c[4])}</b><span>${esc(c[5])}</span><span class="tag">${esc(c[6])}</span></div>${icon('chevron-right', 'mute')}</a>`).join('')}</div>`;
+}
+</script>
+</body>
+</html>

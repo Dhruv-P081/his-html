@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Insurance overview · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-insurance.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/insurance.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, esc, icon, $, R } = UI;
+  const I = Insurance;
+  if (!UI.page({ module: 'insurance', title: 'Insurance overview', subtitle: 'Claims pipeline, pre-authorizations and receivables by payer (SOW V4 Module 9).',
+    actions: `<a class="btn" href="${R('insurance/preauth.html')}">${icon('shield-question-mark')} Pre-authorizations</a><a class="btn primary" href="${R('insurance/batches.html')}">${icon('layers')} Claim batches</a>` })) return;
+
+  const claims = I.insured();
+  const sum = (l) => Kit.sumBy(l, i => i.payerAmount);
+  const st = (s) => claims.filter(i => i.claimStatus === s);
+  const notSub = st('Not submitted'), inBatch = st('In batch'), submitted = st('Submitted'), paid = claims.filter(i => /Paid|Partially paid/.test(i.claimStatus)), rejected = st('Rejected');
+  const decided = paid.length + rejected.length;
+  const rejRate = decided ? Math.round(100 * rejected.length / decided) : 0;
+  const pas = db.insurancePreauths;
+  const paOpen = pas.filter(a => /Submitted|Query/.test(a.status));
+  const paDecided = pas.filter(a => /Approved|Partially approved|Denied/.test(a.status));
+  const paApr = paDecided.filter(a => a.status !== 'Denied').length;
+  const open = claims.filter(i => !/Paid|Rejected|Final denial/.test(i.claimStatus) || i.claimStatus === 'Partially paid');
+  const recv = db.payers.map(p => [p.code, Kit.sumBy(claims.filter(i => i.payerId === p.id && /Not submitted|In batch|Submitted/.test(i.claimStatus)), i => i.payerAmount)]).filter(r => r[1] > 0).sort((a, b) => b[1] - a[1]);
+  const pipe = [['Not submitted', notSub], ['In batch', inBatch], ['Submitted', submitted], ['Paid', paid], ['Rejected', rejected]];
+  const openRecv = claims.filter(i => /Not submitted|In batch|Submitted/.test(i.claimStatus));
+  const ageOf = (i) => Math.round((new Date(db.TODAY) - new Date(i.date)) / 864e5);
+  const aging = [['0-30 days', [0, 30], 'ok'], ['31-60 days', [31, 60], ''], ['61-90 days', [61, 90], 'warn'], ['Over 90 days', [91, 1e5], 'err']].map(([l, [lo, hi], tone]) => [l, Kit.sumBy(openRecv.filter(i => ageOf(i) >= lo && ageOf(i) <= hi), i => i.payerAmount), tone]);
+  const pend = db.insuranceContracts.filter(c => c.status === 'Pending approval');
+
+  $('#page').innerHTML = `
+    ${pend.length ? `<div class="banner warn" style="margin-bottom:14px">${icon('signature')}<span>${pend.length} payer contract${pend.length > 1 ? 's' : ''} waiting for approval: ${pend.map(c => esc(c.no + ' ' + c.name)).join(', ')}.</span><span class="grow"></span><a class="btn sm" href="${R('insurance/contracts.html')}">Review</a></div>` : ''}
+    <div class="grid g4" style="margin-bottom:16px">
+      ${Kit.kpi('Ready to batch', notSub.length, { icon: 'file-stack', foot: Kit.money(sum(notSub)) + ' payer share', href: R('insurance/batches.html') })}
+      ${Kit.kpi('Awaiting remittance', Kit.money(sum(submitted), false), { icon: 'hourglass', unit: 'KWD', foot: submitted.length + ' claims submitted', href: R('insurance/remittance.html') })}
+      ${Kit.kpi('Rejection rate', rejRate + '%', { icon: 'rotate-ccw', foot: rejected.length + ' of ' + decided + ' settled claims', href: R('insurance/rejections.html') })}
+      ${Kit.kpi('Pre-auths awaiting payer', paOpen.length, { icon: 'shield-question-mark', foot: (paDecided.length ? Math.round(100 * paApr / paDecided.length) : 0) + '% approval rate', href: R('insurance/preauth.html') })}
+    </div>
+    <div class="grid g2" style="margin-bottom:16px">
+      <div class="card"><div class="card-head"><h3>${icon('chart-column')} Claims pipeline</h3><div class="actions"><span class="small muted">Number of claims by status</span></div></div><div class="card-pad">
+        ${Kit.barChart({ labels: pipe.map(p => p[0]), values: pipe.map(p => p[1].length), colors: ['#8794A7', '#2F6BC5', '#7C4DDB', '#0E9F6E', '#D23F6A'], height: 220, title: 'Claims pipeline' })}
+        <div class="row wrap small muted" style="gap:6px 16px;margin-top:8px">${pipe.map(p => `<span>${esc(p[0])}: <b>${Kit.money(sum(p[1]))}</b></span>`).join('')}</div></div></div>
+      <div class="card"><div class="card-head"><h3>${icon('landmark')} Receivables by payer</h3><div class="actions"><span class="small muted">Not yet remitted</span></div></div><div class="card-pad">
+        <div class="grid" style="align-items:center;gap:20px 24px;grid-template-columns:repeat(auto-fit,minmax(280px,1fr))">
+          <div><div class="section-t" style="margin:0 0 10px">By payer (KWD)</div>${recv.length ? Kit.barList(recv, { fmt: (v) => Kit.money(v, false) }) : `<div class="empty">${icon('circle-check')}<b>No open receivables</b></div>`}</div>
+          <div><div class="section-t" style="margin:0 0 10px">By age of claim (KWD)</div>${Kit.barList(aging, { fmt: (v) => Kit.money(v, false) })}</div>
+        </div>
+        <div class="row between" style="margin-top:16px;padding-top:12px;border-top:1px solid var(--line)"><span class="muted">Total open receivables</span><b class="num">${Kit.money(Kit.sumBy(recv, r => r[1]))}</b></div></div></div>
+    </div>
+    <div class="grid g2">
+      <div class="card"><div class="card-head"><h3>${icon('shield-question-mark')} Pre-authorizations needing action</h3><div class="actions"><a class="btn sm" href="${R('insurance/preauth.html')}">Open ${icon('arrow-right')}</a></div></div>
+        <div class="table-wrap"><table class="tbl compact"><thead><tr><th>Request</th><th>Patient</th><th>Services</th><th>Status</th></tr></thead><tbody>
+        ${pas.filter(a => /Draft|Submitted|Query/.test(a.status)).slice(0, 6).map(a => `<tr class="click" onclick="location.href='${R('insurance/preauth.html?id=' + a.id)}'"><td><span class="mono nw">${esc(a.no)}</span><div class="small muted">${esc(I.payerCode(a.payerId))}</div></td><td>${Kit.patientCell(Kit.pt(a.patientId))}</td><td class="small">${esc(a.lines.map(l => l.desc).join(', '))}</td><td>${I.status(a.status)}</td></tr>`).join('') || `<tr><td colspan="4"><div class="empty">${icon('circle-check')}<b>Nothing waiting</b></div></td></tr>`}
+        </tbody></table></div></div>
+      <div class="card"><div class="card-head"><h3>${icon('rotate-ccw')} Rejected claims</h3><div class="actions"><a class="btn sm" href="${R('insurance/rejections.html')}">Worklist ${icon('arrow-right')}</a></div></div>
+        <div class="list-rows pad">${rejected.slice(0, 6).map(i => { const c = I.cd(i.id); const rr = I.reason(c.rejectCode); return `<div><span class="mono small">${esc(i.no)}</span><div class="grow"><b>${esc(Kit.ptName(i.patientId))}</b><div class="small muted">${esc(I.payerCode(i.payerId))} · ${esc(rr ? rr.code + ' ' + rr.name : 'Reason not recorded')}</div></div><b class="num">${Kit.money(i.payerAmount)}</b></div>`; }).join('') || `<div class="empty">${icon('circle-check')}<b>No rejected claims</b></div>`}</div></div>
+    </div>
+    <div style="margin-top:16px">${Kit.phase2('2nd phase (SOW V4): direct API integration with payer or regulator e-claim portals, automated ERA parsing, AI-assisted pre-authorization and denial prediction, denial analytics dashboard, coding management, additional authority rule sets.')}</div>`;
+})();
+</script>
+</body>
+</html>

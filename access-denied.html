@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Access denied · Tibbi Orbit</title>
+<link rel="stylesheet" href="assets/styles.css">
+<script src="assets/icons.js"></script><script src="assets/data.js"></script><script src="assets/data-core.js"></script><script src="assets/ui.js"></script>
+</head>
+<body>
+<script>
+const { $, icon, esc, session, page, param } = UI;
+if (page({ active: '', title: 'Access denied', body: '' })) {
+  $('.page-head').remove();
+  $('#page').innerHTML = `<div class="card empty" style="padding:64px 32px;max-width:760px;margin:6vh auto 0"><div class="m-ico b-err" style="width:64px;height:64px;border-radius:20px;display:grid;place-items:center;margin:0 auto 16px">${icon('lock')}</div>
+    <b style="font-size:20px">You do not have access to this page</b><p class="muted" style="max-width:460px;margin:8px auto 18px">${param('from') ? `"${esc(param('from'))}" is` : 'This page is'} not permitted in your current context. If you need it, ask your access administrator, or switch to another context where you have access.</p>
+    <div class="row" style="justify-content:center"><a class="btn primary" href="home.html">${icon('house')} Go to Home</a><button class="btn" onclick="document.getElementById('ctxBtn').click()">${icon('arrow-right-left')} Switch context</button></div>
+    <div class="small mute" style="margin-top:18px">The attempt is recorded. Reference ${'DEN-' + Date.now().toString().slice(-6)}</div></div>`;
+  UI.audit('Access denied', 'Screen', { id: 'screen', label: param('from') || 'Unknown' }, [], { outcome: 'Denied', reason: 'No permission in current context' });
+}
+</script>
+</body>
+</html>

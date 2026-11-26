@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Radiology reports · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-radiology.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/lab.js"></script><script src="../assets/radiology.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, $ } = UI;
+  const OPT = 'radiology.reports';
+  if (!UI.page({ opt: OPT, title: 'Radiology reports', subtitle: 'Radiology operational and quality reports (SOW V4 Module 6, Annexure B).' })) return;
+  const mods = [...new Set(db.radExams.map(x => x.modality))].map(m => [m, m]);
+  const D = (id, label) => ({ id, label, type: 'date' });
+  const inR = (s, f) => !!s && s.slice(0, 10) >= (f.from || '0') && s.slice(0, 10) <= (f.to || '9');
+  const O = () => Rad.orders();
+  const pt = (id) => Kit.pt(id) || {};
+  const mod = (o) => Rad.exam(o.code).modality;
+  const median = (a) => { if (!a.length) return 0; const s = a.slice().sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
+  const MOD = { id: 'mod', label: 'Modality', type: 'select', options: mods };
+  const r = (o) => o.report || {};
+  Kit.reportCatalog($('#page'), { module: 'radiology', opt: OPT, reports: [
+    { id: 'RAD-R01', title: 'Exam volume by modality', purpose: 'Requests, performed and approved exams per modality and exam.', filters: [D('from', 'From'), D('to', 'To'), MOD, { id: 'set', label: 'Setting', type: 'select', options: [['OPD', 'OPD'], ['ER', 'ER'], ['IPD', 'IPD']] }],
+      columns: ['Modality', 'Exam', 'Requests', 'Performed', 'Approved', 'Rejected or cancelled'],
+      rows: f => Object.entries(Kit.groupBy(O().filter(o => inR(o.orderedAt, f) && (!f.mod || mod(o) === f.mod) && (!f.set || Lab.setting(o) === f.set)), o => o.code)).map(([c, os]) => [Rad.exam(c).modality, Rad.exam(c).name, os.length, os.filter(o => o.performedAt).length, os.filter(o => o.status === 'Approved').length, os.filter(o => /Rejected|Cancelled/.test(o.status)).length]),
+      totals: x => ['Total', '', Kit.sumBy(x, y => y[2]), Kit.sumBy(x, y => y[3]), Kit.sumBy(x, y => y[4]), Kit.sumBy(x, y => y[5])] },
+    { id: 'RAD-R02', title: 'Report turnaround time', purpose: 'Order to approved report time against the target by priority.', filters: [D('from', 'From'), D('to', 'To'), MOD, { id: 'pri', label: 'Priority', type: 'select', options: [['STAT', 'STAT'], ['Urgent', 'Urgent'], ['Routine', 'Routine']] }],
+      columns: ['Modality', 'Priority', 'Approved reports', 'Within target', '% within target', 'Median TAT (min)', 'Median exam to report (min)'],
+      rows: f => { const l = O().filter(o => r(o).approvedAt && inR(o.orderedAt, f) && (!f.mod || mod(o) === f.mod) && (!f.pri || o.priority === f.pri)); return Object.entries(Kit.groupBy(l, o => mod(o) + '|' + o.priority)).map(([k, os]) => { const ok = os.filter(o => !Rad.tat(o).late).length; return [k.split('|')[0], k.split('|')[1], os.length, ok, Math.round(100 * ok / os.length) + '%', median(os.map(o => Rad.tat(o).used)), median(os.map(o => Lab.mins(o.performedAt, r(o).authoredAt)))]; }); } },
+    { id: 'RAD-R03', title: 'Pending worklist', purpose: 'Open requests by stage with elapsed time.', filters: [MOD, { id: 'stage', label: 'Stage', type: 'select', options: Rad.STAGES.slice(0, 5).map(s => [s[0], s[1]]) }],
+      columns: ['Accession', 'Patient', 'MRN', 'Exam', 'Priority', 'Stage', 'Ordered', 'Elapsed', 'Over target'],
+      rows: f => O().filter(Rad.isOpen).filter(o => (!f.mod || mod(o) === f.mod) && (!f.stage || Rad.stageKey(o) === f.stage)).map(o => [Rad.acc(o), pt(o.patientId).name, pt(o.patientId).mrn, o.name, o.priority, Rad.STAGES.find(s => s[0] === Rad.stageKey(o))[1], UI.fmtDate(o.orderedAt), Lab.dur(Rad.tat(o).used), Rad.tat(o).late ? 'Yes' : 'No']) },
+    { id: 'RAD-R04', title: 'Critical findings notification log', purpose: 'Every call for a critical finding with read-back and time to notify.', filters: [D('from', 'From'), D('to', 'To'), { id: 'out', label: 'Outcome', type: 'select', options: [['Reached', 'Reached'], ['No answer', 'No answer'], ['Escalated', 'Escalated']] }],
+      columns: ['Date and time', 'Patient', 'MRN', 'Finding', 'Called by', 'Person called', 'Outcome', 'Read-back', 'Minutes to notify'],
+      rows: f => (db.radiologyCalls || []).filter(c => inR(c.at, f) && (!f.out || c.outcome === f.out)).sort((a, b) => (a.at < b.at ? 1 : -1)).map(c => { const o = c.orderId && db.orders.find(x => x.id === c.orderId); const p = pt(o ? o.patientId : c.patientId); return [UI.fmtDate(c.at), p.name || '', p.mrn || '', c.finding || '', c.by, c.to, c.outcome, c.kind === 'Call' ? (c.readBack ? 'Yes' : 'No') : '', c.minsToNotify != null ? c.minsToNotify : o && c.outcome === 'Reached' ? Lab.mins(r(o).authoredAt, c.at) : '']; }) },
+    { id: 'RAD-R05', title: 'Rejected and cancelled requests', purpose: 'Requests rejected or cancelled by radiology with the reason.', filters: [D('from', 'From'), D('to', 'To'), { id: 'st', label: 'Type', type: 'select', options: [['Rejected', 'Rejected'], ['Cancelled', 'Cancelled']] }, MOD],
+      columns: ['Date', 'Order', 'Patient', 'Exam', 'Type', 'Reason', 'By', 'Referring doctor'],
+      rows: f => O().filter(o => /Rejected|Cancelled/.test(o.status) && inR(o.rejectedAt || o.cancelledAt || o.orderedAt, f) && (!f.st || o.status === f.st) && (!f.mod || mod(o) === f.mod)).map(o => [UI.fmtDate(o.rejectedAt || o.cancelledAt), o.no, pt(o.patientId).name, o.name, o.status, o.rejectReason || o.cancelReason || '', o.rejectedBy || o.cancelledBy || '', Kit.docName(o.by)]) },
+    { id: 'RAD-R06', title: 'Repeat (reject) analysis', purpose: 'Repeated images by reason and modality, for radiation safety and quality.', filters: [D('from', 'From'), D('to', 'To'), MOD],
+      columns: ['Modality', 'Reason', 'Repeats', 'Exams performed', 'Repeat rate'],
+      rows: f => { const perf = O().filter(o => o.performedAt && inR(o.performedAt, f) && (!f.mod || mod(o) === f.mod)); const m = {}; perf.forEach(o => (o.repeats || []).forEach(x => { const k = mod(o) + '|' + x.reason; m[k] = (m[k] || 0) + 1; })); return Object.entries(m).map(([k, n]) => { const tot = perf.filter(o => mod(o) === k.split('|')[0]).length; return [k.split('|')[0], k.split('|')[1], n, tot, Math.round(100 * n / Math.max(1, tot)) + '%']; }); } },
+    { id: 'RAD-R07', title: 'Radiologist productivity', purpose: 'Reports written, verified and approved per radiologist.', filters: [D('from', 'From'), D('to', 'To'), MOD],
+      columns: ['Radiologist', 'Reports written', 'Verified', 'Approved', 'Critical findings reported'],
+      rows: f => { const l = O().filter(o => o.report && inR(r(o).authoredAt, f) && (!f.mod || mod(o) === f.mod)); const m = {}; const add = (n, i) => { if (!n) return; (m[n] = m[n] || [n, 0, 0, 0, 0])[i]++; }; l.forEach(o => { add(r(o).author, 1); add(r(o).verifiedBy, 2); add(r(o).approvedBy, 3); if (r(o).critical) add(r(o).author, 4); }); return Object.values(m).sort((a, b) => b[1] - a[1]); } },
+    { id: 'RAD-R08', title: 'Exam revenue by modality', purpose: 'Gross imaging charges (KWD), cash and insured.', filters: [D('from', 'From'), D('to', 'To'), MOD, { id: 'pay', label: 'Payer', type: 'select', options: [['Cash', 'Cash'], ['Insurance', 'Insurance']] }],
+      columns: ['Modality', 'Exam', 'Count', 'Unit price (KWD)', 'Gross (KWD)'],
+      rows: f => Object.entries(Kit.groupBy(O().filter(o => !/Rejected|Cancelled/.test(o.status) && inR(o.orderedAt, f) && (!f.mod || mod(o) === f.mod) && (!f.pay || (pt(o.patientId).payerId ? 'Insurance' : 'Cash') === f.pay)), o => o.code)).map(([c, os]) => [Rad.exam(c).modality, Rad.exam(c).name, os.length, +Number(Rad.exam(c).price).toFixed(3), +(os.length * Rad.exam(c).price).toFixed(3)]).sort((a, b) => b[4] - a[4]),
+      totals: x => ['Total', '', Kit.sumBy(x, y => y[2]), '', +Kit.sumBy(x, y => y[4]).toFixed(3)] },
+    { id: 'RAD-R09', title: 'Requests by referring doctor', purpose: 'Imaging workload by the referring doctor.', filters: [D('from', 'From'), D('to', 'To'), MOD],
+      columns: ['Doctor', 'Specialty', 'Requests', 'STAT or urgent', 'Approved', 'Rejected or cancelled'],
+      rows: f => Object.entries(Kit.groupBy(O().filter(o => inR(o.orderedAt, f) && (!f.mod || mod(o) === f.mod)), o => o.by)).map(([d, os]) => [Kit.docName(d), (Kit.doc(d) || {}).specialty || '', os.length, os.filter(o => o.priority !== 'Routine').length, os.filter(o => o.status === 'Approved').length, os.filter(o => /Rejected|Cancelled/.test(o.status)).length]).sort((a, b) => b[2] - a[2]),
+      totals: x => ['Total', '', Kit.sumBy(x, y => y[2]), Kit.sumBy(x, y => y[3]), Kit.sumBy(x, y => y[4]), Kit.sumBy(x, y => y[5])] },
+    { id: 'RAD-R10', title: 'Report delivery (print and e-send) log', purpose: 'Every printed or e-sent radiology report with channel and status.', filters: [D('from', 'From'), D('to', 'To'), { id: 'ch', label: 'Channel', type: 'select', options: ['Email', 'SMS', 'Patient app', 'Referring doctor', 'Printed'].map(x => [x, x]) }, { id: 'st', label: 'Status', type: 'select', options: ['Sent', 'Delivered', 'Failed', 'Printed'].map(x => [x, x]) }],
+      columns: ['Date and time', 'Accession', 'Patient', 'Exam', 'Channel', 'To', 'Status', 'By'],
+      rows: f => (db.radiologyDispatch || []).filter(x => inR(x.at, f) && (!f.ch || x.channel === f.ch) && (!f.st || x.status === f.st)).sort((a, b) => (a.at < b.at ? 1 : -1)).map(x => { const o = db.orders.find(y => y.id === x.orderId) || {}; return [UI.fmtDate(x.at), o.no ? Rad.acc(o) : '', pt(o.patientId).name || '', o.name || '', x.channel, x.to, x.status, x.by]; }) },
+  ] });
+})();
+</script>
+</body>
+</html>

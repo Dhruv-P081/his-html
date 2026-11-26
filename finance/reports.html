@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Finance reports · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<style>/* 10 report cards: balance the grid (no lonely last card) */#page>.grid.g3{grid-template-columns:repeat(2,minmax(0,1fr))}@media (min-width:1700px){#page>.grid.g3{grid-template-columns:repeat(5,minmax(0,1fr))}}</style>
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-finance.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/finance.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, $ } = UI;
+  if (!UI.page({ opt: 'finance.reports', title: 'Finance reports', subtitle: 'Ten finance reports (SOW V4 Annexure B). Run with filters, export to Excel (CSV) or print.' })) return;
+  const T = Fin.T, A = Fin.amt;
+  const inR = (d, v) => (!v.from || d >= v.from) && (!v.to || d <= v.to);
+  const sumCol = (rows, i) => A(Kit.sumBy(rows, r => +String(r[i]).replace(/,/g, '')));
+  const MODES = ['Cash', 'KNET', 'Visa or Mastercard', 'Bank transfer', 'Cheque'].map(m => [m, m]);
+  const ps = Fin.periodOpts();
+  const ageRows = (party) => Fin.ageing(party);
+  Kit.reportCatalog($('#page'), { module: 'finance', opt: 'finance.reports', reports: [
+    { id: 'FIN-R01', title: 'Daily collection report', purpose: 'Receipts by date, mode and cashier, for cash-up and bank deposit checks.',
+      filters: [{ id: 'from', label: 'From', type: 'date', value: T }, { id: 'to', label: 'To', type: 'date' }, { id: 'mode', label: 'Mode', type: 'select', options: MODES }, { id: 'by', label: 'Cashier', type: 'select', options: Array.from(new Set(db.financeReceipts.map(r => r.by))).map(x => [x, x]) }],
+      columns: ['Receipt', 'Date', 'Time', 'Received from', 'Type', 'Mode', 'Cashier', 'Amount KWD'],
+      rows: (v) => db.financeReceipts.filter(r => r.status === 'Posted' && inR(r.date, v) && (!v.mode || r.mode === v.mode) && (!v.by || r.by === v.by)).map(r => [r.no, Kit.day(r.date), r.time, r.kind === 'Insurer' ? (Kit.payer(r.payerId) || {}).name : Kit.ptName(r.patientId), r.kind, r.mode, r.by, A(r.amount)]),
+      totals: (rows) => ['Total', '', '', rows.length + ' receipts', '', '', '', sumCol(rows, 7)] },
+    { id: 'FIN-R02', title: 'Revenue by service category and department', purpose: 'Billed revenue from finalized invoices, by service category and cost center.',
+      filters: [{ id: 'from', label: 'From', type: 'date' }, { id: 'to', label: 'To', type: 'date' }, { id: 'type', label: 'Visit type', type: 'select', options: [['OPD', 'OPD'], ['ER', 'ER'], ['IPD', 'IPD']] }],
+      columns: ['Service category', 'Cost center', 'Lines', 'Gross KWD'],
+      rows: (v) => { const m = {}; (db.invoices || []).filter(x => !['Cancelled', 'Draft'].includes(x.status) && inR(x.date, v) && (!v.type || x.type === v.type)).forEach(x => { const cc = Fin.ccName(Fin.ccForEncounter(Kit.enc(x.encounterId))); x.lines.forEach(l => { const k = (Fin.svcCat(l) || 'Uncategorised') + '|' + cc; const r = m[k] || (m[k] = { n: 0, a: 0 }); r.n++; r.a += l.qty * l.price; }); }); return Object.entries(m).sort((a, b) => b[1].a - a[1].a).map(([k, r]) => [k.split('|')[0], k.split('|')[1], r.n, A(r.a)]); },
+      totals: (rows) => ['Total', '', Kit.sumBy(rows, r => r[2]), sumCol(rows, 3)] },
+    { id: 'FIN-R03', title: 'Patient receivables ageing', purpose: 'Open patient balances by age bucket (0-30, 31-60, 61-90, 91-180, over 180 days).',
+      filters: [{ id: 'old', label: 'Oldest bucket', type: 'select', options: Fin.BUCKETS.map((b, i) => [String(i), b + ' days']) }, { id: 'min', label: 'Minimum balance', type: 'select', options: [['50', 'Over 50 KWD'], ['500', 'Over 500 KWD'], ['1000', 'Over 1,000 KWD']] }],
+      columns: ['MRN', 'Patient'].concat(Fin.BUCKETS).concat(['Total KWD']),
+      rows: (v) => ageRows('Patient').filter(r => (!v.old || Math.max.apply(null, r.items.map(x => x.bucket)) === +v.old) && (!v.min || r.total > +v.min)).map(r => [(Kit.pt(r.partyId) || {}).mrn || '', r.name].concat(r.b.map(A)).concat([A(r.total)])),
+      totals: (rows) => ['Total', rows.length + ' patients'].concat([2, 3, 4, 5, 6, 7].map(i => sumCol(rows, i))) },
+    { id: 'FIN-R04', title: 'Insurer and corporate receivables ageing', purpose: 'Open claim balances by payer and age bucket.',
+      filters: [{ id: 'ptype', label: 'Payer type', type: 'select', options: [['Insurer', 'Insurer'], ['Government scheme', 'Government scheme'], ['Corporate', 'Corporate']] }, { id: 'payer', label: 'Payer', type: 'select', options: db.payers.map(p => [p.id, p.name]) }],
+      columns: ['Payer', 'Type'].concat(Fin.BUCKETS).concat(['Total KWD']),
+      rows: (v) => ageRows('Insurer').filter(r => (!v.payer || r.partyId === v.payer) && (!v.ptype || (Kit.payer(r.partyId) || {}).type === v.ptype)).map(r => [r.name, (Kit.payer(r.partyId) || {}).type || ''].concat(r.b.map(A)).concat([A(r.total)])),
+      totals: (rows) => ['Total', ''].concat([2, 3, 4, 5, 6, 7].map(i => sumCol(rows, i))) },
+    { id: 'FIN-R05', title: 'Accounts payable ageing', purpose: 'Approved, unpaid vendor bills by days past due.',
+      filters: [{ id: 'cat', label: 'Vendor category', type: 'select', options: Array.from(new Set(db.vendors.map(v => v.category))).map(c => [c, c]) }, { id: 'over', label: 'Show', type: 'select', options: [['over', 'Overdue only']] }],
+      columns: ['Vendor', 'Bills'].concat(Fin.AP_BUCKETS).concat(['Total KWD']),
+      rows: (v) => { const m = {}; db.financeBills.filter(b => Fin.billOut(b) > 0 && (!v.over || b.dueDate < T) && (!v.cat || (Kit.vendor(b.vendorId) || {}).category === v.cat)).forEach(b => { const r = m[b.vendorId] || (m[b.vendorId] = { n: 0, b: [0, 0, 0, 0, 0] }); r.n++; r.b[Fin.apBucket(b)] += Fin.billOut(b); }); return Object.entries(m).map(([id, r]) => [(Kit.vendor(id) || {}).name, r.n].concat(r.b.map(A)).concat([A(r.b.reduce((s, x) => s + x, 0))])); },
+      totals: (rows) => ['Total', Kit.sumBy(rows, r => r[1])].concat([2, 3, 4, 5, 6, 7].map(i => sumCol(rows, i))) },
+    { id: 'FIN-R06', title: 'General ledger detail', purpose: 'Posted lines of one account with running balance.',
+      filters: [{ id: 'acc', label: 'Account', type: 'select', options: Fin.acctOpts(), value: Fin.AC('1110').id }, { id: 'from', label: 'From', type: 'date' }, { id: 'to', label: 'To', type: 'date' }, { id: 'br', label: 'Branch', type: 'select', options: Fin.brOpts() }],
+      columns: ['Date', 'Voucher', 'Source', 'Narration', 'Debit', 'Credit', 'Balance'],
+      rows: (v) => { if (!v.acc) return []; let run = Fin.netOf(Fin.balances({ branchId: v.br, to: Kit.addDays(v.from || '2026-01-01', -1) })[v.acc]); const out = [['', '', '', 'Opening balance', '', '', A(run)]]; Fin.posted({ branchId: v.br, from: v.from, to: v.to }).filter(l => l.accountId === v.acc).sort((a, b) => (a.j.date + a.j.at).localeCompare(b.j.date + b.j.at)).forEach(l => { run += l.debit - l.credit; out.push([Kit.day(l.j.date), l.j.no, l.j.source, l.j.narration, l.debit ? A(l.debit) : '', l.credit ? A(l.credit) : '', A(run)]); }); return out; },
+      totals: (rows) => ['Total', (rows.length - 1) + ' lines', '', '', sumCol(rows, 4), sumCol(rows, 5), rows.length ? rows[rows.length - 1][6] : ''] },
+    { id: 'FIN-R07', title: 'Journal register', purpose: 'All journal vouchers with status, preparer and approver (audit trail of the ledger).',
+      filters: [{ id: 'from', label: 'From', type: 'date' }, { id: 'to', label: 'To', type: 'date' }, { id: 'status', label: 'Status', type: 'select', options: Fin.statusOrder.map(s => [s, s]) }, { id: 'src', label: 'Source', type: 'select', options: ['Manual', 'Recurring', 'Payroll', 'Billing', 'Pharmacy', 'MMIS', 'AP', 'AR', 'Cash and bank'].map(s => [s, s]) }],
+      columns: ['Voucher', 'Date', 'Source', 'Narration', 'Amount KWD', 'Status', 'Prepared by', 'Approved by'],
+      rows: (v) => db.financeJournals.filter(j => inR(j.date, v) && (!v.status || j.status === v.status) && (!v.src || j.source === v.src)).sort((a, b) => a.date.localeCompare(b.date)).map(j => [j.no, Kit.day(j.date), j.source, j.narration, A(Fin.jDr(j)), j.status, j.by, j.approvedBy || '']),
+      totals: (rows) => ['Total', rows.length + ' journals', '', '', sumCol(rows, 4), '', '', ''] },
+    { id: 'FIN-R08', title: 'Discounts, credit notes and write-offs register', purpose: 'Revenue reductions with requester, approver and reason (maker-checker evidence).',
+      filters: [{ id: 'from', label: 'From', type: 'date', value: '2026-10-01' }, { id: 'to', label: 'To', type: 'date' }, { id: 'kind', label: 'Type', type: 'select', options: [['Discount', 'Discount'], ['Credit note', 'Credit note'], ['Write-off', 'Write-off']] }, { id: 'st', label: 'Status', type: 'select', options: [['Pending approval', 'Pending approval'], ['Approved', 'Approved'], ['Rejected', 'Rejected']] }],
+      columns: ['Type', 'Reference', 'Date', 'Party', 'Reason', 'Amount KWD', 'Status', 'Requested by', 'Approved by'],
+      rows: (v) => db.financeDiscountReqs.map(r => { const x = (db.invoices || []).find(i => i.id === r.invoiceId) || {}; return ['Discount', x.no || '', r.at.slice(0, 10), Kit.ptName(x.patientId), r.reason, r.amount, r.status, r.by, r.approvedBy]; })
+        .concat(db.financeCreditNotes.map(c => ['Credit note', c.no, c.date, Fin.partyName(c.party, c.partyId), c.reason, c.amount, c.status, c.by, c.approvedBy]))
+        .concat(db.financeWriteOffs.map(c => ['Write-off', c.no, c.date, Fin.partyName(c.party, c.partyId), c.reason, c.amount, c.status, c.by, c.approvedBy]))
+        .filter(r => inR(r[2], v) && (!v.kind || r[0] === v.kind) && (!v.st || r[6] === v.st)).map(r => [r[0], r[1], Kit.day(r[2]), r[3], r[4], A(r[5]), r[6], r[7], r[8] || '']),
+      totals: (rows) => ['Total', rows.length + ' items', '', '', '', sumCol(rows, 5), '', '', ''] },
+    { id: 'FIN-R09', title: 'Payments register', purpose: 'Payment vouchers and vendor payment runs by date, mode and bank.',
+      filters: [{ id: 'from', label: 'From', type: 'date', value: '2026-10-01' }, { id: 'to', label: 'To', type: 'date' }, { id: 'kind', label: 'Type', type: 'select', options: ['Payment run', 'Expense', 'Patient refund', 'Petty cash', 'Vendor advance'].map(x => [x, x]) }, { id: 'st', label: 'Status', type: 'select', options: ['Pending approval', 'Approved', 'Paid', 'Rejected', 'Cancelled'].map(x => [x, x]) }],
+      columns: ['Voucher', 'Date', 'Payee', 'Type', 'Mode', 'Reference', 'Amount KWD', 'Status', 'Approved by'],
+      rows: (v) => db.financePayments.filter(p => inR(p.date, v) && (!v.kind || p.kind === v.kind) && (!v.st || p.status === v.st)).map(p => [p.no, Kit.day(p.date), p.payee, p.kind, p.mode, p.ref, A(p.amount), p.status, p.approvedBy || '']),
+      totals: (rows) => ['Total', rows.length + ' vouchers', '', '', '', '', sumCol(rows, 6), '', ''] },
+    { id: 'FIN-R10', title: 'Cost center profit and loss summary', purpose: 'Revenue, direct costs, overheads and margin by cost center for a period range.',
+      filters: [{ id: 'pf', label: 'From period', type: 'select', options: ps, value: '2026-01' }, { id: 'pt', label: 'To period', type: 'select', options: ps, value: '2026-10' }, { id: 'br', label: 'Branch', type: 'select', options: Fin.brOpts() }],
+      columns: ['Cost center', 'Branch', 'Revenue', 'Direct costs', 'Contribution', 'Margin %', 'Overheads', 'Net'],
+      rows: (v) => { const from = Fin.pStart(v.pf || '2026-01'), to = Fin.pEnd(v.pt || Fin.periodOf(T)); const m = {}; Fin.posted({ branchId: v.br, from, to }).forEach(l => { if (!l.ccId) return; const a = Fin.A(l.accountId); const r = m[l.ccId] || (m[l.ccId] = { rv: 0, dc: 0, ov: 0 }); if (a.type === 'Revenue') r.rv += l.credit - l.debit; else if (a.group === 'Direct costs') r.dc += l.debit - l.credit; else if (a.type === 'Expense') r.ov += l.debit - l.credit; }); return Object.entries(m).sort((a, b) => b[1].rv - a[1].rv).map(([id, r]) => [Fin.CC(id).code + ' ' + Fin.CC(id).name, Fin.brShort(Fin.CC(id).branchId), A(r.rv), A(r.dc), A(r.rv - r.dc), r.rv ? Math.round(100 * (r.rv - r.dc) / r.rv) + '%' : '', A(r.ov), A(r.rv - r.dc - r.ov)]); },
+      totals: (rows) => ['Total', '', sumCol(rows, 2), sumCol(rows, 3), sumCol(rows, 4), '', sumCol(rows, 6), sumCol(rows, 7)] },
+  ] });
+})();
+</script>
+</body>
+</html>

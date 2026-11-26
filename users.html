@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Users · Tibbi Orbit</title>
+<link rel="stylesheet" href="assets/styles.css">
+<script src="assets/icons.js"></script><script src="assets/data.js"></script><script src="assets/data-core.js"></script><script src="assets/ui.js"></script>
+</head>
+<body>
+<script>
+const { db, save, $, $$, icon, esc, page, can, table, drawer, field, showErrors, badge, L, toast, audit, me, nowStamp, uid, fmtDate, EMAIL_RE, PHONE_RE, session } = UI;
+const OPT = 'admin.security.users';
+const canAdd = can(OPT, 'add');
+// USR-01: company administrators see only users with assignments in companies they can administer.
+const myCos = new Set(db.assignments.filter(a => a.userId === session().userId && UI.assignmentUsable(a).ok).map(a => a.companyId));
+const global = can(OPT, 'admin');
+const visible = () => db.users.filter(u => global || db.assignments.some(a => a.userId === u.id && myCos.has(a.companyId)));
+const flagsOf = u => [u.isDoctor && 'Doctor', u.isNurse && 'Nurse', u.isTech && 'Technician'].filter(Boolean);
+function userStatus(u) { if (u.blocked) return 'Blocked'; if (u.expiry && u.expiry < UI.today()) return 'Expired'; return u.status; }
+if (page({ active: 'users.html', opt: OPT, title: 'User Master', crumbs: [['Home', 'home.html'], ['Administration', 'admin.html'], ['Users']],
+  subtitle: 'Person-specific accounts. A new account gets no module access until an access administrator creates assignments.',
+  actions: canAdd ? `<button class="btn primary" id="new">${icon('user-plus')} New user</button>` : '', body: `${global ? '' : `<div class="banner info" style="margin-bottom:14px">${icon('info')}<span>Showing users of your companies only.</span></div>`}<div id="list"></div>` })) {
+  const tbl = table($('#list'), {
+    searchPlaceholder: 'Search login, name or employee number', search: u => u.login + ' ' + u.displayName + ' ' + ((L.emp(u.empId) || {}).empNo || '') + ' ' + u.email,
+    filters: [
+      { label: 'Status', options: ['Active', 'Pending activation', 'Locked', 'Blocked', 'Inactive', 'Expired'].map(s => [s, s]), test: (u, v) => userStatus(u) === v },
+      { label: 'User type', options: [['Employee', 'Employee'], ['Non Employee', 'Non Employee']], test: (u, v) => u.type === v },
+      { label: 'Classification', options: db.classifications.map(c => [c, c]), test: (u, v) => u.classification === v },
+      { label: 'Profile', options: [['isDoctor', 'Doctor'], ['isNurse', 'Nurse'], ['isTech', 'Technician'], ['mobileDisplay', 'Shown on mobile app']], test: (u, v) => !!u[v] },
+      { label: 'Branch', options: db.branches.map(b => [b.id, b.name]), test: (u, v) => db.assignments.some(a => a.userId === u.id && a.branchId === v) }],
+    rows: visible,
+    columns: [
+      { label: 'User', render: u => `<div class="row"><span class="avatar">${UI.initials(u.displayName)}</span><div class="cell-main"><b>${esc(u.displayName)}</b><span class="mono">${esc(u.login)}</span></div></div>`, sort: u => u.displayName },
+      { label: 'Type', render: u => `${esc(u.type)}<br><span class="small muted">${u.empId ? esc(L.emp(u.empId).empNo) : 'No HR link'}</span>`, sort: u => u.type },
+      { label: 'Classification · profile', render: u => `${esc(u.classification || '—')}<div class="chips" style="margin-top:3px">${flagsOf(u).map(f => `<span class="chip" style="padding:1px 8px">${f}</span>`).join('')}${u.mobileDisplay ? `<span class="chip" style="padding:1px 8px" title="Display on Mobile App">${icon('monitor-smartphone')} App</span>` : ''}</div>` },
+      { label: 'Status', render: u => badge(userStatus(u)) + (u.empId && L.emp(u.empId).hrStatus === 'Pending separation' ? `<div class="small" style="margin-top:4px;color:var(--warning)">HR leaving ${fmtDate(L.emp(u.empId).lastWorkingDate)}</div>` : ''), sort: userStatus },
+      { label: 'Validity', render: u => `<span class="small">${fmtDate(u.activeFrom)} to ${u.activeTo ? fmtDate(u.activeTo) : 'open'}</span>`, sort: u => u.activeTo || '9999' },
+      { label: 'Access', render: u => { const a = db.assignments.filter(x => x.userId === u.id); const ok = a.filter(x => UI.assignmentUsable(x).ok).length; return ok ? `<b>${ok}</b> usable` : `<span class="badge b-warn">No access</span>`; } },
+      { label: 'Last login', render: u => `<span class="small">${u.lastLogin ? fmtDate(u.lastLogin) : 'Never'}</span>`, sort: u => u.lastLogin },
+    ],
+    onRow: u => location.href = 'user.html?id=' + u.id,
+  });
+
+  function create() {
+    const linked = new Set(db.users.filter(u => u.empId && u.status !== 'Inactive').map(u => u.empId));
+    drawer({ title: 'New user', sub: 'The account is created without module access. Activation is sent through an approved channel.', wide: true,
+      body: `<div class="err-summary hidden" style="margin-bottom:14px"></div><div class="form-grid">
+        <div class="field full"><label>User type<span class="req">*</span> <span class="req-ref">USR-09</span></label><div class="tabs" id="tType"><button type="button" data-v="Employee" class="on">${icon('id-card')} Employee</button><button type="button" data-v="Non Employee">${icon('user')} Non Employee</button></div></div>
+        <div class="field full" id="empWrap"><label for="fEmp">HR employee<span class="req">*</span></label><select class="input" id="fEmp"><option value="">Select from the HR employee table</option>${db.employees.map(e => `<option value="${e.id}" ${linked.has(e.id) || e.hrStatus === 'Separated' ? 'disabled' : ''}>${esc(e.empNo)} · ${esc(e.name)} · ${esc(e.designation)}${linked.has(e.id) ? ' (already has a user)' : e.hrStatus === 'Separated' ? ' (separated)' : ''}</option>`).join('')}</select><div class="hint">One employee can link to only one current user account. Name and education come from HR.</div><div class="err hidden" data-err="fEmp"></div></div>
+        ${field({ id: 'fLogin', label: 'Login identifier', req: true, max: 60, hint: 'Unique system-wide. Saved in lower case.' })}
+        ${field({ id: 'fName', label: 'Display name', req: true, max: 150 })}
+        ${field({ id: 'fEmail', label: 'Email', type: 'email', hint: 'Needed for email recovery. Verified before use.' })}
+        ${field({ id: 'fMobile', label: 'Mobile', placeholder: '+965 ...' })}
+        ${field({ id: 'fAuth', label: 'Authentication source', type: 'select', req: true, value: 'Local', options: [['Local', 'Local account'], ['External', 'External identity provider (AD/SSO)']], placeholder: false })}
+        ${field({ id: 'fClass', label: 'User classification', type: 'select', options: db.classifications.map(c => [c, c]), hint: 'Does not grant permissions.' })}
+        ${field({ id: 'fFrom', label: 'Active from', type: 'date', req: true, value: UI.today() })}
+        ${field({ id: 'fTo', label: 'Active to', type: 'date', hint: 'Blank = no user-defined end. HR separation still applies.' })}
+        <div class="field"><label>Activation channel<span class="req">*</span></label><select class="input" id="fCh"><option>Activation link by email</option><option>Temporary password by SMS</option></select></div>
+        <div class="field full"><label>Professional profile <span class="req-ref">USR-16</span></label><div class="row wrap"><label class="check"><input type="checkbox" id="fDoc"> Is Doctor</label><label class="check"><input type="checkbox" id="fNurse"> Is Nurse</label><label class="check"><input type="checkbox" id="fTech"> Is Technician</label></div><div class="hint">Profile flags do not grant module permissions or clinical privileges.</div></div>
+      </div>`,
+      foot: `<span class="grow req-ref">USR-02 · USR-03</span><button class="btn" data-close>Cancel</button><button class="btn primary" id="sv">Create user</button>`,
+      onMount: (el, close) => {
+        let type = 'Employee';
+        $$('#tType button', el).forEach(b => b.addEventListener('click', () => { type = b.dataset.v; $$('#tType button', el).forEach(x => x.classList.toggle('on', x === b)); $('#empWrap', el).classList.toggle('hidden', type !== 'Employee'); }));
+        $('#fEmp', el).addEventListener('change', () => { const e = L.emp($('#fEmp', el).value); if (!e) return; $('#fName', el).value = e.name; if (!$('#fLogin', el).value) $('#fLogin', el).value = e.name.replace(/^Dr\.?\s*/i, '').toLowerCase().replace(/al-/g, '').split(/\s+/).slice(0, 2).join('.'); if (/Dr\./.test(e.name)) { $('#fDoc', el).checked = true; } });
+        $('#sv', el).addEventListener('click', () => {
+          const errs = {}; const login = $('#fLogin', el).value.trim().toLowerCase(); const email = $('#fEmail', el).value.trim();
+          if (type === 'Employee' && !$('#fEmp', el).value) errs.fEmp = 'Select the HR employee.';
+          if (!login) errs.fLogin = 'Login identifier is required.'; else if (!/^[a-z0-9._@-]{3,60}$/.test(login)) errs.fLogin = 'Use 3 to 60 letters, digits, dots, hyphens or @.';
+          else if (db.users.some(u => u.login === login || (u.email || '').toLowerCase() === login)) errs.fLogin = 'This login identifier is already used.';
+          if (!$('#fName', el).value.trim()) errs.fName = 'Display name is required.';
+          if (email && !EMAIL_RE.test(email)) errs.fEmail = 'Enter a valid email.';
+          if ($('#fCh', el).value.includes('email') && !email) errs.fEmail = 'Email is required for an activation link.';
+          if ($('#fCh', el).value.includes('SMS') && !$('#fMobile', el).value.trim()) errs.fMobile = 'Mobile is required for SMS.';
+          if ($('#fMobile', el).value && !PHONE_RE.test($('#fMobile', el).value)) errs.fMobile = 'Enter a valid mobile number.';
+          if (!$('#fFrom', el).value) errs.fFrom = 'Active from is required.';
+          if ($('#fTo', el).value && $('#fTo', el).value < $('#fFrom', el).value) errs.fTo = 'Active to must be after active from.';
+          if (!showErrors(el, errs)) return;
+          const u = { id: uid('us'), login, displayName: $('#fName', el).value.trim(), type, empId: type === 'Employee' ? $('#fEmp', el).value : null, email, mobile: $('#fMobile', el).value.trim(), authSource: $('#fAuth', el).value, status: 'Pending activation',
+            activeFrom: $('#fFrom', el).value, activeTo: $('#fTo', el).value, classification: $('#fClass', el).value, isDoctor: $('#fDoc', el).checked, isNurse: $('#fNurse', el).checked, isTech: $('#fTech', el).checked, admitting: false, mobileDisplay: false,
+            blocked: false, blockReason: '', expiry: $('#fTo', el).value, languages: [], services: [], details: '', education: '', flags: { a: false, b: false, c: '' }, lastLogin: '', mfa: false, hasPhoto: false, hasSignature: false,
+            updatedBy: me().displayName, updatedAt: nowStamp(), version: 1, firstLogin: true, demoPassword: 'Temp#' + Math.floor(1000 + Math.random() * 9000) };
+          db.users.push(u); save();
+          audit('User created', 'User', { id: u.id, label: u.login }, [['Login', '', u.login], ['User type', '', u.type], ['Status', '', 'Pending activation'], ['Activation', '', $('#fCh', el).value]]);
+          close(); toast(`User ${u.login} created. ${$('#fCh', el).value} sent. No access yet.`); location.href = 'user.html?id=' + u.id + '&tab=access';
+        });
+      } });
+  }
+  const n = $('#new'); if (n) n.addEventListener('click', create);
+}
+</script>
+</body>
+</html>

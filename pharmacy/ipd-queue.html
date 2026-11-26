@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IPD medication orders · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-pharmacy.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/pharmacy.js"></script>
+<style>
+  .bedrow { display: grid; grid-template-columns: 84px minmax(0, 1.1fr) minmax(0, 2fr); gap: 14px; padding: 12px 18px; border-bottom: 1px solid var(--line); align-items: start; }
+  .bedrow:last-child { border-bottom: 0; }
+  .medline { display: flex; gap: 8px; align-items: center; padding: 5px 0; border-bottom: 1px dashed var(--line); }
+  .medline:last-child { border-bottom: 0; }
+  @media (max-width: 900px) { .bedrow { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, esc, icon, $, $$, R, can } = UI;
+  const P = Pharmacy, T = db.TODAY;
+  const OPT = 'pharmacy.ipd';
+  if (!UI.page({ opt: OPT, title: 'IPD medication orders', subtitle: 'Inpatient medication orders by ward and bed. Verify new orders and supply daily doses from the Inpatient Pharmacy.',
+    actions: `<button class="btn" id="prSup" ${can(OPT, 'print') ? '' : 'disabled title="Needs Print permission"'}>${icon('printer')} Ward supply list</button>` })) return;
+
+  const TABS = [['To verify', 'To verify'], ['Due for supply', 'Due for supply'], ['Supplied today', 'Supplied today'], ['On hold', 'On hold'], ['all', 'All']];
+  let tab = 'To verify', view = 'ward', wardF = '';
+  const orders = () => P.ipdOrders().filter(o => { const e = Kit.enc(o.encounterId); return e && e.status !== 'Discharged'; });
+  const inTab = (o) => tab === 'all' || P.ipdState(o) === tab;
+  $('#page').innerHTML = `
+    <div class="grid g4" style="margin-bottom:16px">
+      ${TABS.slice(0, 4).map(([k, l], i) => Kit.kpi(l, orders().filter(o => P.ipdState(o) === k).length, { icon: ['badge-check', 'package', 'package-check', 'pause'][i], foot: ['New orders needing pharmacist review', 'Verified orders not yet supplied today', 'Doses sent to the wards today', 'Orders held for prescriber query'][i] })).join('')}
+    </div>
+    <div class="row wrap" style="margin-bottom:12px;gap:12px"><div id="tabs" class="grow"></div><select class="input" id="wardF" style="width:auto" aria-label="Ward"><option value="">All wards</option>${db.wards.map(w => `<option value="${w.id}">${esc(w.name)}</option>`).join('')}</select><div id="view"></div></div>
+    <div id="body"></div>`;
+  const drawTabs = () => Kit.tabs($('#tabs'), TABS.map(([k, l]) => ({ id: k, label: l, count: orders().filter(o => k === 'all' || P.ipdState(o) === k).filter(o => !wardF || (Kit.bed((Kit.enc(o.encounterId) || {}).bedId) || {}).wardId === wardF).length })), tab, (id) => { tab = id; draw(); });
+  Kit.seg($('#view'), [['ward', 'By ward', 'layout-grid'], ['list', 'List', 'list']], view, (v) => { view = v; draw(); });
+  $('#wardF').addEventListener('change', (e) => { wardF = e.target.value; drawTabs(); draw(); });
+  drawTabs();
+
+  const stateTone = { 'To verify': 'b-info', 'Due for supply': 'b-warn', 'Supplied today': 'b-ok', 'On hold': 'b-warn', 'Stopped': 'b-neutral' };
+  const stBadge = (o) => { const s = P.ipdState(o); return `<span class="badge ${stateTone[s] || 'b-neutral'}">${esc(s)}</span>`; };
+  const link = (o) => R('pharmacy/dispense.html?order=' + o.id);
+  function draw() {
+    const list = orders().filter(inTab).filter(o => !wardF || (Kit.bed((Kit.enc(o.encounterId) || {}).bedId) || {}).wardId === wardF);
+    if (view === 'list') {
+      $('#body').innerHTML = '<div id="tbl"></div>';
+      UI.table($('#tbl'), {
+        columns: [
+          { label: 'Ward / bed', sort: o => (Kit.bed((Kit.enc(o.encounterId) || {}).bedId) || {}).no, render: o => { const b = Kit.bed((Kit.enc(o.encounterId) || {}).bedId) || {}; return `<b>${esc(b.no || '')}</b><div class="small muted">${esc((Kit.ward(b.wardId) || {}).name || '')}</div>`; } },
+          { label: 'Patient', sort: o => Kit.ptName(o.patientId), render: o => Kit.patientCell(Kit.pt(o.patientId)) },
+          { label: 'Medication', sort: o => o.name, render: o => `<b>${esc(o.name)}</b>${Kit.item(o.itemId) && Kit.item(o.itemId).schedule ? ' <span class="badge b-violet nodot">CD</span>' : ''}<div class="small muted">${esc(o.dose)} · ${esc(o.route)} · ${esc(o.frequency)}</div>` },
+          { label: 'Order', sort: o => o.no, render: o => `<span class="mono">${esc(o.no)}</span><div class="small muted">${esc(Kit.docName(o.by))}</div>` },
+          { label: 'Ordered', sort: o => o.orderedAt, render: o => esc(Kit.when(o.orderedAt)) },
+          { label: 'Stock', cls: 'num', render: o => { const q = P.available(o.itemId, P.WH.IPD); return q ? `<span class="num">${q}</span>` : Kit.status('Out of stock'); } },
+          { label: 'State', sort: o => P.ipdState(o), render: stBadge },
+          { label: '', cls: 'actions', render: o => `<a class="btn xs ${/To verify|Due/.test(P.ipdState(o)) ? 'primary' : ''}" href="${link(o)}">${P.ipdState(o) === 'To verify' ? 'Verify' : P.ipdState(o) === 'Due for supply' ? 'Supply' : 'Open'}</a>` },
+        ],
+        rows: list, search: o => [o.name, o.no, Kit.ptName(o.patientId), (Kit.pt(o.patientId) || {}).mrn].join(' '), searchPlaceholder: 'Search patient, MRN, order or medicine',
+        filters: [{ label: 'Route', options: Array.from(new Set(P.ipdOrders().map(o => o.route))).map(r => [r, r]), test: (o, v) => o.route === v }],
+        onRow: o => { location.href = link(o); }, empty: 'No orders in this list', pageSize: 12,
+      });
+      return;
+    }
+    const wards = db.wards.filter(w => !wardF || w.id === wardF);
+    const html = wards.map(w => {
+      const beds = db.beds.filter(b => b.wardId === w.id && b.encounterId);
+      const rows = beds.map(b => ({ b, e: Kit.enc(b.encounterId), os: list.filter(o => o.encounterId === b.encounterId) })).filter(x => x.os.length);
+      if (!rows.length) return '';
+      return `<div class="card" style="margin-bottom:14px"><div class="card-head"><h3>${icon('bed-double')} ${esc(w.name)}</h3><div class="actions"><span class="small muted">${rows.length} patient${rows.length === 1 ? '' : 's'} · ${(n => n + (n === 1 ? ' order' : ' orders'))(rows.reduce((n, x) => n + x.os.length, 0))}</span></div></div>
+        ${rows.map(({ b, e, os }) => { const p = Kit.pt(e.patientId); return `<div class="bedrow"><div><span class="token">${esc(b.no)}</span><div class="xs muted" style="margin-top:4px">Room ${esc(b.room)}</div></div>
+          <div>${Kit.patientCell(p)}<div class="small muted" style="margin-top:4px">${esc(e.reason || '')}</div>${(p.allergies || []).length ? `<div style="margin-top:4px">${p.allergies.map(a => `<span class="badge allergy">${icon('triangle-alert')} ${esc(a)}</span>`).join(' ')}</div>` : ''}</div>
+          <div>${os.map(o => `<div class="medline"><div class="grow"><b>${esc(o.name)}</b>${Kit.item(o.itemId) && Kit.item(o.itemId).schedule ? ' <span class="badge b-violet nodot">CD</span>' : ''} <span class="small muted">${esc(o.dose)} · ${esc(o.route)} · ${esc(o.frequency)}</span></div>${stBadge(o)}<a class="btn xs" href="${link(o)}">${P.ipdState(o) === 'To verify' ? 'Verify' : P.ipdState(o) === 'Due for supply' ? 'Supply' : 'Open'}</a></div>`).join('')}</div></div>`; }).join('')}</div>`;
+    }).join('');
+    $('#body').innerHTML = html || `<div class="card"><div class="empty">${icon('circle-check')}<b>No orders in this list</b><span>Choose another tab or ward.</span></div></div>`;
+  }
+  draw();
+  $('#prSup').addEventListener('click', () => {
+    const due = orders().filter(o => P.ipdState(o) === 'Due for supply');
+    Kit.printDoc({ title: 'Ward supply list', sub: `Due for supply · ${Kit.day(T)} · Inpatient Pharmacy`,
+      html: `<table><thead><tr><th>Ward</th><th>Bed</th><th>Patient</th><th>Medication</th><th>Dose</th><th>Frequency</th><th>Packed</th></tr></thead><tbody>${due.map(o => { const b = Kit.bed((Kit.enc(o.encounterId) || {}).bedId) || {}; return `<tr><td>${esc((Kit.ward(b.wardId) || {}).code || '')}</td><td>${esc(b.no || '')}</td><td>${esc(Kit.ptName(o.patientId))}</td><td>${esc(o.name)}</td><td>${esc(o.dose)}</td><td>${esc(o.frequency)}</td><td>☐</td></tr>`; }).join('')}</tbody></table>` });
+  });
+})();
+</script>
+</body>
+</html>

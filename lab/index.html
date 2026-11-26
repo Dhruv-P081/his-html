@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Laboratory overview · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-lab.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/lab.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, esc, icon, $, R } = UI;
+  if (!UI.page({ module: 'lab', title: 'Laboratory overview', subtitle: 'Today in the laboratory: work by stage, turnaround time and critical values (SOW V4 Module 5).',
+    actions: `<a class="btn" href="${R('lab/critical.html')}">${icon('bell-ring')} Critical results</a><a class="btn primary" href="${R('lab/results.html')}">${icon('microscope')} Result entry</a>` })) return;
+  const all = Lab.orders(), T = db.TODAY;
+  const open = all.filter(Lab.isOpen);
+  const stageCount = (k) => all.filter(o => Lab.stageKey(o) === k).length;
+  const crit = all.filter(o => /Resulted|Verified/.test(o.status) && (o.results || []).some(r => r.critical));
+  const acked = (o) => (db.labCalls || []).some(c => c.orderId === o.id && c.kind === 'Call' && c.outcome === 'Reached' && c.readBack);
+  const critOpen = crit.filter(o => !acked(o));
+  const doneToday = all.filter(o => o.resultedAt && o.resultedAt.startsWith(T));
+  const inTat = doneToday.filter(o => !Lab.tat(o).late).length;
+  const late = open.filter(o => !/Rejected|Cancelled/.test(o.status) && Lab.tat(o).late);
+  const sections = [...new Set(db.labTests.map(t => t.section))];
+  const stages = Lab.STAGES.slice(0, 7);
+  const secTat = sections.map(s => { const d = doneToday.filter(o => Lab.test(o.code).section === s); return [s, d.length ? Math.round(100 * d.filter(o => !Lab.tat(o).late).length / d.length) : null, d.length]; }).filter(x => x[1] != null);
+  $('#page').innerHTML = `
+    <div class="grid g4" style="margin-bottom:16px">
+      ${Kit.kpi('Open lab orders', open.length, { icon: 'clipboard-list', foot: stageCount('new') + ' new waiting for acceptance', href: R('lab/orders.html') })}
+      ${Kit.kpi('Samples to collect', stageCount('accepted'), { icon: 'test-tube', foot: stageCount('collected') + ' collected, not yet received', href: R('lab/collection.html') })}
+      ${Kit.kpi('TAT within target', doneToday.length ? Math.round(100 * inTat / doneToday.length) + '%' : '-', { icon: 'timer', foot: inTat + ' of ' + doneToday.length + ' resulted today · ' + late.length + ' open orders late', href: R('lab/reports.html') })}
+      ${Kit.kpi('Critical not acknowledged', critOpen.length, { icon: 'bell-ring', foot: crit.length + ' critical results today', href: R('lab/critical.html') })}
+    </div>
+    <div class="grid g-side" style="margin-bottom:16px">
+      <div class="card"><div class="card-head"><h3>${icon('chart-column')} Pending by stage</h3><div class="actions"><a class="btn sm" href="${R('lab/orders.html')}">Open orders ${icon('arrow-right')}</a></div></div><div class="card-pad">
+        ${Kit.barChart({ labels: stages.map(s => s[1]), values: stages.map(s => stageCount(s[0])), colors: ['#2F6BC5', '#2F6BC5', '#0891B2', '#0891B2', '#7C4DDB', '#E0670E', '#D23F6A'], title: 'Pending lab orders by stage', height: 150 })}</div></div>
+      <div class="card"><div class="card-head"><h3>${icon('layers')} Section workload</h3><span class="small muted">Open orders</span></div><div class="card-pad">
+        ${Kit.barList(sections.map(s => [s, open.filter(o => Lab.test(o.code).section === s).length]).sort((a, b) => b[1] - a[1]))}</div></div>
+    </div>
+    <div class="grid g2" style="margin-bottom:16px">
+      <div class="card"><div class="card-head"><h3>${icon('gauge')} TAT against target by section</h3><span class="small muted">Resulted today</span></div><div class="card-pad">
+        ${secTat.length ? Kit.barList(secTat.map(([s, pct, n]) => [s + ' (' + n + ')', pct, pct >= 90 ? 'ok' : pct >= 75 ? 'warn' : 'err']), { max: 100, fmt: v => v + '%' }) : '<div class="empty">No results today yet</div>'}
+        <div class="small muted" style="margin-top:10px">Target per test from the Lab Test Master (STAT orders: half the routine target).</div></div></div>
+      <div class="card"><div class="card-head"><h3>${icon('bell-ring')} Critical results</h3><div class="actions"><a class="btn sm" href="${R('lab/critical.html')}">Open console ${icon('arrow-right')}</a></div></div>
+        ${crit.length ? `<div class="list-rows pad">${crit.map(o => { const r = o.results.find(x => x.critical); return `<div>${Kit.patientCell(Kit.pt(o.patientId))}<span class="grow"></span><div style="text-align:end"><b class="flag-h">${esc(r.name)} ${esc(r.value)} ${esc(r.unit)}</b><div class="small">${acked(o) ? '<span class="badge b-ok">Acknowledged</span>' : `<span class="badge b-err">${icon('timer')} ${Lab.dur(Lab.waitMins(o.resultedAt))} waiting</span>`}</div></div></div>`; }).join('')}</div>` : `<div class="empty">${icon('shield-check')}<b>No critical results</b></div>`}</div>
+    </div>
+    <div class="card"><div class="card-head"><h3>${icon('alarm-clock')} Over TAT target</h3><span class="small muted">${late.length} open orders past their target time</span><div class="actions"><a class="btn sm" href="${R('lab/orders.html')}">All orders ${icon('arrow-right')}</a></div></div>
+      ${late.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>Accession</th><th>Patient</th><th>Test</th><th>Location</th><th>Priority</th><th>Stage</th><th>TAT</th></tr></thead><tbody>
+      ${late.sort((a, b) => Lab.tat(b).pct - Lab.tat(a).pct).slice(0, 8).map(o => `<tr class="click" onclick="location.href='${R('lab/orders.html?id=' + o.id)}'"><td class="mono">${esc(Lab.acc(o))}</td><td>${Kit.patientCell(Kit.pt(o.patientId))}</td><td><b>${esc(o.name)}</b><div class="small muted">${esc(Lab.test(o.code).section)}</div></td><td>${esc(Lab.location(o))}</td><td>${Kit.priority(o.priority)}</td><td>${Lab.stageBadge(o)}</td><td>${Lab.tatCell(o)}</td></tr>`).join('')}
+      </tbody></table></div>` : `<div class="empty">${icon('circle-check')}<b>Everything is within target</b></div>`}</div>`;
+})();
+</script>
+</body>
+</html>

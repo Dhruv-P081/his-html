@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Order worklist · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-nursing.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/nursing.js"></script>
+<style>
+  .tbl tr.od td { background: color-mix(in srgb, var(--error-bg) 45%, transparent); }
+  .tbl tr.od td:first-child { box-shadow: inset 3px 0 0 var(--error); }
+  .tbl tr.dn td:first-child { box-shadow: inset 3px 0 0 #E0A100; }
+</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, can, toast, audit, field, showErrors, R } = UI;
+  const OPT = 'nursing.orders';
+  if (!UI.page({ opt: OPT, title: 'Order worklist', subtitle: 'Doctor and nursing orders to carry out today: care, diet, sample collection and other nursing orders.', actions: Nursing.wardSelect() })) return;
+  const canEdit = can(OPT, 'edit');
+  let ward = Nursing.getWard(), tab = UI.param('tab') || 'open', sel = new Set();
+
+  function all() { return Nursing.tasks(Nursing.inpatients(ward)); }
+  function render() {
+    const list = all();
+    const cnt = (f) => list.filter(f).length;
+    const isOpen = t => t.state === 'Due' || t.state === 'Overdue';
+    $('#page').innerHTML = `
+      <div class="grid g4" style="margin-bottom:16px">
+        ${Kit.kpi('Overdue', cnt(t => t.state === 'Overdue'), { icon: 'clock', foot: 'More than 30 minutes past due' })}
+        ${Kit.kpi('Due now', cnt(t => t.state === 'Due'), { icon: 'bell-ring', foot: 'Within the next hour' })}
+        ${Kit.kpi('Completed today', cnt(t => t.state === 'Done'), { icon: 'circle-check', foot: Math.round(100 * cnt(t => t.state === 'Done') / Math.max(1, cnt(t => t.rec || t.state === 'Overdue'))) + '% of tasks due so far' })}
+        ${Kit.kpi('Not done', cnt(t => t.state === 'Not done'), { icon: 'circle-x', foot: 'With a recorded reason' })}
+      </div>
+      <div class="card"><div id="tabs"></div><div id="tbl"></div></div>`;
+    Kit.tabs($('#tabs'), [{ id: 'open', label: 'Due and overdue', count: cnt(isOpen) }, { id: 'Overdue', label: 'Overdue', count: cnt(t => t.state === 'Overdue') }, { id: 'Upcoming', label: 'Upcoming', count: cnt(t => t.state === 'Upcoming') }, { id: 'Done', label: 'Done', count: cnt(t => t.state === 'Done') }, { id: 'Not done', label: 'Not done', count: cnt(t => t.state === 'Not done') }, { id: 'all', label: 'All today', count: list.length }], tab, (t) => { tab = t; sel.clear(); drawTable(); });
+    drawTable();
+  }
+  function drawTable() {
+    const rows = () => all().filter(t => tab === 'all' ? true : tab === 'open' ? (t.state === 'Due' || t.state === 'Overdue') : t.state === tab);
+    const encs = Nursing.inpatients(ward);
+    const bulk = tab === 'open' || tab === 'Overdue';
+    UI.table($('#tbl'), {
+      columns: [].concat(bulk ? [{ label: '', render: t => `<input type="checkbox" data-sel="${esc(t.key)}" aria-label="Select task" ${sel.has(t.key) ? 'checked' : ''} ${canEdit ? '' : 'disabled'}>` }] : []).concat([
+        { label: 'Due', sort: t => t.due, render: t => `<b class="mono">${Kit.time(t.due)}</b>${t.due.slice(0, 10) !== db.TODAY ? `<div class="xs muted">${Kit.day(t.due)}</div>` : ''}${t.state === 'Overdue' ? `<div class="xs" style="color:var(--error);font-weight:700">${late(t.due)} late</div>` : ''}` },
+        { label: 'Bed', sort: t => Nursing.bedNo(t.e), render: t => `<span class="token">${esc(Nursing.bedNo(t.e).split('-').pop())}</span>` },
+        { label: 'Patient', sort: t => Kit.ptName(t.e.patientId), render: t => { const p = Kit.pt(t.e.patientId); return `<b>${esc(p.name)}</b><div class="xs muted">${esc(p.mrn)} · ${esc(Kit.sexAge(p))}</div>`; } },
+        { label: 'Order', render: t => `<b>${esc(t.name)}</b><div class="xs muted">${esc(t.order.no || '')} · ${t.src === 'Nursing' ? 'Nursing order, ' + esc(t.order.by) : esc(Kit.docName(t.order.by))}${t.order.frequency ? ' · ' + esc(t.order.frequency) : ''}</div>` },
+        { label: 'Type', sort: t => t.type, render: t => `<span class="tag" style="white-space:nowrap">${esc(Nursing.TYPE_LABEL[t.type])}</span>` + (t.order.priority && t.order.priority !== 'Routine' ? ' ' + Kit.priority(t.order.priority) : '') },
+        { label: 'Status', sort: t => t.state, render: t => Kit.status(t.state) + (t.rec ? `<div class="xs muted" style="margin-top:3px">${Kit.time(t.rec.at)} · ${esc(t.rec.by)}</div>${t.rec.reason ? `<div class="xs" style="color:var(--error)">${esc(t.rec.reason)}</div>` : t.rec.note ? `<div class="xs muted">${esc(t.rec.note)}</div>` : ''}` : '') },
+        { label: '', cls: 'actions', render: t => t.rec ? `<button class="btn xs ghost" data-undo="${esc(t.key)}" ${canEdit ? '' : 'disabled title="Needs Edit permission"'}>${icon('undo-2')} Undo</button>` : `<div class="btn-group"><button class="btn xs success" data-done="${esc(t.key)}" ${canEdit ? '' : 'disabled title="Needs Edit permission"'}>${icon('check')} Done</button><button class="btn xs" data-nd="${esc(t.key)}" ${canEdit ? '' : 'disabled title="Needs Edit permission"'}>${icon('x')} Not done</button></div>` },
+      ]),
+      rows, search: t => [t.name, Kit.ptName(t.e.patientId), Nursing.bedNo(t.e), t.order.no].join(' '), searchPlaceholder: 'Search patient, bed or order', pageSize: 12,
+      filters: [{ label: 'Type', options: Object.entries(Nursing.TYPE_LABEL), test: (t, v) => t.type === v }, { label: 'Patient', options: encs.map(e => [e.id, Nursing.bedNo(e) + ' ' + Kit.ptName(e.patientId)]), test: (t, v) => t.e.id === v }, { label: 'Shift', options: [['Morning', 'Morning'], ['Evening', 'Evening'], ['Night', 'Night']], test: (t, v) => Nursing.shiftOf(t.due) === v }],
+      toolbar: bulk ? `<button class="btn sm success" id="bulkDone" disabled>${icon('check-check')} Mark selected done</button>` : '',
+      empty: tab === 'open' ? 'Nothing is due right now' : 'No tasks in this list', emptyIcon: 'circle-check',
+      afterDraw: (tb) => {
+        $$('tr', tb).forEach(tr => { if (tr.querySelector('[data-done]') && tr.textContent.includes('late')) tr.classList.add('od'); if (tr.textContent.includes('Not done') && tr.querySelector('[data-undo]')) tr.classList.add('dn'); });
+        $$('[data-done]', tb).forEach(b => b.addEventListener('click', () => markDone([find(b.dataset.done)])));
+        $$('[data-nd]', tb).forEach(b => b.addEventListener('click', () => notDone(find(b.dataset.nd))));
+        $$('[data-undo]', tb).forEach(b => b.addEventListener('click', () => undo(find(b.dataset.undo))));
+        $$('[data-sel]', tb).forEach(c => c.addEventListener('change', () => { c.checked ? sel.add(c.dataset.sel) : sel.delete(c.dataset.sel); upd(); }));
+        upd();
+      },
+    });
+    const bd = $('#bulkDone'); if (bd) bd.addEventListener('click', () => markDone(Array.from(sel).map(find).filter(Boolean)));
+  }
+  function upd() { const bd = $('#bulkDone'); if (bd) { bd.disabled = !sel.size || !canEdit; bd.innerHTML = `${icon('check-check')} Mark ${sel.size || ''} selected done`; } }
+  function late(due) { const m = Nursing.minsBetween(due, Nursing.now()); return m >= 1440 ? Math.floor(m / 1440) + ' d' : m >= 60 ? Math.floor(m / 60) + ' h ' + (m % 60) + ' min' : m + ' min'; }
+  function find(key) { return all().find(t => t.key === key); }
+  function log(t, outcome, at, note, reason) {
+    const rec = { id: UI.uid('ntl'), key: t.key, orderId: t.order.id, encounterId: t.e.id, patientId: t.e.patientId, due: t.due, outcome, at, by: Nursing.myName(), note: note || '', reason: reason || '' };
+    db.nursingTaskLog.push(rec);
+    if (t.type === 'lab' && outcome === 'Done') { const before = t.order.status; t.order.status = 'Collected'; t.order.collectedAt = at; t.order.collectedBy = Nursing.myName(); audit('Sample collected on ward', 'Order', { id: t.order.id, label: t.order.no + ' ' + t.order.name }, [['Status', before, 'Collected']]); }
+    return rec;
+  }
+  function markDone(list) {
+    if (!list.length) return;
+    const one = list.length === 1 ? list[0] : null;
+    UI.drawer({ title: one ? 'Mark task done' : `Mark ${list.length} tasks done`, sub: one ? esc(Kit.ptName(one.e.patientId)) + ' · Bed ' + esc(Nursing.bedNo(one.e)) : 'Selected tasks are recorded with the same time.',
+      body: `<div class="err-summary hidden"></div>${one ? `<div class="note-box" style="margin-bottom:14px"><b>${esc(one.name)}</b><div class="small muted">Due ${Kit.when(one.due)} · ${esc(Nursing.TYPE_LABEL[one.type])}</div></div>` : `<div class="list-rows" style="margin-bottom:14px">${list.map(t => `<div><span class="mono small">${Kit.time(t.due)}</span><div class="grow small"><b>${esc(Nursing.bedNo(t.e))}</b> ${esc(t.name)}</div></div>`).join('')}</div>`}
+        ${one && one.type === 'lab' ? `<div class="banner info" style="margin-bottom:12px">${icon('flask-conical')}<span>The order moves to Collected and appears in the laboratory receiving list. Label the tube at the bedside.</span></div>` : ''}
+        <div class="form-grid">${Nursing.whenFields('dD', 'dT', 'Date done')}${field({ id: 'dNote', label: 'Note', type: 'textarea', max: 300, full: true, value: '' })}</div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn success" id="dOk">${icon('check')} Confirm done</button>`,
+      onMount: (el, close) => $('#dOk', el).addEventListener('click', () => {
+        const at = Nursing.stampOf(el, 'dD', 'dT'), errs = {};
+        if (!at) errs.dT = 'Time is required.'; else if (at > Nursing.now()) errs.dT = 'Time cannot be in the future.';
+        if (!showErrors(el, errs)) return;
+        list.forEach(t => log(t, 'Done', at, $('#dNote', el).value.trim()));
+        save(); audit('Order tasks done', 'Order task', { id: list[0].key, label: list.length + ' task(s), ' + Kit.ptName(list[0].e.patientId) }, list.map(t => [t.name, t.state, 'Done']));
+        sel.clear(); close(); toast(list.length === 1 ? 'Task recorded as done' : list.length + ' tasks recorded as done'); render();
+      }) });
+  }
+  function notDone(t) {
+    let cat = '';
+    const reasons = ['Patient refused', 'Patient off ward (procedure or imaging)', 'Patient asleep, deferred', 'Clinically not appropriate, doctor informed', 'Equipment or supplies not available', 'Order on hold by doctor'];
+    UI.confirm({ title: 'Record task as not done?', body: `<b>${esc(t.name)}</b><br>${esc(Kit.ptName(t.e.patientId))} · due ${Kit.when(t.due)}`, tone: 'warn', icon: 'circle-x', confirm: 'Record not done',
+      extra: `<div class="field" style="margin-top:14px"><label for="ndR">Reason category<span class="req">*</span></label><select class="input" id="ndR"><option value="">Select</option>${reasons.map(r => `<option>${esc(r)}</option>`).join('')}</select></div>`,
+      reason: true,
+      onMount: (el) => { const ok = $('[data-ok]', el), r = $('[data-reason]', el), c = $('#ndR', el); const chk = () => { cat = c.value; ok.disabled = !(c.value && r.value.trim().length >= 3); }; c.addEventListener('change', chk); r.addEventListener('input', chk); r.placeholder = 'Details, for example who was informed'; },
+      onConfirm: (detail) => { const full = cat + ': ' + detail; log(t, 'Not done', Nursing.now(), '', full); save(); audit('Order task not done', 'Order task', { id: t.key, label: t.name + ', ' + Kit.ptName(t.e.patientId) }, [['Status', t.state, 'Not done']], { reason: full }); toast('Recorded as not done'); render(); },
+    });
+  }
+  function undo(t) {
+    UI.confirm({ title: 'Undo this entry?', body: `${esc(t.name)} recorded as ${esc(t.rec.outcome)} at ${Kit.when(t.rec.at)} by ${esc(t.rec.by)}. The task returns to the open list.`, reason: true, confirm: 'Undo entry',
+      onConfirm: (reason) => {
+        db.nursingTaskLog = db.nursingTaskLog.filter(l => l !== t.rec && l.id !== t.rec.id);
+        if (t.type === 'lab' && t.order.status === 'Collected' && t.rec.outcome === 'Done') { t.order.status = 'Ordered'; delete t.order.collectedAt; delete t.order.collectedBy; }
+        save(); audit('Order task entry undone', 'Order task', { id: t.key, label: t.name }, [['Status', t.rec.outcome, 'Open']], { reason }); toast('Entry undone'); render();
+      } });
+  }
+  Nursing.bindWard((w) => { ward = w; sel.clear(); render(); });
+  render();
+})();
+</script>
+</body>
+</html>

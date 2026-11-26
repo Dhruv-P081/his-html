@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lab masters · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-lab.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/lab.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, $ } = UI;
+  const OPT = 'lab.masters';
+  if (!UI.page({ opt: OPT, title: 'Lab masters', subtitle: 'Laboratory master data and configuration (SOW V4 Module 5). Changes are audited.' })) return;
+  const sections = ['Haematology', 'Chemistry', 'Coagulation', 'Immunology', 'Microbiology', 'Clinical Pathology', 'Histopathology', 'Blood Bank'];
+  const tests = db.labTests.map(t => [t.code, t.code + ' · ' + t.name]);
+  $('#page').innerHTML = `<div id="m"></div><div style="margin-top:14px">${Kit.phase2('Sample / Specimen, Container / Vacutainer, Test Parameter, TAT and Laboratory Order Status masters are 2nd phase (SOW V4). Containers and TAT targets are kept on the Lab Test Master for now.')}</div>`;
+  Kit.masters($('#m'), { opt: OPT, defs: [
+    { id: 'labTests', title: 'Lab Test Master', icon: 'flask-conical', key: 'labTests', note: 'Orderable tests with section, specimen, container, TAT target and price. Shared with EMR ordering and billing.',
+      columns: ['code', 'name', 'section', 'tatHours', 'price'],
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Test name', req: true }, { key: 'section', label: 'Section', type: 'select', options: sections, req: true },
+        { key: 'specimen', label: 'Specimen', type: 'select', options: ['Whole blood', 'Serum', 'Plasma', 'Urine', 'Stool', 'Swab', 'CSF', 'Tissue'], req: true },
+        { key: 'container', label: 'Container', type: 'select', options: Object.keys(Lab.CONTAINERS), req: true }, { key: 'tatHours', label: 'TAT target (hours)', type: 'number', req: true },
+        { key: 'price', label: 'Price (KWD)', type: 'number', money: true, req: true }] },
+    { id: 'labPanels', title: 'Lab Panel / Profile Master', icon: 'layers', key: 'labPanels', note: 'Groups of tests ordered together. Test codes from the Lab Test Master, separated by commas.',
+      columns: ['code', 'name', 'tests', 'price'],
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Panel name', req: true }, { key: 'section', label: 'Section', type: 'select', options: ['General'].concat(sections) },
+        { key: 'price', label: 'Panel price (KWD)', type: 'number', money: true, req: true }, { key: 'tests', label: 'Tests (codes)', type: 'textarea', req: true, full: true }] },
+    { id: 'labRanges', title: 'Reference Range / Delta Master', icon: 'ruler', key: 'labRanges', note: 'Normal range by sex and age, critical limits (alert console) and the delta-check limit (% change from the previous result).',
+      columns: ['code', 'param', 'low', 'high', 'critLow', 'critHigh'],
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'test', label: 'Test', type: 'select', options: tests, req: true }, { key: 'param', label: 'Parameter', req: true }, { key: 'unit', label: 'Unit' },
+        { key: 'gender', label: 'Sex', type: 'select', options: ['All', 'Male', 'Female'], req: true }, { key: 'ageFrom', label: 'Age from (years)', type: 'number', default: 0 }, { key: 'ageTo', label: 'Age to (years)', type: 'number', default: 120 },
+        { key: 'low', label: 'Normal low', type: 'number' }, { key: 'high', label: 'Normal high', type: 'number' }, { key: 'critLow', label: 'Critical below', type: 'number' }, { key: 'critHigh', label: 'Critical above', type: 'number' },
+        { key: 'deltaPct', label: 'Delta limit (%)', type: 'number' }] },
+    { id: 'labOrganisms', title: 'Organism Master (Microbiology)', icon: 'bug', key: 'labOrganisms', note: 'Organisms reported in culture results. Alert organisms notify infection control.',
+      columns: ['code', 'name', 'gram', 'alert'],
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Organism', req: true }, { key: 'gram', label: 'Gram stain', type: 'select', options: ['Gram positive', 'Gram negative', 'Not applicable'], req: true },
+        { key: 'kind', label: 'Type', type: 'select', options: ['Bacterium', 'Fungus', 'Parasite', 'Virus'], req: true }, { key: 'alert', label: 'Alert', type: 'select', options: ['Infection control alert', 'Notifiable to MOH'] }] },
+    { id: 'labAntibiotics', title: 'Antibiotic Master (Microbiology)', icon: 'pill', key: 'labAntibiotics', note: 'Antibiotics on the sensitivity panels.',
+      columns: ['code', 'name', 'cls', 'panel'],
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Antibiotic', req: true }, { key: 'cls', label: 'Class', req: true }, { key: 'route', label: 'Route', type: 'select', options: ['Oral', 'IV', 'Oral / IV', 'Topical'] }, { key: 'panel', label: 'Panels', full: true }] },
+    { id: 'labRejectReasons', title: 'Lab Rejection Reason Master', icon: 'ban', key: 'labRejectReasons', note: 'Reasons used to reject an order (Lab orders) or a sample (Sample receiving), with the follow-up action.',
+      columns: ['code', 'name', 'appliesTo', 'action'],
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Reason', req: true }, { key: 'appliesTo', label: 'Applies to', type: 'select', options: ['Order', 'Sample', 'Both'], req: true }, { key: 'action', label: 'Action', type: 'select', options: ['Recollect', 'Cancel order', 'Return to doctor'], req: true }] },
+    { id: 'labOutsourceLabs', title: 'Outsource / Send-Out Lab Master', icon: 'building', key: 'labOutsourceLabs', note: 'Reference laboratories for send-out tests. Send-out order tracking is 2nd phase.',
+      columns: ['code', 'name', 'location', 'tatDays'],
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Laboratory', req: true }, { key: 'location', label: 'Location', req: true }, { key: 'tatDays', label: 'TAT (days)', type: 'number', req: true },
+        { key: 'contact', label: 'Contact' }, { key: 'accreditation', label: 'Accreditation' }, { key: 'tests', label: 'Tests sent', type: 'textarea', full: true }] },
+  ] });
+})();
+</script>
+</body>
+</html>

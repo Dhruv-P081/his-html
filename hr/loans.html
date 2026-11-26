@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Loans · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-hr.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/hr.js"></script>
+<style>.nw{white-space:nowrap}</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, field, showErrors, drawer, confirm } = UI;
+  const OPT = 'hr.loans';
+  if (!UI.page({ opt: OPT, title: 'Loans', subtitle: 'Staff loans and salary advances: approval, instalment schedule and deduction through payroll.',
+    actions: HR.btn(OPT, 'add', 'New loan', 'id="new"', 'primary', 'plus') })) return;
+  const T = db.TODAY, ME = UI.me();
+  let view = 'Active';
+  const lastPosted = () => (db.hrPayrollRuns.filter(r => r.status === 'Posted').map(r => r.month).sort().pop()) || T.slice(0, 7);
+  const firstOpenMonth = () => { let m = HR.monthAdd(lastPosted(), 1); const r = HR.runOf(m); if (r && ['Approved', 'Pending approval'].includes(r.status)) m = HR.monthAdd(m, 1); return m; };
+  $('#page').innerHTML = `<div class="grid g4" style="margin-bottom:14px" id="k"></div><div id="seg" style="margin-bottom:12px"></div><div id="t"></div>`;
+  const kp = () => { const act = db.hrLoans.filter(l => l.status === 'Active'); const nm = HR.monthAdd(lastPosted(), 1);
+    $('#k').innerHTML = Kit.kpi('Active loans', act.length, { icon: 'hand-coins' }) + Kit.kpi('Outstanding balance', Kit.money(Kit.sumBy(act, HR.loanBalance), false), { icon: 'landmark', unit: 'KWD' })
+      + Kit.kpi('Deduction in ' + HR.monthLabel(nm), Kit.money(Kit.sumBy(act, l => (HR.loanSchedule(l).find(s => s.month === nm) || {}).amount || 0), false), { icon: 'calendar', unit: 'KWD' })
+      + Kit.kpi('Pending approval', db.hrLoans.filter(l => l.status === 'Pending approval').length, { icon: 'hourglass' }); };
+  const drawSeg = () => Kit.tabs($('#seg'), ['Pending approval', 'Active', 'Closed', 'Rejected', 'All'].map(s => ({ id: s, label: s, count: db.hrLoans.filter(l => s === 'All' || l.status === s).length })), view, (v) => { view = v; t.redraw(); });
+  const t = UI.table($('#t'), {
+    rows: () => db.hrLoans.filter(l => view === 'All' || l.status === view).sort((a, b) => b.requestedAt.localeCompare(a.requestedAt)),
+    search: (l) => [l.no, HR.name(l.empId), HR.loanType(l.type).name, l.purpose].join(' '), searchPlaceholder: 'Loan, employee or purpose',
+    filters: [{ label: 'Loan type', options: db.hrLoanTypes.map(x => [x.code, x.name]), test: (l, x) => l.type === x }, { label: 'Department', options: HR.deptsInUse(), test: (l, x) => HR.prof(l.empId).deptId === x }],
+    columns: [
+      { label: 'Loan', sort: (l) => l.no, render: (l) => `<span class="mono">${esc(l.no)}</span>` },
+      { label: 'Employee', sort: (l) => HR.name(l.empId), render: (l) => HR.empCell(HR.get(l.empId), HR.dept(HR.prof(l.empId).deptId)) },
+      { label: 'Type', render: (l) => `<span class="nw">${esc(HR.loanType(l.type).name)}</span><div class="xs muted">${esc(l.purpose)}</div>` },
+      { label: 'Amount', cls: 'num', sort: (l) => l.amount, render: (l) => `<span class="num nw">${Kit.money(l.amount)}</span>` },
+      { label: 'Instalments', render: (l) => { const p = (l.paid || []).length; return `<span class="small nw">${p} of ${l.instalments} · ${Kit.money(HR.loanInst(l), false)}/mo</span><div class="progress ok" style="height:4px;margin-top:4px;max-width:120px"><i style="width:${Math.max(2, Math.round(100 * p / l.instalments))}%"></i></div>`; } },
+      { label: 'Balance', cls: 'num', sort: (l) => HR.loanBalance(l), render: (l) => `<b class="num nw">${['Rejected'].includes(l.status) ? '-' : Kit.money(HR.loanBalance(l))}</b>` },
+      { label: 'Deduction from', sort: (l) => l.startMonth, render: (l) => `<span class="nw">${esc(HR.monthLabel(l.startMonth))}</span>` },
+      { label: 'Status', sort: (l) => l.status, render: (l) => l.status === 'Pending approval' ? Kit.status('Pending', 'warn') : Kit.status(l.status) },
+    ],
+    onRow: (l) => detail(l), empty: 'No loans in this view', emptyIcon: 'hand-coins',
+  });
+  const refresh = () => { kp(); drawSeg(); t.redraw(); };
+  kp(); drawSeg();
+
+  function schedTable(l) {
+    return `<div class="table-wrap" style="max-height:340px;overflow:auto"><table class="tbl compact"><thead><tr><th>#</th><th>Payroll month</th><th class="num">Amount</th><th>Status</th></tr></thead><tbody>${HR.loanSchedule(l).map(s => { const r = HR.runOf(s.month); const st = s.paid ? 'Deducted' : l.settled ? 'Settled early' : l.status === 'Active' && r && r.status !== 'Draft' ? 'In run ' + r.status.toLowerCase() : l.status === 'Active' || l.status === 'Pending approval' ? 'Upcoming' : '-'; return `<tr><td>${s.n}</td><td>${esc(HR.monthLabel(s.month))}</td><td class="num">${Kit.money(s.amount)}</td><td>${s.paid ? `<span class="badge b-ok">${esc(st)}</span>` : `<span class="badge b-${st.startsWith('In run') ? 'info' : 'neutral'}">${esc(st)}</span>`}</td></tr>`; }).join('')}</tbody></table></div>`;
+  }
+  function detail(l) {
+    const v = HR.get(l.empId), lt = HR.loanType(l.type), blk = HR.selfBlock(l.requestedBy, l.empId), okA = can(OPT, 'approve') && !blk;
+    drawer({ title: lt.name + ' ' + l.no, sub: esc(v.name) + ' · ' + esc(v.empNo), wide: true,
+      body: `<div class="grid g2"><dl class="kv"><dt>Status</dt><dd>${Kit.status(l.status)}</dd><dt>Employee</dt><dd>${HR.empLink(l.empId)} · ${esc(HR.dept(v.deptId))}</dd><dt>Basic salary</dt><dd>${Kit.money(v.basic)}</dd><dt>Amount</dt><dd><b>${Kit.money(l.amount)}</b> <span class="small muted">${(l.amount / v.basic).toFixed(1)} x basic, limit ${lt.maxMultiple} x</span></dd><dt>Instalments</dt><dd>${l.instalments} x ${Kit.money(HR.loanInst(l))} <span class="small muted">limit ${lt.maxInst}</span></dd><dt>Deduction from</dt><dd>${esc(HR.monthLabel(l.startMonth))}</dd><dt>Balance</dt><dd>${Kit.money(HR.loanBalance(l))}</dd><dt>Purpose</dt><dd>${esc(l.purpose || '-')}</dd><dt>Requested</dt><dd>${esc(l.requestedBy)} · ${esc(Kit.when(l.requestedAt))}</dd>${l.decidedBy ? `<dt>Decision</dt><dd>${esc(l.decidedBy)} · ${esc(Kit.when(l.decidedAt))}${l.decisionNote ? `<div class="small muted">${esc(l.decisionNote)}</div>` : ''}</dd>` : ''}</dl>
+        <div><div class="section-t">Repayment schedule</div>${schedTable(l)}<div class="xs muted" style="margin-top:6px">Instalments are deducted in the monthly payroll run and marked when the run is posted.</div></div></div>
+        ${blk && l.status === 'Pending approval' ? `<div class="banner warn" style="margin-top:12px">${icon('user-lock')}<span>${esc(blk)}</span></div>` : ''}`,
+      foot: `<button class="btn" data-close>Close</button><span class="grow"></span>${l.status === 'Pending approval' ? `<button class="btn danger" id="lRej" ${okA ? '' : `disabled title="${esc(blk || 'Needs Approve permission')}"`}>${icon('x')} Reject</button><button class="btn primary" id="lApp" ${okA ? '' : `disabled title="${esc(blk || 'Needs Approve permission')}"`}>${icon('badge-check')} Approve</button>` : ''}${l.status === 'Active' ? HR.btn(OPT, 'edit', 'Record early settlement', 'id="lSet"', '', 'circle-dollar-sign') : ''}`,
+      onMount: (el, close) => {
+        const on = (i, fn) => { const b = $('#' + i, el); if (b) b.addEventListener('click', () => { close(); fn(); }); };
+        on('lApp', () => confirm({ title: 'Approve ' + l.no + '?', tone: 'primary', icon: 'badge-check', confirm: 'Approve', body: `${Kit.money(l.amount)} to ${esc(v.name)}, repaid in ${l.instalments} instalments from ${esc(HR.monthLabel(l.startMonth))}.`, impact: ['Disbursed by Finance after approval', 'Deductions appear in the payroll runs automatically'].map(esc),
+          onConfirm: () => { Object.assign(l, { status: 'Active', decidedBy: ME.displayName, decidedAt: UI.nowStamp() }); save(); audit('Approved loan', 'Loan', { id: l.id, label: l.no }, [['Status', 'Pending approval', 'Active']]); toast(l.no + ' approved'); refresh(); } }));
+        on('lRej', () => confirm({ title: 'Reject ' + l.no + '?', confirm: 'Reject', reason: true, body: 'The employee is told the reason.',
+          onConfirm: (reason) => { Object.assign(l, { status: 'Rejected', decidedBy: ME.displayName, decidedAt: UI.nowStamp(), decisionNote: reason }); save(); audit('Rejected loan', 'Loan', { id: l.id, label: l.no }, [['Status', 'Pending approval', 'Rejected']], { reason }); toast(l.no + ' rejected'); refresh(); } }));
+        on('lSet', () => confirm({ title: 'Record early settlement of ' + l.no + '?', tone: 'primary', icon: 'circle-dollar-sign', confirm: 'Record settlement', reason: true, body: `Balance ${Kit.money(HR.loanBalance(l))} paid in full by the employee (cash or transfer). Remaining instalments are cancelled.`,
+          onConfirm: (reason) => { const bal = HR.loanBalance(l); l.settled = { at: UI.nowStamp(), by: ME.displayName, amount: bal }; l.status = 'Closed'; save(); audit('Recorded early loan settlement', 'Loan', { id: l.id, label: l.no }, [['Status', 'Active', 'Closed'], ['Settled amount', '', Kit.money(bal)]], { reason }); toast(l.no + ' settled and closed'); refresh(); } }));
+      } });
+  }
+
+  function create() {
+    drawer({ title: 'New loan', sub: 'Interest free. Limits come from the Loan Type master.', wide: true,
+      body: `<div class="err-summary hidden"></div><div class="form-grid c3">
+        ${field({ id: 'n_emp', label: 'Employee', type: 'select', options: HR.empOpts(v => v.hrStatus === 'Active'), req: true })}
+        ${field({ id: 'n_type', label: 'Loan type', type: 'select', options: db.hrLoanTypes.filter(x => x.status !== 'Inactive').map(x => [x.code, x.name]), req: true })}
+        ${field({ id: 'n_start', label: 'First deduction month', type: 'month', value: firstOpenMonth(), req: true })}
+        ${field({ id: 'n_amt', label: 'Amount (KWD)', type: 'number', req: true, attrs: 'min="1" step="0.001"' })}
+        ${field({ id: 'n_inst', label: 'Instalments', type: 'number', req: true, attrs: 'min="1" step="1"' })}
+        ${field({ id: 'n_purpose', label: 'Purpose', req: true })}</div>
+        <div id="n_rule" style="margin-top:12px"></div><div id="n_sched" style="margin-top:12px"></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><span class="grow"></span><button class="btn primary" id="nSave" disabled>${icon('send')} Submit for approval</button>`,
+      onMount: (el, close) => {
+        const g = (i) => $('#' + i, el).value, sv = $('#nSave', el);
+        const upd = () => {
+          const v = HR.get(g('n_emp')), lt = HR.loanType(g('n_type'));
+          $('#n_rule', el).innerHTML = v && g('n_type') ? `<div class="banner info">${icon('info')}<span>${esc(lt.name)}: up to ${lt.maxMultiple} x basic = <b>${Kit.money(lt.maxMultiple * v.basic)}</b>, at most ${lt.maxInst} instalments, minimum ${lt.minService} months of service (${esc(v.name)} has ${esc(HR.serviceText(v.joinDate))}).</span></div>` : '';
+          const amt = Number(g('n_amt')), n = Number(g('n_inst'));
+          $('#n_sched', el).innerHTML = amt > 0 && n > 0 && n <= 36 && g('n_start') ? `<div class="section-t">Schedule preview</div>${schedTable({ amount: amt, instalments: n, startMonth: g('n_start'), paid: [], status: 'Pending approval' })}` : '';
+          sv.disabled = !(g('n_emp') && g('n_type') && g('n_start') && g('n_amt') && g('n_inst') && g('n_purpose').trim());
+        };
+        $$('input,select', el).forEach(i => { i.addEventListener('input', upd); i.addEventListener('change', upd); });
+        upd();
+        sv.addEventListener('click', () => {
+          const v = HR.get(g('n_emp')), lt = HR.loanType(g('n_type')), amt = Number(g('n_amt')), n = Number(g('n_inst')), errs = {};
+          if (!(amt > 0)) errs.n_amt = 'Amount must be more than zero.';
+          else if (amt > lt.maxMultiple * v.basic) errs.n_amt = `Above the limit of ${Kit.money(lt.maxMultiple * v.basic)} (${lt.maxMultiple} x basic).`;
+          if (!(n >= 1 && Number.isInteger(n))) errs.n_inst = 'Enter a whole number of instalments.';
+          else if (n > lt.maxInst) errs.n_inst = `At most ${lt.maxInst} instalments for this loan type.`;
+          if (HR.dateDiff(v.joinDate, T) / 30.42 < lt.minService) errs.n_type = `Needs at least ${lt.minService} months of service.`;
+          if (g('n_start') < firstOpenMonth()) errs.n_start = `Payroll is closed or under approval up to ${HR.monthLabel(HR.monthAdd(firstOpenMonth(), -1))}. Start from ${HR.monthLabel(firstOpenMonth())}.`;
+          if (db.hrLoans.some(l => l.empId === v.id && l.type === lt.code && ['Active', 'Pending approval'].includes(l.status))) errs.n_type = 'The employee already has an active or pending loan of this type.';
+          const monthly = Kit.sumBy(db.hrLoans.filter(l => l.empId === v.id && l.status === 'Active'), HR.loanInst) + amt / n;
+          if (amt > 0 && n > 0 && monthly > HR.gross(v) * 0.4) errs.n_amt = `Total monthly loan deductions (${Kit.money(monthly)}) would exceed 40% of gross salary.`;
+          if (!showErrors(el, errs)) return;
+          const no = Kit.nextNo('LN-', db.hrLoans);
+          const l = { id: 'hln_' + no.slice(3), no, empId: v.id, type: lt.code, amount: amt, instalments: n, startMonth: g('n_start'), status: 'Pending approval', purpose: g('n_purpose').trim(), requestedBy: ME.displayName, requestedAt: UI.nowStamp(), decidedBy: '', decidedAt: '', decisionNote: '', paid: [] };
+          db.hrLoans.push(l); save(); audit('Created loan request', 'Loan', { id: l.id, label: no }, [['Employee', '', v.name], ['Amount', '', Kit.money(amt)], ['Instalments', '', String(n)]]);
+          close(); toast(no + ' submitted for approval'); view = 'Pending approval'; refresh(); detail(l);
+        });
+      } });
+  }
+  const n = $('#new'); if (n) n.addEventListener('click', create);
+  const q = db.hrLoans.find(l => l.id === UI.param('id')); if (q) { view = q.status; drawSeg(); t.redraw(); detail(q); }
+})();
+</script>
+</body>
+</html>

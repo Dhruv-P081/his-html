@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Entity Rules · Tibbi Orbit</title>
+<link rel="stylesheet" href="assets/styles.css">
+<script src="assets/icons.js"></script><script src="assets/data.js"></script><script src="assets/data-core.js"></script><script src="assets/ui.js"></script>
+</head>
+<body>
+<script>
+const { db, save, $, $$, icon, esc, page, can, drawer, field, showErrors, badge, L, toast, audit, me, nowStamp, uid, fmtDate, effectiveRule, confirm, today, historyDrawer } = UI;
+const OPT = 'admin.org.rules';
+const canAdd = can(OPT, 'add'), canApprove = can(OPT, 'approve');
+if (page({ active: 'entity-rules.html', opt: OPT, title: 'Entity Rule Screen', crumbs: [['Home', 'home.html'], ['Administration', 'admin.html'], ['Entity Rules']],
+  subtitle: 'Approved administrative settings from a controlled catalog. Branch value wins over company value, which wins over the system default.',
+  body: `<div class="card card-pad" style="margin-bottom:16px"><div class="row wrap"><div class="field" style="min-width:320px"><label for="scope">Show effective values for</label><select class="input" id="scope"></select></div>
+    <div class="legend" style="margin-inline-start:auto"><span><span class="inherit inh-sys">System</span> default</span><span><span class="inherit inh-co">Company</span> override</span><span><span class="inherit inh-br">Branch</span> override</span></div></div></div>
+    <div id="pendingBox"></div><div class="card" id="rulesCard"></div>` })) {
+
+  const scopeSel = $('#scope');
+  scopeSel.innerHTML = db.companies.filter(c => c.status === 'Active').map(c => `<optgroup label="${esc(c.code)} · ${esc(c.name)}"><option value="co:${c.id}">${esc(c.name)} (company level)</option>${db.branches.filter(b => b.companyId === c.id).map(b => `<option value="br:${b.id}">${esc(b.name)}${b.status !== 'Active' ? ' (inactive)' : ''}</option>`).join('')}</optgroup>`).join('');
+  const qs = new URLSearchParams(location.search).get('scope');
+  scopeSel.value = qs ? 'br:' + qs : 'br:' + UI.session().ctx.branchId;
+  scopeSel.addEventListener('change', draw);
+  const fmtVal = (r, v) => v === true ? 'On' : v === false ? 'Off' : `${v}${r.unit ? ' ' + r.unit : ''}`;
+  const srcCls = s => s === 'Branch' ? 'inh-br' : s === 'Company' ? 'inh-co' : 'inh-sys';
+  function scope() { const [k, id] = scopeSel.value.split(':'); return k === 'br' ? { kind: 'branch', id, branchId: id, companyId: L.branch(id).companyId } : { kind: 'company', id, companyId: id, branchId: null }; }
+  function eff(r) {
+    const s = scope();
+    if (s.kind === 'branch') return effectiveRule(r.key, s.branchId);
+    const act = v => v.status === 'Active' && v.from <= today() && (!v.to || v.to >= today());
+    const c = db.ruleVersions.find(v => v.key === r.key && v.scope === 'company' && v.scopeId === s.companyId && act(v));
+    return c ? { value: c.value, source: 'Company', version: c } : { value: r.sysDefault, source: 'System', version: null };
+  }
+  function draw() {
+    const pend = db.ruleVersions.filter(v => v.status === 'Pending approval');
+    $('#pendingBox').innerHTML = pend.length ? `<div class="banner warn" style="margin-bottom:16px">${icon('clock')}<span>${pend.length} rule change${pend.length > 1 ? 's are' : ' is'} waiting for an independent approver. Pending changes have no effect.</span></div>` : '';
+    $('#rulesCard').innerHTML = `<div class="table-wrap"><table class="tbl"><thead><tr><th>Rule</th><th>Allowed range</th><th>System default</th><th>Effective value</th><th>Overrides allowed</th><th>Upcoming</th><th></th></tr></thead><tbody>
+      ${db.rules.map(r => { const e = eff(r); const up = db.ruleVersions.filter(v => v.key === r.key && ['Scheduled', 'Pending approval'].includes(v.status));
+        return `<tr class="click" data-k="${r.key}"><td><div class="cell-main"><b>${esc(r.name)}</b><span class="mono">${esc(r.key)}</span> ${r.security ? '<span class="tag">Security</span>' : ''}</div></td>
+        <td class="small">${r.type === 'number' ? `${r.min} to ${r.max} ${esc(r.unit)}` : r.type === 'boolean' ? 'On or off' : esc(r.options.join(', '))}</td>
+        <td>${esc(fmtVal(r, r.sysDefault))}</td><td><b>${esc(fmtVal(r, e.value))}</b> <span class="inherit ${srcCls(e.source)}">${e.source}</span></td>
+        <td class="small">${r.allow.length ? r.allow.map(a => a[0].toUpperCase() + a.slice(1)).join(', ') : '<span class="muted">System only</span>'}</td>
+        <td>${up.map(v => badge(v.status, `${v.status} ${fmtDate(v.from)}`)).join(' ') || '<span class="muted">—</span>'}</td><td class="actions">${icon('chevron-right')}</td></tr>`; }).join('')}
+      </tbody></table></div>`;
+    $$('[data-k]').forEach(tr => tr.addEventListener('click', () => openRule(db.rules.find(r => r.key === tr.dataset.k))));
+  }
+  draw();
+
+  function scopeName(v) { return v.scope === 'branch' ? L.bName(v.scopeId) : v.scope === 'company' ? L.cName(v.scopeId) : 'System'; }
+  function openRule(r) {
+    const s = scope(); const e = eff(r);
+    const vers = db.ruleVersions.filter(v => v.key === r.key).sort((a, b) => (b.at || '').localeCompare(a.at || ''));
+    const coV = effectiveRule(r.key, s.branchId || db.branches.find(b => b.companyId === s.companyId).id);
+    drawer({ title: r.name, sub: `<span class="mono">${esc(r.key)}</span> · owner ${esc(r.owner)} · applies at ${esc(r.appliesAt)}`, wide: true,
+      body: `<p class="muted" style="margin-top:0">${esc(r.desc)}</p>
+      <div class="grid g3" style="margin-bottom:16px">
+        <div class="card card-pad"><div class="small muted">System default</div><b style="font-size:20px">${esc(fmtVal(r, r.sysDefault))}</b></div>
+        <div class="card card-pad"><div class="small muted">Effective in ${esc(s.kind === 'branch' ? L.bName(s.id) : L.cName(s.id))}</div><b style="font-size:20px">${esc(fmtVal(r, e.value))}</b> <span class="inherit ${srcCls(e.source)}">${e.source}</span></div>
+        <div class="card card-pad"><div class="small muted">Allowed values</div><b>${r.type === 'number' ? `${r.min} to ${r.max} ${esc(r.unit)}` : r.type === 'boolean' ? 'On or off' : esc(r.options.join(', '))}</b>${r.minimum ? '<div class="small muted">Mandatory system minimum: cannot be turned off below system scope.</div>' : ''}</div></div>
+      <div class="card"><div class="card-head"><h3>Versions</h3><span class="req-ref">RUL-03 · RUL-04 · RUL-05</span></div><div class="table-wrap"><table class="tbl"><thead><tr><th>Ver.</th><th>Scope</th><th>Value</th><th>Effective</th><th>Status</th><th>Reason · by</th><th></th></tr></thead><tbody>
+        ${vers.map(v => `<tr><td class="mono">v${v.version}</td><td>${esc(scopeName(v))}<br><span class="small muted">${v.scope}</span></td><td><b>${esc(fmtVal(r, v.value))}</b></td><td class="small">${fmtDate(v.from)} to ${v.to ? fmtDate(v.to) : 'open-ended'}</td><td>${badge(v.status)}</td><td class="small">${esc(v.reason)}<br><span class="muted">${esc(v.by)}${v.approver ? ' · approved by ' + esc(v.approver) : ''}</span></td>
+          <td class="actions">${v.status === 'Pending approval' && canApprove ? `<button class="btn sm" data-ap="${v.id}">Review</button>` : ''}${['Superseded', 'Inactive'].includes(v.status) && canAdd ? `<button class="btn sm ghost" data-rs="${v.id}" title="Restore as a new version">${icon('undo-2')}</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">No overrides. The system default applies everywhere.</td></tr>'}
+      </tbody></table></div></div>`,
+      foot: `<button class="btn ghost" id="hist">${icon('history')} History</button><span class="grow"></span>${canAdd && (r.allow.length || UI.can('admin.org.company', 'admin')) ? `<button class="btn primary" id="nv">${icon('plus')} New version</button>` : '<span class="muted small">System-only rule. Maintained by privileged system administrators.</span>'}`,
+      onMount: (el, close) => {
+        $('#hist', el).addEventListener('click', () => historyDrawer(vers[0] ? vers[0].id : r.key, r.name));
+        const nv = $('#nv', el); if (nv) nv.addEventListener('click', () => { close(); newVersion(r); });
+        $$('[data-rs]', el).forEach(b => b.addEventListener('click', () => { close(); const v = db.ruleVersions.find(x => x.id === b.dataset.rs); newVersion(r, { scope: v.scope, scopeId: v.scopeId, value: v.value, reason: `Restore value from v${v.version}` }); }));
+        $$('[data-ap]', el).forEach(b => b.addEventListener('click', () => { close(); review(r, db.ruleVersions.find(x => x.id === b.dataset.ap)); }));
+      } });
+  }
+
+  function newVersion(r, pre) {
+    const s = scope(); pre = pre || {};
+    const scopes = [];
+    if (UI.can('admin.org.company', 'admin')) scopes.push(['system:', 'System (all companies)']);
+    if (r.allow.includes('company')) db.companies.filter(c => c.status === 'Active').forEach(c => scopes.push(['company:' + c.id, 'Company · ' + c.name]));
+    if (r.allow.includes('branch')) db.branches.filter(b => b.status === 'Active').forEach(b => scopes.push(['branch:' + b.id, 'Branch · ' + b.name]));
+    const defScope = pre.scope ? pre.scope + ':' + (pre.scopeId || '') : (s.kind === 'branch' && r.allow.includes('branch') ? 'branch:' + s.id : r.allow.includes('company') ? 'company:' + s.companyId : scopes[0][0]);
+    const valField = r.type === 'number' ? field({ id: 'fVal', label: `Value (${r.unit})`, type: 'number', req: true, value: pre.value != null ? pre.value : '', attrs: `min="${r.min}" max="${r.max}"`, hint: `Allowed ${r.min} to ${r.max}.` })
+      : r.type === 'boolean' ? field({ id: 'fVal', label: 'Value', type: 'select', req: true, value: String(pre.value != null ? pre.value : r.sysDefault), options: [['true', 'On'], ['false', 'Off']], placeholder: false })
+      : field({ id: 'fVal', label: 'Value', type: 'select', req: true, value: pre.value || '', options: r.options.map(o => [o, o]) });
+    const approval = r.security && effectiveRule('admin_approval', s.branchId || db.branches.find(b => b.companyId === s.companyId).id).value === true;
+    drawer({ title: 'New version · ' + r.name, sub: 'A change never edits the old value. It creates a new version and keeps the history.',
+      body: `<div class="err-summary hidden" style="margin-bottom:14px"></div><div class="form-grid">
+        ${field({ id: 'fScope', label: 'Scope', type: 'select', req: true, value: defScope, options: scopes, full: true })}
+        ${valField}<div></div>
+        ${field({ id: 'fFrom', label: 'Effective from', type: 'date', req: true, value: today(), hint: 'Starts at midnight in the scope timezone.' })}
+        ${field({ id: 'fTo', label: 'Effective to', type: 'date', hint: 'Leave blank for open-ended.' })}
+        ${field({ id: 'fReason', label: 'Reason for change', type: 'textarea', req: true, value: pre.reason || '', full: true })}
+        ${approval ? `<div class="full banner warn">${icon('shield-check')}<span>Administrative change approval is on for this scope. The new version waits for an independent approver and has no effect until approved.</span></div>` : ''}</div>`,
+      foot: `<span class="grow req-ref">RUL-02 · RUL-03</span><button class="btn" data-close>Cancel</button><button class="btn primary" id="pv">Preview change</button>`,
+      onMount: (el, close) => {
+        $('#pv', el).addEventListener('click', () => {
+          const errs = {}; const [sk, sid] = $('#fScope', el).value.split(':');
+          let val = $('#fVal', el).value; const from = $('#fFrom', el).value, to = $('#fTo', el).value, reason = $('#fReason', el).value.trim();
+          if (r.type === 'number') { val = Number(val); if (!$('#fVal', el).value || isNaN(val)) errs.fVal = 'Enter a number.'; else if (val < r.min || val > r.max) errs.fVal = `Value must be between ${r.min} and ${r.max}.`; }
+          if (r.type === 'boolean') { val = val === 'true'; if (r.minimum && !val && sk !== 'system') errs.fVal = 'A lower scope cannot weaken a mandatory system security minimum.'; }
+          if (r.type === 'enum' && !val) errs.fVal = 'Select a value.';
+          if (!from) errs.fFrom = 'Effective from is required.';
+          if (to && from && to < from) errs.fTo = 'Effective to must be after effective from.';
+          if (!reason) errs.fReason = 'A reason is required.';
+          const overlap = db.ruleVersions.find(v => v.key === r.key && v.scope === sk && (v.scopeId || '') === (sid || '') && ['Scheduled', 'Pending approval'].includes(v.status) && (!to || v.from <= to) && (!v.to || v.to >= from));
+          if (overlap) errs.fFrom = `Overlaps v${overlap.version} (${overlap.status}, from ${fmtDate(overlap.from)}). Change its dates first.`;
+          if (!showErrors(el, errs)) return;
+          const cur = sk === 'branch' ? effectiveRule(r.key, sid) : { value: (db.ruleVersions.find(v => v.key === r.key && v.scope === sk && v.scopeId === sid && v.status === 'Active') || { value: r.sysDefault }).value, source: sk === 'company' ? 'Company or system' : 'System' };
+          const affected = sk === 'system' ? 'All companies and branches without their own value' : sk === 'company' ? `${db.branches.filter(b => b.companyId === sid && !db.ruleVersions.some(v => v.key === r.key && v.scopeId === b.id && v.status === 'Active')).length} inheriting branches of ${L.cName(sid)}` : L.bName(sid);
+          confirm({ title: 'Confirm rule change', tone: 'primary', icon: 'sliders-horizontal', wide: true, confirm: approval ? 'Submit for approval' : from > today() ? 'Schedule' : 'Activate',
+            body: 'Check the change before it is saved.',
+            extra: `<div class="diff" style="margin-top:14px"><div class="h">Item</div><div class="h">Current</div><div class="h">New</div>
+              <div>Value</div><div class="old">${esc(fmtVal(r, cur.value))}</div><div class="new">${esc(fmtVal(r, val))}</div>
+              <div>Source</div><div>${esc(cur.source)}</div><div class="new">${esc(sk === 'system' ? 'System' : sk === 'company' ? 'Company' : 'Branch')}</div>
+              <div>Effective</div><div>now</div><div class="new">${fmtDate(from)}${to ? ' to ' + fmtDate(to) : ', open-ended'}</div></div>
+              <div class="impact"><b>Affected scope:</b> ${esc(affected)}<br><b>Applies:</b> ${esc(r.appliesAt)} after commit.</div>`,
+            onConfirm: () => {
+              const prev = db.ruleVersions.filter(v => v.key === r.key && v.scope === sk && (v.scopeId || '') === (sid || ''));
+              const nv = { id: uid('rv'), key: r.key, scope: sk, scopeId: sid || null, value: val, from, to, version: prev.length + 1, reason, by: me().displayName, approver: '', at: nowStamp(),
+                status: approval ? 'Pending approval' : from > today() ? 'Scheduled' : 'Active' };
+              if (nv.status === 'Active') prev.filter(v => v.status === 'Active').forEach(v => { v.status = 'Superseded'; v.to = today(); });
+              db.ruleVersions.push(nv); save();
+              audit('Rule version ' + nv.status.toLowerCase(), 'Entity rule', { id: nv.id, label: `${r.key} (${scopeName(nv)})` }, [['Value', fmtVal(r, cur.value), fmtVal(r, val)], ['Effective from', '', from], ['Status', '', nv.status]], { reason });
+              close(); toast(`${r.name}: version ${nv.version} ${nv.status.toLowerCase()}`); draw();
+            } });
+        });
+      } });
+  }
+
+  function review(r, v) {
+    if (v.by === me().displayName) { confirm({ title: 'You cannot approve your own change', body: 'An independent approver must review this version (no self-approval).', tone: 'warn', confirm: 'OK' }); return; }
+    confirm({ title: `Approve ${r.name} v${v.version}?`, tone: 'primary', icon: 'shield-check', confirm: 'Approve and activate', body: `Requested by ${esc(v.by)}: ${esc(fmtVal(r, v.value))} for ${esc(scopeName(v))} from ${fmtDate(v.from)}.<br>Reason: ${esc(v.reason)}`,
+      onConfirm: () => { v.approver = me().displayName; v.status = v.from > today() ? 'Scheduled' : 'Active'; save(); audit('Rule version approved', 'Entity rule', { id: v.id, label: r.key }, [['Status', 'Pending approval', v.status]]); toast('Approved'); draw(); } });
+  }
+}
+</script>
+</body>
+</html>

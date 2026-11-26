@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Monthly Payroll Run · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-hr.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/hr.js"></script>
+<style>.nw{white-space:nowrap}#lines td{white-space:nowrap}#lines .cell-main b{white-space:nowrap}.var-up{color:var(--success)}.var-dn{color:var(--error)}</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, drawer, confirm } = UI;
+  const OPT = 'hr.payroll';
+  if (!UI.page({ opt: OPT, title: 'Monthly Payroll Run', subtitle: 'Draft, calculate, review, approve and post. Earnings, deductions, PIFSS and variance against last month.',
+    actions: `<button class="btn" id="print" ${can(OPT, 'print') ? '' : 'disabled title="Needs Print permission"'}>${icon('printer')} Payroll register</button>${HR.btn(OPT, 'add', 'New payroll run', 'id="newRun"', 'primary', 'plus')}` })) return;
+  const ME = UI.me();
+  const runs = () => db.hrPayrollRuns.slice().sort((a, b) => b.month.localeCompare(a.month));
+  let cur = (db.hrPayrollRuns.find(r => r.id === UI.param('id')) || runs().find(r => r.status !== 'Posted') || runs()[0]).id;
+  const STEPS = ['Draft', 'Calculated', 'Pending approval', 'Approved', 'Posted'];
+  const M = (n) => Kit.money(n, false);
+  const sum = (l, f) => HR.r3(Kit.sumBy(l, f));
+  const varOf = (l) => { if (l.prevNet == null) return { kind: 'New', pct: null }; const d = l.net - l.prevNet; const pct = l.prevNet ? 100 * d / l.prevNet : 0; return { kind: Math.abs(pct) >= 10 ? 'Flag' : 'OK', pct, d }; };
+  $('#page').innerHTML = `<div class="row wrap" id="runBar" style="gap:8px;margin-bottom:14px"></div><div id="run"></div>`;
+
+  function bar() {
+    $('#runBar').innerHTML = runs().map(r => `<button class="chip ${r.id === cur ? 'sel' : ''}" data-r="${r.id}">${icon('calendar')} ${esc(HR.monthLabel(r.month))} <span class="badge b-${r.status === 'Posted' ? 'ok' : r.status === 'Draft' ? 'neutral' : r.status === 'Approved' ? 'info' : 'warn'} nodot" style="margin-inline-start:4px">${esc(r.status)}</span></button>`).join('');
+    $$('[data-r]', $('#runBar')).forEach(b => b.addEventListener('click', () => { cur = b.dataset.r; draw(); }));
+  }
+  function draw() {
+    bar();
+    const r = db.hrPayrollRuns.find(x => x.id === cur), host = $('#run');
+    const si = STEPS.indexOf(r.status);
+    const lines = r.lines || [];
+    const prev = HR.runOf(HR.monthAdd(r.month, -1));
+    const leavers = prev && prev.lines && r.lines ? prev.lines.filter(p => !lines.some(l => l.empId === p.empId)) : [];
+    const flagged = lines.filter(l => varOf(l).kind !== 'OK');
+    const net = sum(lines, l => l.net), prevNet = prev && prev.lines ? sum(prev.lines, l => l.net) : null;
+    const dPct = prevNet ? (100 * (net - prevNet) / prevNet) : null;
+    const selfMsg = r.reviewedBy === ME.displayName || r.createdBy === ME.displayName ? 'You prepared or submitted this run. Another approver must approve it (no self-approval).' : '';
+    const actBtn = {
+      Draft: HR.btn(OPT, 'add', 'Calculate payroll', 'id="aCalc"', 'primary', 'calculator'),
+      Calculated: `${HR.btn(OPT, 'add', 'Recalculate', 'id="aCalc"', '', 'refresh-cw')}${HR.btn(OPT, 'add', 'Submit for approval', 'id="aSubmit"', 'primary', 'send')}`,
+      'Pending approval': `${HR.btn(OPT, 'approve', 'Return for correction', 'id="aReject"', 'danger', 'undo-2')}${can(OPT, 'approve') && selfMsg ? `<button class="btn primary" disabled title="${esc(selfMsg)}">${icon('badge-check')} Approve</button>` : HR.btn(OPT, 'approve', 'Approve', 'id="aApprove"', 'primary', 'badge-check')}`,
+      Approved: HR.btn(OPT, 'approve', 'Post payroll', 'id="aPost"', 'success', 'send-horizontal'),
+      Posted: `<a class="btn" href="${R('hr/payslips.html?month=' + r.month)}">${icon('file-spreadsheet')} Payslips and bank file</a>`,
+    }[r.status];
+    host.innerHTML = `
+      <div class="card" style="margin-bottom:14px"><div class="card-head"><div><h3>${icon('calculator')} ${esc(r.no)} · ${esc(HR.monthLabel(r.month))}</h3><div class="small muted" style="margin-top:2px">Pay date ${esc(Kit.day(r.payDate))} · created by ${esc(r.createdBy)} ${esc(Kit.when(r.createdAt))}${r.approvedBy ? ' · approved by ' + esc(r.approvedBy) : ''}${r.journal ? ' · journal ' + esc(r.journal) : ''}</div></div><div class="actions">${actBtn}</div></div>
+        <div class="pay-steps">${STEPS.map((s, i) => `<div class="ps ${i < si || r.status === 'Posted' ? 'done' : i === si ? 'on' : ''}">${icon(i < si || r.status === 'Posted' ? 'circle-check' : i === si ? 'circle-dot' : 'circle')}${esc(s === 'Pending approval' ? 'Review and approval' : s)}</div>`).join('')}</div>
+        ${r.returnNote ? `<div class="card-pad"><div class="banner warn">${icon('undo-2')}<span>Returned for correction: ${esc(r.returnNote)}</span></div></div>` : ''}
+        ${r.status === 'Pending approval' && selfMsg ? `<div class="card-pad"><div class="banner warn">${icon('user-lock')}<span>${esc(selfMsg)}</span></div></div>` : ''}
+      </div>
+      ${!lines.length ? `<div class="card"><div class="empty" style="padding:48px">${icon('calculator')}<b>Not calculated yet</b><span>${HR.all().filter(v => HR.calcLine(v, r.month)).length} employees are eligible for ${esc(HR.monthLabel(r.month))}. Calculation takes basic salary and allowances (pro-rated for joiners and leavers), approved overtime, unregularized absence, unpaid leave, loan instalments and PIFSS for Kuwaiti staff.</span></div></div>` : `
+      <div class="grid g5" style="margin-bottom:14px">
+        ${Kit.kpi('Employees', lines.length, { icon: 'users', foot: `${lines.filter(l => l.prevNet == null).length} new · ${leavers.length} left` })}
+        ${Kit.kpi('Earnings', M(sum(lines, l => l.earnings)), { icon: 'trending-up', unit: 'KWD', foot: `Overtime ${M(sum(lines, l => l.ot))}` })}
+        ${Kit.kpi('Deductions', M(sum(lines, l => l.deductions)), { icon: 'trending-down', unit: 'KWD', foot: `PIFSS ${M(sum(lines, l => l.pifss))} · loans ${M(sum(lines, l => l.loan))}` })}
+        ${Kit.kpi('Net pay', M(net), { icon: 'wallet', unit: 'KWD', delta: dPct != null ? (dPct >= 0 ? '+' : '') + dPct.toFixed(1) + '%' : null, foot: prevNet != null ? ' vs ' + HR.monthLabel(prev.month) : '' })}
+        ${Kit.kpi('To review', flagged.length + leavers.length, { icon: 'flag', foot: 'Variance 10% or more, joiners, leavers' })}
+      </div>
+      <div class="grid g-side" style="margin-bottom:14px">
+        <div class="card"><div class="card-head"><h3>${icon('flag')} Variance against ${prev ? esc(HR.monthLabel(prev.month)) : 'last month'}</h3></div>
+          <div class="table-wrap"><table class="tbl compact"><thead><tr><th>Employee</th><th>Reason</th><th class="num">Last month</th><th class="num">This month</th><th class="num">Change</th></tr></thead><tbody>
+          ${flagged.concat(leavers.map(p => Object.assign({ left: true }, p))).slice(0, 12).map(l => { const v = l.left ? null : varOf(l); const why = l.left ? 'Left the company' : v.kind === 'New' ? 'New joiner, pro-rated ' + l.days + ' of ' + l.monthDays + ' days' : [l.otHours ? 'overtime ' + l.otHours + ' h' : '', l.absDays ? l.absDays + ' absent day' + (l.absDays > 1 ? 's' : '') : '', l.unpaidDays ? l.unpaidDays + ' unpaid leave days' : '', l.days < l.monthDays ? 'pro-rated' : '', ((prev.lines.find(p => p.empId === l.empId) || {}).days || 0) < ((prev.lines.find(p => p.empId === l.empId) || {}).monthDays || 0) && l.days === l.monthDays ? 'first full month' : '', HR.basicFor(HR.get(l.empId) || {}, r.month) !== HR.basicFor(HR.get(l.empId) || {}, HR.monthAdd(r.month, -1)) ? 'salary change' : '', l.loan && !(prev.lines.find(p => p.empId === l.empId) || {}).loan ? 'loan started' : '', !l.loan && (prev.lines.find(p => p.empId === l.empId) || {}).loan ? 'loan ended' : ''].filter(Boolean).join(', ') || 'Overtime or deductions changed';
+            return `<tr><td><b>${esc(l.name)}</b><div class="xs muted">${esc(l.empNo)}</div></td><td class="small" style="white-space:normal">${esc(why)}</td><td class="num">${l.left ? M(l.net) : l.prevNet != null ? M(l.prevNet) : '-'}</td><td class="num">${l.left ? '-' : M(l.net)}</td><td class="num ${l.left || (v.d || 0) < 0 ? 'var-dn' : 'var-up'}">${l.left ? '-' + M(l.net) : v.kind === 'New' ? 'New' : (v.d >= 0 ? '+' : '') + M(v.d) + ' (' + v.pct.toFixed(0) + '%)'}</td></tr>`; }).join('') || `<tr><td colspan="5"><div class="empty">${icon('circle-check')}<b>No variance over 10%</b></div></td></tr>`}
+          </tbody></table></div></div>
+        <div class="card"><div class="card-head"><h3>${icon('book-open')} Posting summary</h3><div class="actions"><span class="tag">to Finance GL</span></div></div><div class="card-pad">
+          <table class="calc-t" style="width:100%"><tbody>
+            <tr><td>Salaries and allowances</td><td class="num">Dr ${M(sum(lines, l => l.basic + l.allowSum))}</td></tr>
+            <tr><td>Overtime</td><td class="num">Dr ${M(sum(lines, l => l.ot))}</td></tr>
+            <tr><td>Absence and unpaid leave</td><td class="num">Cr ${M(sum(lines, l => l.absence + l.unpaid))}</td></tr>
+            <tr><td>PIFSS payable (employee share)</td><td class="num">Cr ${M(sum(lines, l => l.pifss))}</td></tr>
+            <tr><td>Staff loans recovered</td><td class="num">Cr ${M(sum(lines, l => l.loan))}</td></tr>
+            <tr class="tot"><td>Net salaries payable</td><td class="num">Cr ${M(net)}</td></tr></tbody></table>
+          <div class="xs muted" style="margin-top:8px">Account mapping is set up in Finance. ${r.status === 'Posted' ? 'Posted as ' + esc(r.journal) + '.' : 'Posted when the run is posted.'}</div></div></div>
+      </div>
+      <div class="card"><div class="card-head"><h3>${icon('table')} Payroll lines</h3></div><div id="lines"></div></div>`}`;
+    if (lines.length) {
+      UI.table($('#lines'), {
+        rows: () => r.lines, search: (l) => [l.name, l.empNo, l.designation].join(' '), searchPlaceholder: 'Employee',
+        filters: [{ label: 'Department', options: HR.deptsInUse(), test: (l, x) => l.deptId === x }, { label: 'Variance', options: [['Flag', '10% or more'], ['New', 'New joiners'], ['OK', 'Under 10%']], test: (l, x) => varOf(l).kind === x }, { label: 'PIFSS', options: [['y', 'Kuwaiti (PIFSS)'], ['n', 'Expatriate']], test: (l, x) => (x === 'y') === (l.pifss > 0) }],
+        columns: [
+          { label: 'Employee', sort: (l) => l.name, render: (l) => `<div class="cell-main"><b>${esc(l.name)}</b><span class="mono">${esc(l.empNo)}</span><span> · ${esc(HR.dept(l.deptId))}</span></div>` },
+          { label: 'Days', cls: 'num', render: (l) => `<span class="num">${l.days}/${l.monthDays}</span>` },
+          { label: 'Basic', cls: 'num', sort: (l) => l.basic, render: (l) => `<span class="num">${M(l.basic)}</span>` },
+          { label: 'Allowances', cls: 'num', sort: (l) => l.allowSum, render: (l) => `<span class="num">${M(l.allowSum)}</span>` },
+          { label: 'Overtime', cls: 'num', sort: (l) => l.ot, render: (l) => l.ot ? `<span class="num">${M(l.ot)}</span>` : '<span class="muted">-</span>' },
+          { label: 'Deductions', cls: 'num', sort: (l) => l.deductions, render: (l) => l.deductions ? `<span class="num">${M(l.deductions)}</span><div class="xs muted">${[l.pifss ? 'PIFSS' : '', l.loan ? 'loan' : '', l.absence ? 'absence' : '', l.unpaid ? 'unpaid' : ''].filter(Boolean).join(', ')}</div>` : '<span class="muted">-</span>' },
+          { label: 'Net pay', cls: 'num', sort: (l) => l.net, render: (l) => `<b class="num">${M(l.net)}</b>` },
+          { label: 'Variance', cls: 'num', sort: (l) => varOf(l).pct == null ? 999 : Math.abs(varOf(l).pct), render: (l) => { const v = varOf(l); return v.kind === 'New' ? '<span class="badge b-info">New</span>' : Math.abs(v.pct) < 0.05 ? '<span class="small muted">No change</span>' : `<span class="${v.kind === 'Flag' ? 'badge b-warn' : 'small muted'}">${v.pct > 0 ? '+' : ''}${v.pct.toFixed(1)}%</span>`; } },
+        ],
+        onRow: (l) => lineDrawer(r, l), pageSize: 15,
+      });
+    }
+    wire(r);
+  }
+
+  function lineDrawer(r, l) {
+    const rows = (list) => list.filter(x => x[1]).map(([k, n, sub]) => `<tr><td>${esc(k)}${sub ? `<div class="xs muted">${esc(sub)}</div>` : ''}</td><td class="num">${Kit.money(n)}</td></tr>`).join('');
+    const v = varOf(l);
+    drawer({ title: l.name, sub: `${esc(l.empNo)} · ${esc(l.designation)} · ${esc(HR.monthLabel(r.month))}`,
+      body: `<div class="card" style="margin-bottom:12px"><table class="calc-t" style="width:100%"><tbody>
+        <tr><td colspan="2"><b>Earnings</b> <span class="xs muted">${l.days} of ${l.monthDays} days</span></td></tr>
+        ${rows([['Basic salary', l.basic]].concat(Object.entries(l.allow).map(([c, n]) => [HR.comp(c).name, n])).concat([['Overtime', l.ot, l.otHours + ' h approved']]))}
+        <tr class="tot"><td>Total earnings</td><td class="num">${Kit.money(l.earnings)}</td></tr>
+        <tr><td colspan="2" style="padding-top:14px"><b>Deductions</b></td></tr>
+        ${rows([['PIFSS social security', l.pifss, HR.comp('PIFSS').pct + '% employee share'], ['Loan instalment', l.loan, (l.loanNos || []).join(', ')], ['Absence', l.absence, l.absDays + ' day(s) at the daily rate'], ['Unpaid leave', l.unpaid, l.unpaidDays + ' day(s)']]) || '<tr><td class="muted">No deductions</td><td></td></tr>'}
+        <tr class="tot"><td>Total deductions</td><td class="num">${Kit.money(l.deductions)}</td></tr>
+        <tr class="tot"><td>Net pay</td><td class="num">${Kit.money(l.net)}</td></tr></tbody></table></div>
+        <dl class="kv tight"><dt>Last month</dt><dd>${l.prevNet != null ? Kit.money(l.prevNet) : 'Not paid last month'}</dd><dt>Change</dt><dd>${v.kind === 'New' ? 'New joiner' : (v.d >= 0 ? '+' : '') + Kit.money(v.d) + ' (' + v.pct.toFixed(1) + '%)'}</dd><dt>Bank</dt><dd class="mono">${esc(l.iban)}</dd></dl>`,
+      foot: `<button class="btn" data-close>Close</button><span class="grow"></span><a class="btn" href="${R('hr/employees.html?id=' + l.empId)}">${icon('user')} Employee</a>` });
+  }
+
+  function wire(r) {
+    const on = (id, fn) => { const b = $('#' + id); if (b) b.addEventListener('click', fn); };
+    on('aCalc', () => {
+      const go = () => {
+        const before = r.lines ? r.lines.length : 0;
+        r.lines = HR.calcRun(r.month); r.lines.forEach(l => { const p = HR.prevLine(r.month, l.empId); l.prevNet = p ? p.net : null; });
+        r.status = 'Calculated'; r.calculatedAt = UI.nowStamp(); r.calculatedBy = ME.displayName; r.returnNote = '';
+        save(); audit(before ? 'Recalculated payroll' : 'Calculated payroll', 'Payroll run', { id: r.id, label: r.no }, [['Employees', String(before), String(r.lines.length)], ['Net pay', '', Kit.money(Kit.sumBy(r.lines, l => l.net))]]);
+        toast('Payroll calculated for ' + r.lines.length + ' employees'); draw();
+      };
+      const pendOt = db.hrOvertime.filter(o => o.status === 'Pending approval' && o.payrollMonth === r.month).length;
+      const pendLv = db.hrLeaves.filter(l => l.status === 'Pending approval' && l.type === 'UL' && l.from.startsWith(r.month)).length;
+      const openExc = db.hrAttendance.filter(a => a.date.startsWith(r.month) && a.date < db.TODAY && HR.attStatus(a) === 'Absent').length;
+      confirm({ title: 'Calculate ' + HR.monthLabel(r.month) + ' payroll?', tone: 'primary', icon: 'calculator', confirm: 'Calculate', body: 'Inputs are read as they are now. You can recalculate until the run is submitted.',
+        impact: [`${pendOt} overtime request(s) still pending approval are not included`, `${openExc} unregularized absence day(s) will be deducted`].concat(pendLv ? [`${pendLv} unpaid leave request(s) pending`] : []).map(esc), onConfirm: go });
+    });
+    on('aSubmit', () => confirm({ title: 'Submit for approval?', tone: 'primary', icon: 'send', confirm: 'Submit', body: 'The run is locked for changes while it is reviewed. The approver must be a different user.',
+      onConfirm: () => { r.status = 'Pending approval'; r.reviewedBy = ME.displayName; r.reviewedAt = UI.nowStamp(); save(); audit('Submitted payroll for approval', 'Payroll run', { id: r.id, label: r.no }, [['Status', 'Calculated', 'Pending approval']]); toast('Submitted for approval'); draw(); } }));
+    on('aReject', () => confirm({ title: 'Return the run for correction?', body: 'The run goes back to Calculated. The preparer sees your note.', confirm: 'Return for correction', reason: true,
+      onConfirm: (reason) => { r.status = 'Calculated'; r.returnNote = reason; save(); audit('Returned payroll for correction', 'Payroll run', { id: r.id, label: r.no }, [['Status', 'Pending approval', 'Calculated']], { reason }); toast('Returned for correction'); draw(); } }));
+    on('aApprove', () => confirm({ title: 'Approve ' + r.no + '?', tone: 'primary', icon: 'badge-check', confirm: 'Approve', body: `Net pay ${Kit.money(Kit.sumBy(r.lines, l => l.net))} for ${r.lines.length} employees.`,
+      onConfirm: () => { r.status = 'Approved'; r.approvedBy = ME.displayName; r.approvedAt = UI.nowStamp(); save(); audit('Approved payroll', 'Payroll run', { id: r.id, label: r.no }, [['Status', 'Pending approval', 'Approved']]); toast('Payroll approved'); draw(); } }));
+    on('aPost', () => confirm({ title: 'Post ' + r.no + '?', tone: 'primary', icon: 'send-horizontal', confirm: 'Post payroll', body: 'Posting is final. The journal goes to Finance and payslips and the bank file become available.',
+      impact: [`${Kit.sumBy(r.lines, l => (l.otIds || []).length)} overtime request(s) marked Paid`, `${Kit.sumBy(r.lines, l => (l.loanNos || []).length)} loan instalment(s) recorded`, 'Net salaries payable ' + Kit.money(Kit.sumBy(r.lines, l => l.net))].map(esc),
+      onConfirm: () => {
+        r.lines.forEach(l => {
+          (l.otIds || []).forEach(id => { const o = db.hrOvertime.find(x => x.id === id); if (o) o.status = 'Paid'; });
+          (l.loanNos || []).forEach(no => { const ln = db.hrLoans.find(x => x.no === no); if (ln && !(ln.paid || []).includes(r.month)) { ln.paid = (ln.paid || []).concat([r.month]); if (ln.paid.length >= ln.instalments) ln.status = 'Closed'; } });
+        });
+        r.status = 'Posted'; r.postedBy = ME.displayName; r.postedAt = UI.nowStamp(); r.journal = ((db.financeJournals || []).find(j => j.source === 'Payroll' && j.date.slice(0, 7) === r.month) || {}).no || 'JV-' + r.month.slice(2, 4) + '-' + String(100 + db.hrPayrollRuns.length * 3).padStart(4, '0');
+        save(); audit('Posted payroll', 'Payroll run', { id: r.id, label: r.no }, [['Status', 'Approved', 'Posted'], ['Journal', '', r.journal]]); toast('Payroll posted. Journal ' + r.journal); draw();
+      } }));
+  }
+
+  const nr = $('#newRun'); if (nr) nr.addEventListener('click', () => {
+    const last = runs()[0], m = HR.monthAdd(last.month, 1);
+    if (last.status !== 'Posted') { toast(`Post the ${HR.monthLabel(last.month)} run before starting ${HR.monthLabel(m)}.`, 'err'); return; }
+    confirm({ title: 'Start the ' + HR.monthLabel(m) + ' payroll run?', tone: 'primary', icon: 'plus', confirm: 'Create run', body: 'A draft run is created. Calculate it when attendance, leave and overtime for the month are complete.',
+      onConfirm: () => { const r = { id: 'hpr_' + m.replace('-', '').slice(2), no: 'PR-' + m, month: m, status: 'Draft', lines: null, createdBy: ME.displayName, createdAt: UI.nowStamp(), payDate: m + '-' + String(HR.dim(m) - 2).padStart(2, '0') }; db.hrPayrollRuns.push(r); cur = r.id; save(); audit('Created payroll run', 'Payroll run', { id: r.id, label: r.no }, [['Month', '', m]]); toast('Draft run created'); draw(); } });
+  });
+  $('#print').addEventListener('click', () => {
+    const r = db.hrPayrollRuns.find(x => x.id === cur); if (!r.lines) { toast('Calculate the run first', 'err'); return; }
+    Kit.printDoc({ title: 'Payroll register ' + HR.monthLabel(r.month), sub: r.no + ' · ' + r.status, html: `<table><thead><tr><th>Emp no.</th><th>Name</th><th>Department</th><th>Basic</th><th>Allowances</th><th>Overtime</th><th>Deductions</th><th>Net</th></tr></thead><tbody>${r.lines.map(l => `<tr><td>${esc(l.empNo)}</td><td>${esc(l.name)}</td><td>${esc(HR.dept(l.deptId))}</td><td>${M(l.basic)}</td><td>${M(l.allowSum)}</td><td>${M(l.ot)}</td><td>${M(l.deductions)}</td><td><b>${M(l.net)}</b></td></tr>`).join('')}</tbody><tfoot><tr><td colspan="3"><b>Total (KWD)</b></td><td>${M(sum(r.lines, l => l.basic))}</td><td>${M(sum(r.lines, l => l.allowSum))}</td><td>${M(sum(r.lines, l => l.ot))}</td><td>${M(sum(r.lines, l => l.deductions))}</td><td><b>${M(sum(r.lines, l => l.net))}</b></td></tr></tfoot></table>
+      <p style="font-size:11px;margin-top:14px">Prepared by ${esc(r.reviewedBy || r.createdBy)} · Approved by ${esc(r.approvedBy || 'pending')} · Posted ${esc(r.postedAt ? Kit.day(r.postedAt) : 'no')}</p>` });
+  });
+  draw();
+})();
+</script>
+</body>
+</html>

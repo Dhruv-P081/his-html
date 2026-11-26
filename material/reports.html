@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Material reports · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-material.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/material.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, fmtDate } = UI;
+  const M = Material, OPT = 'material.reports';
+  if (!UI.page({ opt: OPT, title: 'Material reports', subtitle: 'Procurement, receiving, stock and valuation reports (SOW V4 Module 10, Annexure B).' })) return;
+  const inRange = (d, f) => (!f.from || String(d).slice(0, 10) >= f.from) && (!f.to || String(d).slice(0, 10) <= f.to);
+  const whOpts = M.storeOpts('material.stock.view', true);
+  const venOpts = db.vendors.map(v => [v.id, v.name]);
+  const deptOpts = db.departments.filter(d => d.companyId === M.ctx().companyId).map(d => [d.id, d.name]);
+  const catOpts = Array.from(new Set(db.items.map(x => x.category))).sort().map(c => [c, c]);
+  const D = (id, label) => ({ id, label, type: 'date' });
+  const SEL = (id, label, options) => ({ id, label, type: 'select', options });
+  const sum = (rows, i) => rows.reduce((s, r) => s + (typeof r[i] === 'number' ? r[i] : 0), 0);
+  const round = (n) => Math.round(n * 1000) / 1000;
+  const recvValue = (p) => p.lines.reduce((s, l) => s + (l.received || 0) * l.price, 0);
+
+  Kit.reportCatalog(document.getElementById('page'), { module: 'material', opt: OPT, reports: [
+    { id: 'MM-R01', title: 'Purchase requisition register', purpose: 'Requisitions raised, their value, approval stage and PO link.',
+      filters: [D('from', 'From'), D('to', 'To'), SEL('dept', 'Department', deptOpts), SEL('status', 'Status', ['Draft', 'Pending approval', 'Approved', 'PO raised', 'Rejected', 'Cancelled'].map(s => [s, s]))],
+      columns: ['PR no.', 'Date', 'Department', 'Raised by', 'Priority', 'Lines', 'Estimated value', 'Status', 'PO'],
+      rows: (f) => db.materialPRs.filter(p => inRange(p.date, f) && (!f.dept || p.deptId === f.dept) && (!f.status || p.status === f.status)).sort((a, b) => a.no.localeCompare(b.no))
+        .map(p => [p.no, fmtDate(p.date), M.deptName(p.deptId), p.createdBy, p.priority, p.lines.length, round(M.total(p.lines)), p.status, p.poNo || '']),
+      totals: (r) => ['Total', '', '', '', '', sum(r, 5), round(sum(r, 6)), '', ''] },
+    { id: 'MM-R02', title: 'Purchase order register', purpose: 'POs by vendor with ordered, received and open value.',
+      filters: [D('from', 'From'), D('to', 'To'), SEL('ven', 'Vendor', venOpts), SEL('status', 'Status', ['Draft', 'Pending approval', 'Approved', 'Partially received', 'Received', 'Closed', 'Cancelled', 'Rejected'].map(s => [s, s]))],
+      columns: ['PO no.', 'Date', 'Vendor', 'Store', 'Delivery date', 'Ordered value', 'Received value', 'Open value', 'Status'],
+      rows: (f) => db.materialPOs.filter(p => inRange(p.date, f) && (!f.ven || p.vendorId === f.ven) && (!f.status || p.status === f.status)).sort((a, b) => a.no.localeCompare(b.no))
+        .map(p => { const o = M.total(p.lines), r = recvValue(p); return [p.no, fmtDate(p.date), M.vendorName(p.vendorId), M.whName(p.warehouseId), fmtDate(p.deliveryDate), round(o), round(r), /Cancelled|Rejected|Closed/.test(p.status) ? 0 : round(o - r), p.status]; }),
+      totals: (r) => ['Total', '', '', '', '', round(sum(r, 5)), round(sum(r, 6)), round(sum(r, 7)), ''] },
+    { id: 'MM-R03', title: 'Pending and late deliveries', purpose: 'Open PO lines not yet received, with days late against the promised date.',
+      filters: [SEL('ven', 'Vendor', venOpts), SEL('late', 'Show', [['late', 'Late only'], ['all', 'All open lines']]), SEL('wh', 'Store', whOpts)],
+      columns: ['PO no.', 'Vendor', 'Item', 'Ordered', 'Received', 'Open qty', 'Open value', 'Due', 'Days late'],
+      rows: (f) => db.materialPOs.filter(p => /Approved|Partially received/.test(p.status) && (!f.ven || p.vendorId === f.ven) && (!f.wh || p.warehouseId === f.wh)).flatMap(p => p.lines.filter(l => l.qty > (l.received || 0)).map(l => {
+          const late = Math.max(0, Math.round((new Date(db.TODAY) - new Date(p.deliveryDate)) / 86400000));
+          return [p.no, M.vendorName(p.vendorId), M.itemLabel(l.itemId), l.qty, l.received || 0, l.qty - (l.received || 0), round((l.qty - (l.received || 0)) * l.price), fmtDate(p.deliveryDate), late]; })).filter(r => f.late !== 'late' || r[8] > 0),
+      totals: (r) => ['Total', '', '', '', '', sum(r, 5), round(sum(r, 6)), '', ''] },
+    { id: 'MM-R04', title: 'Goods received register', purpose: 'GRN lines with batch, expiry and value, by store and vendor.',
+      filters: [D('from', 'From'), D('to', 'To'), SEL('ven', 'Vendor', venOpts), SEL('wh', 'Store', whOpts)],
+      columns: ['GRN no.', 'Date', 'PO no.', 'Vendor', 'Item', 'Batch', 'Expiry', 'Qty', 'Value', 'Status'],
+      rows: (f) => db.materialGRNs.filter(g => inRange(g.date, f) && (!f.ven || g.vendorId === f.ven) && (!f.wh || g.warehouseId === f.wh)).sort((a, b) => a.no.localeCompare(b.no))
+        .flatMap(g => g.lines.map(l => [g.no, fmtDate(g.date), (db.materialPOs.find(p => p.id === g.poId) || {}).no, M.vendorName(g.vendorId), M.itemLabel(l.itemId), l.batch, fmtDate(l.expiry), l.qty, round(l.qty * l.cost), g.status])),
+      totals: (r) => ['Total', '', '', '', '', '', '', sum(r, 7), round(sum(r, 8)), ''] },
+    { id: 'MM-R05', title: 'Invoice matching exceptions', purpose: 'Vendor invoices with price or quantity variances outside tolerance, and invoices on hold.',
+      filters: [D('from', 'From'), D('to', 'To'), SEL('ven', 'Vendor', venOpts)],
+      columns: ['Match no.', 'Vendor invoice', 'Vendor', 'PO no.', 'Item', 'GRN qty', 'Invoice qty', 'PO price', 'Invoice price', 'Amount variance', 'Status'],
+      rows: (f) => { const S = db.materialSettings; return db.materialInvoices.filter(x => inRange(x.date, f) && (!f.ven || x.vendorId === f.ven)).flatMap(x => { const p = db.materialPOs.find(y => y.id === x.poId) || { lines: [] };
+          return x.lines.map(l => { const pl = p.lines.find(y => y.id === l.lineId || y.itemId === l.itemId) || {}; const gq = db.materialGRNs.filter(g => (x.grnIds || []).includes(g.id)).reduce((s, g) => s + g.lines.filter(y => y.lineId === pl.id || y.itemId === l.itemId).reduce((n, y) => n + y.qty, 0), 0);
+            const pv = pl.price ? Math.abs(100 * (l.price - pl.price) / pl.price) : 0; const out = pv > S.priceTolPct || (gq ? Math.abs(100 * (l.qty - gq) / gq) : 100) > S.qtyTolPct;
+            return out || x.status === 'On hold' ? [x.no, x.vendorInvNo, M.vendorName(x.vendorId), p.no, M.itemLabel(l.itemId), gq, l.qty, pl.price || 0, l.price, round(l.qty * l.price - gq * (pl.price || 0)), x.status] : null; }).filter(Boolean); }); },
+      totals: (r) => ['Total', '', '', '', '', '', '', '', '', round(sum(r, 9)), ''] },
+    { id: 'MM-R06', title: 'Purchase returns and debit notes', purpose: 'Goods returned to vendors with reasons and debit note values.',
+      filters: [D('from', 'From'), D('to', 'To'), SEL('ven', 'Vendor', venOpts), SEL('reason', 'Reason', ['Damaged in transit', 'Expired', 'Near expiry', 'Quality issue', 'Wrong item supplied', 'Product recall', 'Excess delivery'].map(s => [s, s]))],
+      columns: ['Return no.', 'Date', 'Vendor', 'Reason', 'Item', 'Batch', 'Qty', 'Value', 'Debit note', 'Status'],
+      rows: (f) => db.materialReturns.filter(r => inRange(r.date, f) && (!f.ven || r.vendorId === f.ven) && (!f.reason || r.reason === f.reason)).flatMap(r => r.lines.map(l => [r.no, fmtDate(r.date), M.vendorName(r.vendorId), r.reason, M.itemLabel(l.itemId), l.batch, l.qty, round(l.qty * l.cost), r.debitNote || '', r.status])),
+      totals: (r) => ['Total', '', '', '', '', '', sum(r, 6), round(sum(r, 7)), '', ''] },
+    { id: 'MM-R07', title: 'Stock on hand and valuation', purpose: 'Quantity and value per item and store, FIFO and weighted average side by side.',
+      filters: [SEL('wh', 'Store', whOpts), SEL('cat', 'Category', catOpts), SEL('type', 'Item type', ['Drug', 'Consumable', 'Reagent', 'General'].map(s => [s, s]))],
+      columns: ['Store', 'Item', 'Category', 'UOM', 'Qty', 'FIFO value', 'Weighted avg. value', 'Difference'],
+      rows: (f) => Object.values(Kit.groupBy(db.stock.filter(s => s.qty > 0 && (!f.wh || s.warehouseId === f.wh) && (!f.cat || M.item(s.itemId).category === f.cat) && (!f.type || M.item(s.itemId).type === f.type)), s => s.warehouseId + '|' + s.itemId))
+        .map(list => { const s = list[0], fv = M.fifoValue(list), wv = M.wavgValue(list); return [M.whName(s.warehouseId), M.itemLabel(s.itemId), M.item(s.itemId).category, M.item(s.itemId).uom, list.reduce((n, x) => n + x.qty, 0), round(fv), round(wv), round(wv - fv)]; }).sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1])),
+      totals: (r) => ['Total', '', '', '', sum(r, 4), round(sum(r, 5)), round(sum(r, 6)), round(sum(r, 7))] },
+    { id: 'MM-R08', title: 'Expiry report', purpose: 'Expired batches and batches expiring within the chosen window.',
+      filters: [SEL('wh', 'Store', whOpts), SEL('win', 'Expiring within', [['30', '30 days'], ['90', '90 days'], ['180', '180 days'], ['exp', 'Expired only']]), SEL('cat', 'Category', catOpts)],
+      columns: ['Store', 'Item', 'Batch', 'Expiry', 'Days left', 'Qty', 'Value at risk'],
+      rows: (f) => { const win = f.win || '90'; return db.stock.filter(s => s.qty > 0 && s.expiry && (!f.wh || s.warehouseId === f.wh) && (!f.cat || M.item(s.itemId).category === f.cat)).map(s => ({ s, d: Math.round((new Date(s.expiry) - new Date(db.TODAY)) / 86400000) }))
+          .filter(x => win === 'exp' ? x.d < 0 : x.d <= +win).sort((a, b) => a.d - b.d).map(x => [M.whName(x.s.warehouseId), M.itemLabel(x.s.itemId), x.s.batch, fmtDate(x.s.expiry), x.d, x.s.qty, round(x.s.qty * M.layerCost(x.s))]); },
+      totals: (r) => ['Total', '', '', '', '', sum(r, 5), round(sum(r, 6))] },
+    { id: 'MM-R09', title: 'Department consumption and transfers', purpose: 'Goods issued to wards and departments and stock moved between stores.',
+      filters: [D('from', 'From'), D('to', 'To'), SEL('wh', 'From store', whOpts), SEL('type', 'Type', [['Issue', 'Goods issue'], ['Transfer', 'Transfer']])],
+      columns: ['Document', 'Date', 'Type', 'From store', 'To', 'Item', 'Batch', 'Qty', 'Value', 'Status'],
+      rows: (f) => db.materialTransfers.filter(t => t.status !== 'Draft' && inRange(t.date, f) && (!f.wh || t.fromWh === f.wh) && (!f.type || t.type === f.type)).sort((a, b) => a.date.localeCompare(b.date))
+        .flatMap(t => t.lines.map(l => [t.no, fmtDate(t.date), t.type === 'Issue' ? 'Goods issue' : 'Transfer', M.whName(t.fromWh), t.type === 'Issue' ? (t.wardId ? M.wardName(t.wardId) : M.deptName(t.deptId)) : M.whName(t.toWh), M.itemLabel(l.itemId), l.batch, l.qty, round(l.qty * l.cost), t.status])),
+      totals: (r) => ['Total', '', '', '', '', '', '', sum(r, 7), round(sum(r, 8)), ''] },
+    { id: 'MM-R10', title: 'Stock count variance and adjustments', purpose: 'Posted stock adjustments from physical counts, gains and losses by item.',
+      filters: [D('from', 'From'), D('to', 'To'), SEL('wh', 'Store', whOpts), SEL('dir', 'Direction', [['gain', 'Gains'], ['loss', 'Losses']])],
+      columns: ['Adjustment', 'Date', 'Store', 'Count', 'Item', 'Batch', 'Qty', 'Value', 'Approved by'],
+      rows: (f) => (db.materialAdjustments || []).filter(a => inRange(a.date, f) && (!f.wh || a.warehouseId === f.wh) && (!f.dir || (f.dir === 'gain' ? a.qty > 0 : a.qty < 0))).sort((a, b) => a.no.localeCompare(b.no))
+        .map(a => [a.no, fmtDate(a.date), M.whName(a.warehouseId), (db.materialCounts.find(c => c.id === a.countId) || {}).no || '', M.itemLabel(a.itemId), a.batch, a.qty, round(a.qty * a.cost), a.by]),
+      totals: (r) => ['Net', '', '', '', '', '', sum(r, 6), round(sum(r, 7)), ''] },
+  ] });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pre-authorizations · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-insurance.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/insurance.js"></script>
+<style>
+.pa-steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.pa-steps > div { display: flex; flex-direction: column; gap: 6px; font-size: 12px; font-weight: 700; color: var(--mute); }
+.pa-steps i { height: 4px; border-radius: 4px; background: var(--line); }
+.pa-steps .done i { background: var(--success); } .pa-steps .on i { background: var(--primary-light); }
+.pa-steps .on, .pa-steps .done { color: var(--ink); }
+.pa-steps .ico { width: 13px; height: 13px; margin-inline-end: 4px; color: var(--success); }
+</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, drawer, confirm, field, showErrors, me, nowStamp, uid } = UI;
+  const I = Insurance, OPT = 'insurance.claims.pre';
+  const canAdd = can(OPT, 'add'), canEdit = can(OPT, 'edit'), canApr = can(OPT, 'approve');
+  if (!UI.page({ opt: OPT, title: 'Pre-authorizations', subtitle: 'Prepare requests with clinical attachments, send to the payer and track the decision.',
+    actions: `<button class="btn primary" id="newBtn" ${canAdd ? '' : 'disabled title="Needs Add permission"'}>${icon('plus')} New request</button>` })) return;
+
+  const CATALOG = db.services.map(s => [s.code, s.name, s.price]).concat(db.labTests.map(t => ['LAB-' + t.code, t.name, t.price]), db.radExams.map(x => ['RAD-' + x.code, x.name, x.price]));
+  const STEPS = ['Draft', 'Submitted', 'Query', 'Decision'];
+  const FINAL = (s) => /Approved|Partially approved|Denied|Cancelled|Expired/.test(s);
+  let tab = 'open', sel = UI.param('id') || null, q = '';
+  const tabList = () => [
+    { id: 'open', label: 'Open', count: db.insurancePreauths.filter(a => /Draft|Submitted|Query/.test(a.status)).length },
+    { id: 'Draft', label: 'Draft', count: db.insurancePreauths.filter(a => a.status === 'Draft').length },
+    { id: 'Submitted', label: 'Submitted', count: db.insurancePreauths.filter(a => a.status === 'Submitted').length },
+    { id: 'Query', label: 'Query', count: db.insurancePreauths.filter(a => a.status === 'Query').length },
+    { id: 'decided', label: 'Decided', count: db.insurancePreauths.filter(a => FINAL(a.status)).length },
+    { id: 'all', label: 'All', count: db.insurancePreauths.length }];
+  const inTab = (a) => tab === 'all' || (tab === 'open' ? /Draft|Submitted|Query/.test(a.status) : tab === 'decided' ? FINAL(a.status) : a.status === tab);
+  if (sel) { const a = db.insurancePreauths.find(x => x.id === sel); if (a && !inTab(a)) tab = 'all'; }
+
+  $('#page').innerHTML = `<div id="tabs" style="margin-bottom:12px"></div><div class="split"><div class="card list-pane"><div class="card-pad" style="padding-bottom:8px"><div class="search">${icon('search')}<input class="input" id="q" placeholder="Patient, MRN, request or payer" aria-label="Search pre-authorizations"></div></div><div id="list"></div></div><div id="detail"></div></div>`;
+  const drawTabs = () => Kit.tabs($('#tabs'), tabList(), tab, (t) => { tab = t; drawList(); });
+  $('#q').addEventListener('input', (e) => { q = e.target.value.trim().toLowerCase(); drawList(); });
+
+  function drawList() {
+    const list = db.insurancePreauths.filter(inTab).filter(a => !q || [a.no, Kit.ptName(a.patientId), (Kit.pt(a.patientId) || {}).mrn, I.payerName(a.payerId), a.payerRef].join(' ').toLowerCase().includes(q))
+      .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+    if (sel && !list.some(a => a.id === sel) && !db.insurancePreauths.some(a => a.id === sel)) sel = null;
+    if (!sel && list[0]) sel = list[0].id;
+    $('#list').innerHTML = list.length ? list.map(a => { const p = Kit.pt(a.patientId) || {}; return `<div class="qitem ${a.id === sel ? 'on' : ''}" data-id="${a.id}">${Kit.avatar(p, 'sm')}<div class="grow" style="min-width:0"><b style="font-size:13px">${esc(p.name)}</b><div class="xs muted">${esc(a.no)} · ${esc(I.payerCode(a.payerId))} · ${esc(Kit.when(a.createdAt))}</div><div class="xs" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(a.lines.map(l => l.desc).join(', '))}</div></div><div class="stack tight" style="align-items:flex-end">${I.status(a.status)}${a.urgency === 'Urgent' ? '<span class="badge b-warn nodot">Urgent</span>' : ''}</div></div>`; }).join('')
+      : `<div class="empty">${icon('shield-question-mark')}<b>No requests</b><span>Nothing in this list.</span></div>`;
+    $$('#list [data-id]').forEach(n => n.addEventListener('click', () => { sel = n.dataset.id; history.replaceState(null, '', '?id=' + sel); drawList(); }));
+    drawDetail();
+  }
+
+  function drawDetail() {
+    const a = db.insurancePreauths.find(x => x.id === sel), host = $('#detail');
+    if (!a) { host.innerHTML = `<div class="card"><div class="empty">${icon('shield-question-mark')}<b>Select a request</b><span>Or create a new pre-authorization request.</span></div></div>`; return; }
+    const p = Kit.pt(a.patientId), e = Kit.enc(a.encounterId), pl = Kit.plan(a.planId);
+    const ed = a.status === 'Draft' && canEdit;
+    const stepIdx = a.status === 'Draft' ? 0 : a.status === 'Submitted' ? 1 : a.status === 'Query' ? 2 : 3;
+    const openQ = a.queries.find(x => !x.response);
+    const inc = a.attachments.filter(x => x.included).length;
+    host.innerHTML = `<div class="card">
+      <div class="card-head"><div><h3>${icon('shield-question-mark')} ${esc(a.no)} ${I.status(a.status)} ${a.urgency === 'Urgent' ? '<span class="badge b-warn nodot">Urgent</span>' : ''}</h3><div class="small muted" style="margin-top:2px">Created by ${esc(a.createdBy)} · ${esc(UI.fmtDate(a.createdAt))}</div></div>
+        <div class="actions"><button class="btn sm" id="prBtn" ${can(OPT, 'view') ? '' : 'disabled'}>${icon('printer')} Request package</button></div></div>
+      <div class="card-pad stack">
+        ${Kit.patientBanner(p, e)}
+        <div class="pa-steps">${STEPS.map((s, i) => `<div class="${i < stepIdx ? 'done' : i === stepIdx ? 'on' : ''}"><i></i><span>${i < stepIdx ? icon('check') : ''}${s === 'Decision' && stepIdx === 3 ? esc(a.status) : s}</span></div>`).join('')}</div>
+        ${a.status === 'Query' && openQ ? `<div class="alert-cdss warn">${icon('message-circle-question')}<div class="grow">Payer query on ${esc(UI.fmtDate(openQ.at))}: ${esc(openQ.text)}</div></div>` : ''}
+        ${a.status === 'Denied' ? `<div class="alert-cdss">${icon('circle-x')}<div class="grow">Denied: ${esc((I.reason(a.denialReason) || {}).name || a.denialReason || '')}</div></div>` : ''}
+        <div class="grid g2"><dl class="kv tight">
+          <dt>Payer</dt><dd>${esc(I.payerName(a.payerId))}</dd><dt>Plan</dt><dd>${esc(pl ? pl.name : '')}</dd><dt>Policy</dt><dd class="mono">${esc(a.policyNo)}</dd><dt>Valid to</dt><dd>${esc(p && p.policyTo ? Kit.day(p.policyTo) : '')}</dd></dl>
+          <dl class="kv tight"><dt>Requested</dt><dd>${Kit.money(a.amount)}</dd><dt>Approved</dt><dd>${FINAL(a.status) && a.status !== 'Cancelled' ? Kit.money(a.approvedAmount) : '<span class="muted">Waiting</span>'}</dd><dt>Payer reference</dt><dd class="mono">${esc(a.payerRef || '-')}</dd><dt>Approval valid to</dt><dd>${a.validTo ? Kit.day(a.validTo) : '-'}</dd></dl></div>
+        <div><div class="section-t">Diagnosis</div><div class="chips">${a.diagnosis.map(d => `<span class="chip"><b class="mono">${esc(d)}</b> ${esc(I.icdName(d))}</span>`).join('')}</div></div>
+        <div><div class="section-t">Requested services</div><div class="table-wrap"><table class="tbl compact"><thead><tr><th>Code</th><th>Service</th><th class="num">Qty</th><th class="num">Unit price</th><th class="num">Amount</th></tr></thead><tbody>${a.lines.map(l => `<tr><td class="mono">${esc(l.code)}</td><td>${esc(l.desc)}</td><td class="num">${l.qty}</td><td class="num">${Kit.money(l.price, false)}</td><td class="num">${Kit.money(l.qty * l.price, false)}</td></tr>`).join('')}</tbody><tfoot><tr><td colspan="4"><b>Total</b></td><td class="num"><b>${Kit.money(a.amount, false)}</b></td></tr></tfoot></table></div></div>
+        <div><div class="row"><div class="section-t grow">Clinical attachment package</div><span class="small muted">${inc} of ${a.attachments.length} included</span></div>
+          <div class="list-rows">${a.attachments.map((x, i) => `<div>${icon(x.type === 'Diagnosis' ? 'stethoscope' : x.type === 'Orders' ? 'clipboard-list' : x.type === 'Results' ? 'flask-conical' : 'file-text')}<div class="grow"><b>${esc(x.type)}</b><div class="small muted">${esc(x.name)}</div></div><label class="check small"><input type="checkbox" data-att="${i}" ${x.included ? 'checked' : ''} ${(a.status === 'Draft' || a.status === 'Query') && canEdit ? '' : 'disabled'}> Include</label></div>`).join('')}</div></div>
+        <div><div class="section-t">Clinical justification</div><div class="note-box">${esc(a.clinicalNote || 'No note')}</div></div>
+        ${a.queries.length ? `<div><div class="section-t">Payer queries</div><div class="stack tight">${a.queries.map(x => `<div class="card card-pad"><div class="small"><b>${esc(x.from)}</b> · ${esc(UI.fmtDate(x.at))}</div><div>${esc(x.text)}</div>${x.response ? `<div class="banner ok" style="margin-top:8px">${icon('message-square-reply')}<span><b>${esc(x.respondedBy)}</b> · ${esc(UI.fmtDate(x.respondedAt))}: ${esc(x.response)}</span></div>` : '<div class="small" style="color:var(--warning);font-weight:700;margin-top:6px">Waiting for our response</div>'}</div>`).join('')}</div></div>` : ''}
+        <div><div class="section-t">Status history</div><div class="timeline">${a.history.slice().reverse().map(h => `<div class="tl-item ${/Approved/.test(h.status) ? 'ok' : /Denied|Cancelled/.test(h.status) ? 'err' : /Query|Partially/.test(h.status) ? 'warn' : ''}"><b>${esc(h.status)}</b> <span class="small">${esc(h.note || '')}</span><div class="meta">${esc(UI.fmtDate(h.at))} · ${esc(h.by)}</div></div>`).join('')}</div></div>
+      </div>
+      <div class="sticky-foot">
+        ${/Draft|Submitted|Query/.test(a.status) ? `<button class="btn danger" id="cxBtn" ${canEdit ? '' : 'disabled title="Needs Edit permission"'}>${icon('ban')} Cancel request</button>` : ''}<span class="grow"></span>
+        ${a.status === 'Draft' ? `<button class="btn" id="edBtn" ${ed ? '' : 'disabled title="Needs Edit permission"'}>${icon('pencil')} Edit</button><button class="btn primary" id="subBtn" ${canEdit ? (inc ? '' : 'disabled title="Include at least one attachment"') : 'disabled title="Needs Edit permission"'}>${icon('send')} Submit to payer</button>` : ''}
+        ${a.status === 'Query' ? `<button class="btn primary" id="rspBtn" ${canEdit ? '' : 'disabled title="Needs Edit permission"'}>${icon('message-square-reply')} Respond to query</button>` : ''}
+        ${a.status === 'Submitted' ? `<button class="btn primary" id="decBtn" ${canApr ? '' : 'disabled title="Needs Approve permission"'}>${icon('gavel')} Record payer decision</button>` : ''}
+      </div></div>`;
+    const on = (id, fn) => { const b = $('#' + id, host); if (b) b.addEventListener('click', fn); };
+    $$('[data-att]', host).forEach(c => c.addEventListener('change', () => { const x = a.attachments[+c.dataset.att]; x.included = c.checked; save(); audit(c.checked ? 'Attachment included' : 'Attachment removed', 'Pre-authorization', { id: a.id, label: a.no }, [[x.type, c.checked ? 'Excluded' : 'Included', c.checked ? 'Included' : 'Excluded']]); drawDetail(); }));
+    on('prBtn', () => printPkg(a));
+    on('edBtn', () => form(a));
+    on('subBtn', () => confirm({ title: 'Submit to the payer?', body: `${esc(a.no)} with ${inc} attachment(s) is sent to ${esc(I.payerName(a.payerId))}${(Kit.payer(a.payerId) || {}).tpa ? ' through ' + esc(Kit.payer(a.payerId).tpa) : ''}.`, tone: 'primary', confirm: 'Submit', impact: ['Sent by the agreed channel (portal upload or email). Direct API integration is 2nd phase.'],
+      onConfirm: () => setStatus(a, 'Submitted', 'Sent with ' + inc + ' attachment(s)') }));
+    on('cxBtn', () => confirm({ title: 'Cancel this request?', body: 'The request is withdrawn. The payer is informed if it was already sent.', confirm: 'Cancel request', reason: true, onConfirm: (reason) => setStatus(a, 'Cancelled', reason, reason) }));
+    on('rspBtn', () => respond(a));
+    on('decBtn', () => decision(a));
+  }
+
+  function setStatus(a, st, note, reason) {
+    const b = a.status; a.status = st;
+    a.history.push({ at: nowStamp(), by: me().displayName, status: st, note: note || '' });
+    save(); audit('Pre-authorization ' + st.toLowerCase(), 'Pre-authorization', { id: a.id, label: a.no }, [['Status', b, st]], reason ? { reason } : undefined);
+    toast(a.no + ': ' + st); drawTabs(); drawList();
+  }
+
+  function respond(a) {
+    const qq = a.queries.find(x => !x.response);
+    drawer({ title: 'Respond to payer query', sub: esc(a.no),
+      body: `<div class="alert-cdss warn" style="margin-bottom:14px">${icon('message-circle-question')}<div>${esc(qq ? qq.text : '')}</div></div>
+        <div class="err-summary hidden"></div>${field({ id: 'rTx', label: 'Response', type: 'textarea', req: true, full: true, max: 800 })}
+        <div class="section-t" style="margin-top:12px">Attachments sent with the response</div><div class="stack tight">${a.attachments.map((x, i) => `<label class="check"><input type="checkbox" data-a="${i}" ${x.included ? 'checked' : ''}> ${esc(x.type)}: ${esc(x.name)}</label>`).join('')}
+        <label class="check"><input type="checkbox" id="rNew"> Add: specialist examination findings</label></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="rGo" disabled>${icon('send')} Send response</button>`,
+      onMount: (el, close) => {
+        const t = $('#rTx', el), b = $('#rGo', el);
+        t.addEventListener('input', () => { b.disabled = t.value.trim().length < 5; });
+        b.addEventListener('click', () => {
+          $$('[data-a]', el).forEach(c => { a.attachments[+c.dataset.a].included = c.checked; });
+          if ($('#rNew', el).checked) a.attachments.push({ type: 'Notes', name: 'Specialist examination findings', included: true });
+          if (qq) Object.assign(qq, { response: t.value.trim(), respondedAt: nowStamp(), respondedBy: me().displayName });
+          close(); setStatus(a, 'Submitted', 'Query answered and resubmitted');
+        });
+      } });
+  }
+
+  function decision(a) {
+    drawer({ title: 'Record payer decision', sub: esc(a.no) + ' · requested ' + Kit.money(a.amount),
+      body: `<div class="err-summary hidden"></div><div class="form-grid">
+        ${field({ id: 'dSt', label: 'Decision', type: 'select', options: [['Approved', 'Approved'], ['Partially approved', 'Partially approved'], ['Denied', 'Denied'], ['Query', 'Query (payer needs more information)']], req: true })}
+        ${field({ id: 'dRef', label: 'Payer reference (approval no.)', max: 30 })}
+        ${field({ id: 'dAmt', label: 'Approved amount (KWD)', type: 'number', attrs: 'min="0" step="0.001"' })}
+        ${field({ id: 'dTo', label: 'Approval valid to', type: 'date', value: Kit.addDays(db.TODAY, 30) })}
+        ${field({ id: 'dRs', label: 'Denial reason', type: 'select', options: db.insuranceRejectReasons.filter(r => r.status !== 'Inactive').map(r => [r.code, r.code + ' · ' + r.name]) })}
+        ${field({ id: 'dNt', label: 'Payer note or query text', type: 'textarea', full: true, max: 600 })}
+      </div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="dGo" disabled>Save decision</button>`,
+      onMount: (el, close) => {
+        const st = $('#dSt', el), b = $('#dGo', el);
+        const vis = () => { const s = st.value; const show = (id, on) => { $('#' + id, el).closest('.field').classList.toggle('hidden', !on); };
+          show('dRef', /approved/i.test(s)); show('dAmt', /approved/i.test(s)); show('dTo', /approved/i.test(s)); show('dRs', s === 'Denied');
+          if (s === 'Approved') $('#dAmt', el).value = a.amount; b.disabled = !s; };
+        st.addEventListener('change', vis); vis();
+        b.addEventListener('click', () => {
+          const s = st.value, ref = $('#dRef', el).value.trim(), amt = Number($('#dAmt', el).value), note = $('#dNt', el).value.trim(), e = {};
+          if (/approved/i.test(s)) { if (!ref) e.dRef = 'Payer reference is required.'; if (!(amt > 0)) e.dAmt = 'Enter the approved amount.'; if (amt > a.amount + 0.0005) e.dAmt = 'Cannot be more than the requested amount.'; if (s === 'Partially approved' && amt >= a.amount) e.dAmt = 'A partial approval is less than the requested amount.'; if ($('#dTo', el).value < db.TODAY) e.dTo = 'Validity must be today or later.'; }
+          if (s === 'Denied' && !$('#dRs', el).value) e.dRs = 'Choose the denial reason.';
+          if (s === 'Query' && note.length < 5) e.dNt = 'Enter the payer query.';
+          if (!showErrors(el, e)) return;
+          if (/approved/i.test(s)) Object.assign(a, { payerRef: ref, approvedAmount: Math.round(amt * 1000) / 1000, validTo: $('#dTo', el).value });
+          if (s === 'Denied') Object.assign(a, { denialReason: $('#dRs', el).value, approvedAmount: 0 });
+          if (s === 'Query') a.queries.push({ at: nowStamp(), from: 'Payer', text: note, response: '', respondedAt: '', respondedBy: '' });
+          close(); setStatus(a, s, note || (s === 'Approved' ? 'Approved as requested' : s === 'Partially approved' ? 'Approved ' + Kit.money(amt) : ''));
+        });
+      } });
+  }
+
+  function form(a) {
+    const isNew = !a.id;
+    const p = Kit.pt(a.patientId);
+    let lines = JSON.parse(JSON.stringify(a.lines || [])), dxs = (a.diagnosis || []).slice();
+    const encs = db.encounters.filter(e => e.patientId === p.id).sort((x, y) => y.start.localeCompare(x.start)).slice(0, 8);
+    drawer({ title: isNew ? 'New pre-authorization request' : 'Edit ' + a.no, sub: esc(p.name) + ' · ' + esc(Kit.payerLabel(p)), wide: true,
+      body: `${Kit.patientBanner(p)}<div class="err-summary hidden" style="margin-top:12px"></div>
+        ${p.policyTo && p.policyTo < db.TODAY ? `<div class="banner warn" style="margin-top:12px">${icon('triangle-alert')}<span>Policy expired on ${Kit.day(p.policyTo)}. The payer is likely to deny the request.</span></div>` : ''}
+        <div class="form-grid" style="margin-top:14px">
+          ${field({ id: 'fEn', label: 'Visit', type: 'select', options: encs.map(e => [e.id, e.no + ' · ' + e.type + ' · ' + Kit.day(e.start) + ' · ' + Kit.docName(e.doctorId)]), value: a.encounterId || (encs[0] || {}).id, req: true })}
+          ${field({ id: 'fUr', label: 'Urgency', type: 'select', options: [['Routine', 'Routine'], ['Urgent', 'Urgent']], value: a.urgency || 'Routine', placeholder: false })}
+          <div class="field full"><label>Diagnosis (ICD-10)<span class="req">*</span></label><div class="row" style="gap:8px"><select class="input grow" id="fDx" aria-label="Add diagnosis"><option value="">Add a diagnosis</option>${db.icd10.map(x => `<option value="${x.code}">${x.code} · ${esc(x.name)}</option>`).join('')}</select></div><div class="chips" id="dxChips" style="margin-top:8px"></div><div class="err hidden" data-err="fDx"></div></div>
+          <div class="field full"><label>Requested services<span class="req">*</span></label><div class="row" style="gap:8px"><select class="input grow" id="fSv" aria-label="Service"><option value="">Choose a service</option>${CATALOG.map(c => `<option value="${c[0]}">${c[0]} · ${esc(c[1])} · ${Kit.money(c[2], false)}</option>`).join('')}</select><input class="input" id="fQt" type="number" min="1" value="1" style="width:80px" aria-label="Quantity"><button class="btn" id="fAdd" type="button">${icon('plus')} Add</button></div><div id="svT" style="margin-top:8px"></div><div class="err hidden" data-err="fSv"></div></div>
+          ${field({ id: 'fNote', label: 'Clinical justification', type: 'textarea', value: a.clinicalNote || '', full: true, req: true, max: 800 })}
+        </div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="fSave" disabled>${icon('save')} ${isNew ? 'Save draft' : 'Save changes'}</button>`,
+      onMount: (el, close) => {
+        const btn = $('#fSave', el);
+        const upd = () => { btn.disabled = !(dxs.length && lines.length && $('#fNote', el).value.trim().length >= 5 && $('#fEn', el).value); };
+        const drawDx = () => { $('#dxChips', el).innerHTML = dxs.map((d, i) => `<span class="chip sel"><b class="mono">${esc(d)}</b> ${esc(I.icdName(d))}<button type="button" data-rdx="${i}" aria-label="Remove ${esc(d)}">${icon('x')}</button></span>`).join('') || '<span class="small muted">No diagnosis yet</span>'; $$('[data-rdx]', el).forEach(b => b.addEventListener('click', () => { dxs.splice(+b.dataset.rdx, 1); drawDx(); })); upd(); };
+        const drawSv = () => { $('#svT', el).innerHTML = lines.length ? `<div class="table-wrap"><table class="tbl compact"><tbody>${lines.map((l, i) => `<tr><td class="mono">${esc(l.code)}</td><td>${esc(l.desc)}</td><td class="num">${l.qty} x ${Kit.money(l.price, false)}</td><td class="num"><b>${Kit.money(l.qty * l.price, false)}</b></td><td class="actions"><button type="button" class="btn xs danger" data-rs="${i}" aria-label="Remove">${icon('trash-2')}</button></td></tr>`).join('')}</tbody><tfoot><tr><td colspan="3">Estimated total</td><td class="num"><b>${Kit.money(Kit.sumBy(lines, l => l.qty * l.price), false)}</b></td><td></td></tr></tfoot></table></div>` : '<span class="small muted">No services yet</span>'; $$('[data-rs]', el).forEach(b => b.addEventListener('click', () => { lines.splice(+b.dataset.rs, 1); drawSv(); })); upd(); };
+        $('#fDx', el).addEventListener('change', (e) => { const v = e.target.value; if (v && !dxs.includes(v)) { if (dxs.length >= 4) toast('Up to 4 diagnoses', 'err'); else dxs.push(v); } e.target.value = ''; drawDx(); });
+        $('#fAdd', el).addEventListener('click', () => { const v = $('#fSv', el).value, qn = Math.max(1, Number($('#fQt', el).value) || 1); const c = CATALOG.find(x => x[0] === v); if (!c) { showErrors(el, { fSv: 'Choose a service to add.' }); return; } const ex = lines.find(l => l.code === v); if (ex) ex.qty += qn; else lines.push({ code: c[0], desc: c[1], qty: qn, price: c[2] }); $('#fSv', el).value = ''; drawSv(); });
+        $('#fNote', el).addEventListener('input', upd); $('#fEn', el).addEventListener('change', upd);
+        drawDx(); drawSv();
+        btn.addEventListener('click', () => {
+          const e = Kit.enc($('#fEn', el).value);
+          const orders = db.orders.filter(o => o.encounterId === e.id && /lab|rad/.test(o.type));
+          const res = orders.filter(o => o.results);
+          Object.assign(a, { encounterId: e.id, urgency: $('#fUr', el).value, diagnosis: dxs, lines, amount: Math.round(Kit.sumBy(lines, l => l.qty * l.price) * 1000) / 1000, clinicalNote: $('#fNote', el).value.trim() });
+          if (isNew) {
+            Object.assign(a, { id: uid('ipa'), no: Kit.nextNo('PA-26-', db.insurancePreauths), payerId: p.payerId, planId: p.planId, policyNo: p.policyNo, approvedAmount: 0, status: 'Draft', payerRef: '', validTo: '', denialReason: '', queries: [], createdBy: me().displayName, createdAt: nowStamp(),
+              history: [{ at: nowStamp(), by: me().displayName, status: 'Draft', note: 'Request created' }],
+              attachments: [{ type: 'Diagnosis', name: 'Diagnosis summary (ICD-10 ' + dxs.join(', ') + ')', included: true }, { type: 'Orders', name: 'Orders: ' + lines.map(l => l.desc).join(', '), included: true },
+                { type: 'Notes', name: (e.type === 'IPD' ? 'Admission note' : 'Consultation note') + ' ' + e.no, included: true }].concat(res.length ? [{ type: 'Results', name: res.length + ' result(s): ' + res.map(o => o.name).join(', '), included: true }] : orders.length ? [{ type: 'Orders', name: orders.length + ' open order(s) on this visit', included: false }] : []) });
+            db.insurancePreauths.unshift(a);
+          } else { a.attachments.forEach(x => { if (x.type === 'Diagnosis') x.name = 'Diagnosis summary (ICD-10 ' + dxs.join(', ') + ')'; if (x.type === 'Orders' && /^Orders:/.test(x.name)) x.name = 'Orders: ' + lines.map(l => l.desc).join(', '); }); }
+          save(); audit(isNew ? 'Created pre-authorization' : 'Updated pre-authorization', 'Pre-authorization', { id: a.id, label: a.no }, [['Amount', '', Kit.money(a.amount)], ['Services', '', lines.map(l => l.code).join(', ')]]);
+          close(); toast(isNew ? 'Draft saved' : 'Saved'); sel = a.id; tab = 'Draft'; drawTabs(); drawList();
+        });
+      } });
+  }
+
+  function printPkg(a) {
+    const p = Kit.pt(a.patientId), e = Kit.enc(a.encounterId);
+    Kit.printDoc({ title: 'Pre-authorization request ' + a.no, sub: 'Pre-authorization request to ' + I.payerName(a.payerId),
+      html: `<h3>Pre-authorization request ${esc(a.no)}</h3>
+        <table><tr><td><b>Patient</b></td><td>${esc(p.name)} · ${esc(p.mrn)} · Civil ID ${esc(p.civilId)}</td><td><b>Policy</b></td><td>${esc(a.policyNo)} (${esc((Kit.plan(a.planId) || {}).name || '')})</td></tr>
+        <tr><td><b>Visit</b></td><td>${esc(e ? e.no + ' · ' + e.type : '')}</td><td><b>Doctor</b></td><td>${esc(e ? Kit.docName(e.doctorId) : '')}</td></tr>
+        <tr><td><b>Diagnosis</b></td><td colspan="3">${a.diagnosis.map(d => esc(d + ' ' + I.icdName(d))).join('; ')}</td></tr><tr><td><b>Urgency</b></td><td>${esc(a.urgency)}</td><td><b>Status</b></td><td>${esc(a.status)}</td></tr></table>
+        <h3 style="margin-top:14px">Requested services</h3><table><tr><th>Code</th><th>Service</th><th>Qty</th><th>Amount (KWD)</th></tr>${a.lines.map(l => `<tr><td>${esc(l.code)}</td><td>${esc(l.desc)}</td><td>${l.qty}</td><td>${Kit.money(l.qty * l.price, false)}</td></tr>`).join('')}<tr><td colspan="3"><b>Total</b></td><td><b>${Kit.money(a.amount, false)}</b></td></tr></table>
+        <h3 style="margin-top:14px">Clinical justification</h3><p>${esc(a.clinicalNote)}</p>
+        <h3>Attachments</h3><ul>${a.attachments.filter(x => x.included).map(x => `<li>${esc(x.type)}: ${esc(x.name)}</li>`).join('')}</ul>` });
+    audit('Printed pre-authorization package', 'Pre-authorization', { id: a.id, label: a.no }, []);
+  }
+
+  $('#newBtn').addEventListener('click', () => Kit.pickPatient({ title: 'New pre-authorization: find patient', filter: (p) => !!p.planId, onPick: (p) => form({ patientId: p.id }) }));
+  drawTabs(); drawList();
+})();
+</script>
+</body>
+</html>

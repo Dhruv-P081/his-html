@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Referrals and transfers · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-emr.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/emr.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, me, nowStamp, field } = UI;
+  const OPT = 'emr.referral';
+  const dr = EMR.actingDoctor();
+  const pick = EMR.doctorPicker();
+  if (!UI.page({ opt: OPT, title: 'Referrals and transfers', subtitle: 'Specialty referral, consultation request and transfer of care. The receiving doctor accepts or declines.',
+    actions: `<div class="row">${pick.html}</div><button class="btn primary" id="new" ${can(OPT, 'add') ? '' : 'disabled title="Needs Add permission"'}>${icon('plus')} New referral</button>` })) return;
+  pick.wire();
+  const reason = (c) => (db.emrReferralReasons.find(r => r.code === c) || {}).name || c;
+  const TONE = { Pending: 'warn', Accepted: 'info', Declined: 'err', Completed: 'ok', Cancelled: 'neutral' };
+  const st = (s) => Kit.status(s, TONE[s]);
+  let tab = 'in';
+  const T = { in: r => r.toDoctorId === dr.id, out: r => r.fromDoctorId === dr.id, all: () => true };
+  const L = () => db.emrReferrals;
+  $('#page').innerHTML = `<div class="grid g4" style="margin-bottom:16px">
+      ${Kit.kpi('Waiting for my answer', L().filter(r => r.toDoctorId === dr.id && r.status === 'Pending').length, { icon: 'inbox', foot: L().filter(r => r.toDoctorId === dr.id && r.status === 'Pending' && r.urgency !== 'Routine').length + ' urgent or STAT' })}
+      ${Kit.kpi('Sent, not answered', L().filter(r => r.fromDoctorId === dr.id && r.status === 'Pending').length, { icon: 'send', foot: 'By ' + dr.name })}
+      ${Kit.kpi('Accepted, open', L().filter(r => r.status === 'Accepted').length, { icon: 'handshake', foot: 'All doctors' })}
+      ${Kit.kpi('Transfers this week', L().filter(r => r.type === 'Transfer' && r.createdAt >= Kit.addDays(db.TODAY, -7)).length, { icon: 'arrow-right-left', foot: L().filter(r => r.type === 'Consultation').length + ' consultation requests' })}
+    </div><div id="tabs" style="margin-bottom:12px"></div><div id="tbl"></div>`;
+  const drawTabs = () => Kit.tabs($('#tabs'), [['in', 'Received by me'], ['out', 'Sent by me'], ['all', 'All']].map(([id, label]) => ({ id, label, count: L().filter(T[id]).filter(r => id === 'all' || r.status === 'Pending').length })), tab, (t) => { tab = t; tb.redraw(); });
+  drawTabs();
+  const tb = UI.table($('#tbl'), {
+    columns: [
+      { label: 'Referral', sort: r => r.no, render: r => `<span class="mono b">${esc(r.no)}</span><div class="xs mute">${esc(r.type)}</div>` },
+      { label: 'Patient', sort: r => Kit.ptName(r.patientId), render: r => Kit.patientCell(Kit.pt(r.patientId)) },
+      { label: 'From', sort: r => Kit.docName(r.fromDoctorId), render: r => `<span class="small">${esc(Kit.docName(r.fromDoctorId))}</span>` },
+      { label: 'To', sort: r => r.toSpecialty, render: r => `<div class="cell-main"><b style="font-size:13px">${esc(r.toSpecialty)}</b><span>${esc(Kit.docName(r.toDoctorId))}</span></div>` },
+      { label: 'Reason', render: r => `<span class="small">${esc(reason(r.reasonCode))}</span>` },
+      { label: 'Urgency', sort: r => ({ STAT: 0, Urgent: 1 }[r.urgency] ?? 2), render: r => Kit.priority(r.urgency) },
+      { label: 'Sent', sort: r => r.createdAt, render: r => `<span class="small">${Kit.when(r.createdAt)}</span>` },
+      { label: 'Status', sort: r => r.status, render: r => st(r.status) },
+    ],
+    rows: () => L().filter(T[tab]).sort((a, b) => (a.status === 'Pending' ? 0 : 1) - (b.status === 'Pending' ? 0 : 1) || b.createdAt.localeCompare(a.createdAt)),
+    search: r => [r.no, Kit.ptName(r.patientId), r.toSpecialty, Kit.docName(r.toDoctorId), Kit.docName(r.fromDoctorId), r.notes].join(' '), searchPlaceholder: 'Referral no, patient, specialty or doctor',
+    filters: [{ label: 'Type', options: [['Referral', 'Specialty referral'], ['Consultation', 'Consultation request'], ['Transfer', 'Transfer']], test: (r, v) => r.type === v }, { label: 'Status', options: Object.keys(TONE).map(s => [s, s]), test: (r, v) => r.status === v }, { label: 'Urgency', options: [['STAT', 'STAT'], ['Urgent', 'Urgent'], ['Routine', 'Routine']], test: (r, v) => r.urgency === v }],
+    onRow: (r) => view(r), empty: 'No referrals in this list',
+  });
+  const refresh = () => { drawTabs(); tb.redraw(); };
+
+  function view(r) {
+    const p = Kit.pt(r.patientId), e = Kit.enc(r.encounterId) || {};
+    const recv = r.toDoctorId === dr.id, sender = r.fromDoctorId === dr.id;
+    const canAns = can(OPT, 'approve') && recv;
+    const steps = [['Sent', r.createdAt, r.createdBy || Kit.docName(r.fromDoctorId), 'ok']];
+    if (r.respondedAt) steps.push([r.status === 'Declined' ? 'Declined' : 'Accepted', r.respondedAt, Kit.docName(r.toDoctorId) + (r.status !== 'Completed' && r.response ? ': ' + r.response : ''), r.status === 'Declined' ? 'err' : 'ok']);
+    if (r.status === 'Completed') steps.push(['Completed', r.completedAt || r.respondedAt, r.response, 'ok']);
+    if (r.status === 'Cancelled') steps.push(['Cancelled', r.cancelledAt || '', r.cancelReason, 'err']);
+    if (r.status === 'Pending') steps.push(['Waiting for ' + Kit.docName(r.toDoctorId), '', '', 'warn']);
+    const d = UI.drawer({ title: `${r.type} ${r.no}`, sub: `${esc(Kit.docName(r.fromDoctorId))} to ${esc(Kit.docName(r.toDoctorId))} (${esc(r.toSpecialty)})`, wide: true,
+      body: `${Kit.patientBanner(p, e)}<div class="grid g2"><dl class="kv"><dt>Status</dt><dd>${st(r.status)}</dd><dt>Type</dt><dd>${esc(r.type)}</dd><dt>Urgency</dt><dd>${Kit.priority(r.urgency)}</dd><dt>Reason</dt><dd>${esc(reason(r.reasonCode))}</dd>${r.toWard ? `<dt>Transfer to</dt><dd>${esc((Kit.ward(r.toWard) || {}).name || '')}</dd>` : ''}<dt>Visit</dt><dd>${esc(e.type || '')} ${esc(e.no || '')}</dd><dt>Clinical summary</dt><dd style="font-weight:500">${esc(r.notes)}</dd></dl>
+        <div class="timeline">${steps.map(s => `<div class="tl-item ${s[3]}"><b>${esc(s[0])}</b><div class="meta">${s[1] ? UI.fmtDate(s[1]) + ' · ' : ''}${esc(s[2] || '')}</div></div>`).join('')}</div></div>
+        ${r.status === 'Pending' && !recv ? `<div class="banner info" style="margin-top:12px">${icon('info')}<span>Only the receiving doctor (${esc(Kit.docName(r.toDoctorId))}) can accept or decline.</span></div>` : ''}
+        ${r.status === 'Accepted' && recv ? `<div class="field" style="margin-top:14px"><label for="rep">Consultation reply<span class="req">*</span></label><textarea class="input" id="rep" placeholder="Findings, advice and plan for the referring doctor"></textarea></div>` : ''}`,
+      foot: `${r.status === 'Pending' && sender ? `<button class="btn danger" id="rCx" ${can(OPT, 'cancel') ? '' : 'disabled title="Needs Cancel permission"'}>Cancel referral</button>` : ''}<span class="grow"></span>
+        ${e.id ? `<a class="btn" href="${R('emr/console.html?enc=' + e.id)}">Open console</a>` : ''}<button class="btn" data-close>Close</button>
+        ${r.status === 'Pending' && recv ? `<button class="btn danger" id="rDe" ${canAns ? '' : 'disabled title="Needs Approve permission"'}>Decline</button><button class="btn success" id="rAc" ${canAns ? '' : 'disabled title="Needs Approve permission"'}>${icon('check')} Accept</button>` : ''}
+        ${r.status === 'Accepted' && recv ? `<button class="btn primary" id="rDone" disabled ${can(OPT, 'edit') ? '' : 'title="Needs Edit permission"'}>${icon('check-check')} Complete with reply</button>` : ''}` });
+    const on = (id, f) => { const b = $(id, d.el); if (b) b.addEventListener('click', f); };
+    on('#rAc', () => { d.close(); UI.confirm({ title: 'Accept ' + r.type.toLowerCase() + '?', tone: 'primary', icon: 'handshake', confirm: 'Accept', body: `${esc(p.name)} · ${esc(reason(r.reasonCode))}`, impact: r.type === 'Transfer' ? ['Care of the patient moves to you. Bed transfer is completed by Reception (ADT).'] : ['The referring doctor is informed.'],
+      extra: `<div class="field" style="margin-top:12px"><label for="acN">Note to the referring doctor</label><input class="input" id="acN" value="Accepted. Will see the patient today."></div>`,
+      onConfirm: () => { r.status = 'Accepted'; r.respondedAt = nowStamp(); r.response = ($('#acN') || {}).value || ''; save(); audit('Referral accepted', 'Referral', { id: r.id, label: r.no + ' · ' + p.name }, [['Status', 'Pending', 'Accepted']]); toast('Referral accepted'); refresh(); } }); });
+    on('#rDe', () => { d.close(); UI.confirm({ title: 'Decline ' + r.type.toLowerCase() + '?', body: `${esc(p.name)}. The referring doctor sees your reason.`, reason: true, confirm: 'Decline',
+      onConfirm: (why) => { r.status = 'Declined'; r.respondedAt = nowStamp(); r.response = why; save(); audit('Referral declined', 'Referral', { id: r.id, label: r.no + ' · ' + p.name }, [['Status', 'Pending', 'Declined']], { reason: why }); toast('Referral declined'); refresh(); } }); });
+    on('#rCx', () => { d.close(); UI.confirm({ title: 'Cancel referral ' + r.no + '?', body: 'The receiving doctor no longer sees it as pending.', reason: true, confirm: 'Cancel referral',
+      onConfirm: (why) => { r.status = 'Cancelled'; r.cancelReason = why; r.cancelledAt = nowStamp(); save(); audit('Referral cancelled', 'Referral', { id: r.id, label: r.no + ' · ' + p.name }, [['Status', 'Pending', 'Cancelled']], { reason: why }); toast('Referral cancelled'); refresh(); } }); });
+    const rep = $('#rep', d.el); if (rep) rep.addEventListener('input', () => { $('#rDone', d.el).disabled = !can(OPT, 'edit') || rep.value.trim().length < 5; });
+    on('#rDone', () => { r.status = 'Completed'; r.response = rep.value.trim(); r.completedAt = nowStamp(); save(); audit('Referral completed', 'Referral', { id: r.id, label: r.no + ' · ' + p.name }, [['Status', 'Accepted', 'Completed']]); d.close(); toast('Reply sent and referral completed'); refresh(); });
+  }
+
+  function create(enc0) {
+    let pt = enc0 ? Kit.pt(enc0.patientId) : null;
+    const specs = Array.from(new Set(EMR.clinicalDoctors().map(d => d.specialty))).filter(s => s !== dr.specialty || true);
+    UI.drawer({ title: 'New referral or transfer', sub: 'Referring doctor: ' + esc(dr.name), wide: false,
+      body: `<div class="err-summary hidden"></div><div class="form-grid">
+        <div class="field full"><label>Patient<span class="req">*</span></label><div class="row" id="nPt"></div></div>
+        ${field({ id: 'nEnc', label: 'Visit', type: 'select', req: true, options: [], full: true })}
+        <div class="field full"><label>Type<span class="req">*</span></label><div id="nType"></div></div>
+        ${field({ id: 'nSpec', label: 'To specialty', type: 'select', req: true, options: specs.map(s => [s, s]) })}
+        ${field({ id: 'nDoc', label: 'To doctor', type: 'select', req: true, options: [] })}
+        ${field({ id: 'nWard', label: 'Transfer to ward', type: 'select', options: db.wards.map(w => [w.id, w.name]), placeholder: 'Same ward' })}
+        ${field({ id: 'nReason', label: 'Reason', type: 'select', req: true, options: [] })}
+        ${field({ id: 'nUrg', label: 'Urgency', type: 'select', options: [['Routine', 'Routine'], ['Urgent', 'Urgent (same day)'], ['STAT', 'STAT (within 1 hour)']], value: 'Routine', placeholder: false })}
+        ${field({ id: 'nNotes', label: 'Clinical summary and question', type: 'textarea', req: true, full: true, max: 1000, hint: 'At least 15 characters. Include findings and what you are asking.' })}</div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="nGo" disabled>${icon('send')} Send</button>`,
+      onMount: (el, close) => {
+        let type = 'Referral';
+        const drawPt = () => { $('#nPt', el).innerHTML = pt ? `${Kit.patientCell(pt)}<span class="grow"></span>${enc0 ? '' : '<button class="btn xs" id="nPick">Change</button>'}` : `<button class="btn" id="nPick">${icon('search')} Choose patient</button>`;
+          const b = $('#nPick', el); if (b) b.addEventListener('click', () => Kit.pickPatient({ onPick: (x) => { pt = x; drawPt(); drawEnc(); ok(); } })); };
+        const drawEnc = () => { const es = pt ? db.encounters.filter(e => e.patientId === pt.id).sort((a, b) => b.start.localeCompare(a.start)).slice(0, 8) : [];
+          $('#nEnc', el).innerHTML = es.map(e => `<option value="${e.id}" ${enc0 && e.id === enc0.id ? 'selected' : ''}>${esc(e.type)} ${esc(e.no)} · ${Kit.day(e.start)} · ${esc(Kit.docName(e.doctorId))}</option>`).join('') || '<option value="">No visits</option>'; };
+        const drawDoc = () => { const s = $('#nSpec', el).value; $('#nDoc', el).innerHTML = '<option value="">Select</option>' + EMR.clinicalDoctors().filter(d => d.specialty === s && d.id !== dr.id).map(d => `<option value="${d.id}">${esc(d.name)} · ${esc(d.grade)}</option>`).join(''); };
+        const drawReason = () => { $('#nReason', el).innerHTML = '<option value="">Select</option>' + db.emrReferralReasons.filter(r => r.status !== 'Inactive' && (r.type === type || r.type === 'Referral' && type === 'Consultation')).map(r => `<option value="${r.code}">${esc(r.name)}</option>`).join(''); $('#nWard', el).closest('.field').classList.toggle('hidden', type !== 'Transfer'); };
+        Kit.seg($('#nType', el), [['Referral', 'Specialty referral', 'arrow-up-right'], ['Consultation', 'Consultation request', 'messages-square'], ['Transfer', 'Transfer of care', 'arrow-right-left']], type, (v) => { type = v; drawReason(); ok(); });
+        const ok = () => { $('#nGo', el).disabled = !(can(OPT, 'add') && pt && $('#nEnc', el).value && $('#nSpec', el).value && $('#nDoc', el).value && $('#nReason', el).value && $('#nNotes', el).value.trim().length >= 15); };
+        $('#nSpec', el).addEventListener('change', () => { drawDoc(); ok(); });
+        ['input', 'change'].forEach(ev => el.addEventListener(ev, ok));
+        drawPt(); drawEnc(); drawDoc(); drawReason();
+        $('#nGo', el).addEventListener('click', () => {
+          const r = { id: UI.uid('rf'), no: Kit.nextNo('REF-26-', db.emrReferrals), type, patientId: pt.id, encounterId: $('#nEnc', el).value, fromDoctorId: dr.id, toDoctorId: $('#nDoc', el).value, toSpecialty: $('#nSpec', el).value, toWard: type === 'Transfer' ? $('#nWard', el).value : '',
+            reasonCode: $('#nReason', el).value, urgency: $('#nUrg', el).value, notes: $('#nNotes', el).value.trim(), status: 'Pending', createdAt: nowStamp(), createdBy: me().displayName, respondedAt: '', response: '' };
+          db.emrReferrals.push(r); save(); audit(type + ' sent', 'Referral', { id: r.id, label: r.no + ' · ' + pt.name }, [['To', '', Kit.docName(r.toDoctorId) + ' (' + r.toSpecialty + ')']]);
+          close(); toast(type + ' ' + r.no + ' sent to ' + Kit.docName(r.toDoctorId)); tab = 'out'; refresh();
+        });
+      } });
+  }
+  $('#new').addEventListener('click', () => create(null));
+  if (UI.param('new') && can(OPT, 'add')) create(Kit.enc(UI.param('enc')));
+  const pre = db.emrReferrals.find(r => r.id === UI.param('id')); if (pre) view(pre);
+})();
+</script>
+</body>
+</html>

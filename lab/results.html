@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Result entry and validation · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-lab.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/lab.js"></script>
+<style>.res-in{height:32px;max-width:130px;font-weight:700}.res-in.crit{border-color:var(--error);background:var(--error-bg);color:var(--error)}.res-in.hi,.res-in.lo{border-color:var(--warning)}.sens select{height:30px;width:90px}.bt-in{height:30px;width:86px;font-weight:700}</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, nowStamp } = UI;
+  const OPT = 'lab.work.result';
+  if (!UI.page({ opt: OPT, title: 'Result entry and validation', subtitle: 'Enter results individually or in batch, check flags and deltas, verify (technologist) and approve with an electronic signature (pathologist).',
+    actions: `<div id="mode"></div>` })) return;
+  const canAdd = can(OPT, 'add'), canEdit = can(OPT, 'edit'), canVerify = can(OPT, 'verify'), canApprove = can(OPT, 'approve');
+  const TABS = [['enter', 'To enter', o => ['received', 'progress'].includes(Lab.stageKey(o))], ['verify', 'To verify', o => Lab.stageKey(o) === 'resulted'], ['approve', 'To approve', o => Lab.stageKey(o) === 'tech'], ['done', 'Approved today', o => o.status === 'Verified' && (o.verifiedAt || '').startsWith(db.TODAY)]];
+  let mode = 'single', tab = 'enter', cur = null, sec = '', q = '';
+  const isMicro = (o) => Lab.test(o.code).section === 'Microbiology';
+  const COMMENTS = ['Result repeated and confirmed.', 'Haemolysed sample: interpret with caution.', 'Clinical correlation is suggested.', 'Please send a repeat sample.', 'Smear reviewed by the technologist.'];
+  /* Parameter rows with the patient's reference range. */
+  function params(o) {
+    const p = Kit.pt(o.patientId);
+    const base = (db.labParams && db.labParams[o.code]) || (o.results ? o.results.map(r => [r.name, r.unit, r.low, r.high]) : [['Result', '', '', '']]);
+    return base.map(([name, unit, lo, hi]) => {
+      const r = Lab.range(o.code, name, p) || { low: lo, high: hi, unit };
+      const text = (r.low === r.high) || r.low === '' || r.low == null;
+      const cur = (o.results || []).find(x => x.name === name);
+      return { name, unit: r.unit || unit, r, text, value: cur ? cur.value : '' };
+    });
+  }
+  const evalRow = (row, v) => row.text ? { flag: v && !/^neg|^nil|^normal|^0$/i.test(String(v)) && row.name !== 'pH' ? 'A' : '', critical: false } : Lab.evaluate(v, row.r);
+
+  /* ---------- Mode switch ---------- */
+  Kit.seg($('#mode'), [['single', 'Individual', 'user'], ['batch', 'Batch', 'rows-3']], mode, (m) => { mode = m; render(); });
+  function render() { mode === 'single' ? renderSingle() : renderBatch(); }
+
+  /* ---------- Individual ---------- */
+  function renderSingle() {
+    $('#page').innerHTML = `<div class="split"><div class="card list-pane"><div style="padding:12px 14px 0" id="lTabs"></div>
+      <div class="stack tight" style="padding:10px 14px"><div class="search">${icon('search')}<input class="input" id="lQ" placeholder="Patient, MRN, accession" aria-label="Search" value="${esc(q)}"></div>
+      <select class="input" id="lSec" aria-label="Section"><option value="">All sections</option>${[...new Set(db.labTests.map(t => t.section))].map(s => `<option ${s === sec ? 'selected' : ''}>${esc(s)}</option>`).join('')}</select></div><div id="lList"></div></div><div id="lBody"></div></div>`;
+    $('#lQ').addEventListener('input', (e) => { q = e.target.value.trim(); drawList(); });
+    $('#lSec').addEventListener('change', (e) => { sec = e.target.value; drawList(); });
+    drawList(); drawBody();
+  }
+  const listRows = () => Lab.orders().filter(TABS.find(t => t[0] === tab)[2]).filter(o => (!sec || Lab.test(o.code).section === sec) && (!q || [Kit.ptName(o.patientId), (Kit.pt(o.patientId) || {}).mrn, Lab.acc(o), o.name].join(' ').toLowerCase().includes(q.toLowerCase())))
+    .sort((a, b) => ({ STAT: 0, Urgent: 1 }[a.priority] ?? 2) - ({ STAT: 0, Urgent: 1 }[b.priority] ?? 2) || (a.orderedAt < b.orderedAt ? -1 : 1));
+  function drawList() {
+    Kit.tabs($('#lTabs'), TABS.map(([id, label, f]) => ({ id, label, count: Lab.orders().filter(f).length })), tab, (t) => { tab = t; cur = null; drawList(); drawBody(); });
+    const rows = listRows();
+    if (!cur || !rows.find(o => o.id === cur)) cur = rows[0] ? rows[0].id : null;
+    $('#lList').innerHTML = rows.length ? rows.map(o => { const p = Kit.pt(o.patientId) || {}, crit = (o.results || []).some(r => r.critical);
+      return `<div class="qitem ${o.id === cur ? 'on' : ''}" data-o="${o.id}"><div class="grow" style="min-width:0"><b style="font-size:13px">${esc(o.name)}</b><div class="xs muted">${esc(p.name)} · ${esc(p.mrn)}</div><div class="xs muted"><span class="mono">${esc(Lab.acc(o))}</span>${o.rack ? ' · rack ' + esc(o.rack) : ''}</div></div>
+        <div class="stack tight" style="align-items:flex-end">${o.priority !== 'Routine' ? Kit.priority(o.priority) : ''}${crit ? '<span class="flag-c">Critical</span>' : ''}${Lab.tat(o).late && Lab.isOpen(o) ? '<span class="badge b-err nodot">Late</span>' : ''}</div></div>`; }).join('')
+      : `<div class="empty">${icon('inbox')}<b>Nothing in this list</b></div>`;
+    $$('[data-o]', $('#lList')).forEach(n => n.addEventListener('click', () => { cur = n.dataset.o; drawList(); drawBody(); }));
+  }
+  /* Keep showing the order after a workflow step (it moves to another tab). */
+  function follow(o) { const t = TABS.find(x => x[2](o)); if (t) tab = t[0]; cur = o.id; drawList(); drawBody(); }
+  function drawBody() {
+    const host = $('#lBody');
+    const o = cur && db.orders.find(x => x.id === cur);
+    if (!o) { host.innerHTML = `<div class="card"><div class="empty">${icon('microscope')}<b>Select a test</b><span>Pick an order from the worklist.</span></div></div>`; return; }
+    const p = Kit.pt(o.patientId), e = Kit.enc(o.encounterId), t = Lab.test(o.code), k = Lab.stageKey(o);
+    const editable = ['received', 'progress'].includes(k) && (canAdd || canEdit);
+    const rows = params(o);
+    host.innerHTML = `${Kit.patientBanner(p, e)}
+      <div class="card" style="margin-bottom:16px"><div class="card-head"><div class="grow"><h3>${icon('flask-conical')} ${esc(t.name)} ${Lab.stageBadge(o)}</h3>
+        <div class="small muted" style="margin-top:2px"><span class="mono">${esc(Lab.acc(o))}</span> · ${esc(t.section)} · ${esc(t.specimen)} · received ${esc(Kit.when(o.receivedAt))}${o.rack ? ' · rack ' + esc(o.rack) : ''} · ordered by ${esc(Kit.docName(o.by))}</div></div>
+        <div style="width:170px">${Lab.tatCell(o)}</div></div>
+        <div id="alerts" class="stack" style="gap:8px;padding:0 18px"></div>
+        <div id="grid"></div></div>
+      <div class="card" style="margin-bottom:16px"><div class="card-head"><h3>${icon('notebook-pen')} Report writing and result upload</h3></div><div class="card-pad">
+          <div class="chips" style="margin-bottom:8px">${COMMENTS.map((c, i) => `<button class="chip" data-cm="${i}" ${editable ? '' : 'disabled'}>${icon('plus')} ${esc(c)}</button>`).join('')}</div>
+          <textarea class="input" id="cmt" rows="3" maxlength="1000" aria-label="Report comments" placeholder="Comments printed on the report" ${editable ? '' : 'readonly'}>${esc(o.comments || '')}</textarea>
+          <div id="upl" style="margin-top:12px"></div></div></div>
+      <div class="card"><div class="card-head"><h3>${icon('shield-check')} Validation</h3></div><div class="card-pad" id="wf"></div><div class="card-foot" id="wfFoot"></div></div>`;
+    // Results grid
+    const grid = $('#grid', host);
+    if (isMicro(o)) drawMicro(o, grid, editable); else {
+      grid.innerHTML = `<div class="table-wrap"><table class="tbl"><thead><tr><th>Parameter</th><th>Result</th><th>Unit</th><th>Reference range</th><th>Flag</th><th>Previous</th><th>Delta</th></tr></thead><tbody>
+        ${rows.map((r, i) => { const pv = r.text ? null : Lab.prev(o, r.name); return `<tr><td><b>${esc(r.name)}</b></td><td><input class="input res-in" data-i="${i}" value="${esc(r.value)}" ${editable ? '' : 'readonly'} ${r.text ? '' : 'inputmode="decimal"'} aria-label="${esc(r.name)} result"></td><td>${esc(r.unit)}</td>
+          <td>${r.text ? '<span class="small muted">Negative / normal</span>' : `${esc(Lab.refText(r.r.low, r.r.high))}${r.r.critLow != null && r.r.critLow !== '' || r.r.critHigh != null && r.r.critHigh !== '' ? `<div class="xs muted">Critical ${r.r.critLow != null && r.r.critLow !== '' ? '< ' + r.r.critLow : ''}${r.r.critLow != null && r.r.critLow !== '' && r.r.critHigh != null && r.r.critHigh !== '' ? ' or ' : ''}${r.r.critHigh != null && r.r.critHigh !== '' ? '> ' + r.r.critHigh : ''}</div>` : ''}${r.r.gender && r.r.gender !== 'All' ? `<div class="xs muted">${esc(r.r.gender)} range</div>` : ''}`}</td>
+          <td data-f="${i}"></td><td>${pv ? `${esc(pv.value)}<div class="xs muted">${esc(Kit.day(pv.at))}</div>` : '<span class="mute small">None</span>'}</td><td data-d="${i}"></td></tr>`; }).join('')}</tbody></table></div>`;
+    }
+    const live = () => {
+      if (isMicro(o)) return microLive(o, host);
+      const alerts = [];
+      rows.forEach((r, i) => {
+        const inp = $(`[data-i="${i}"]`, host), v = inp.value.trim(), ev = evalRow(r, v);
+        inp.classList.toggle('crit', ev.critical); inp.classList.toggle('hi', !ev.critical && ev.flag === 'H'); inp.classList.toggle('lo', !ev.critical && ev.flag === 'L');
+        $(`[data-f="${i}"]`, host).innerHTML = v === '' ? '<span class="mute">-</span>' : Lab.flagHtml(ev.flag, ev.critical);
+        const pv = r.text ? null : Lab.prev(o, r.name), d = Lab.delta(v, pv, r.r);
+        $(`[data-d="${i}"]`, host).innerHTML = d ? `<span class="badge ${d.fail ? 'b-err' : 'b-neutral'} nodot">${d.pct > 0 ? '+' : ''}${d.pct}%</span>${d.fail ? `<div class="xs flag-h">Over ${d.lim}%</div>` : ''}` : '<span class="mute">-</span>';
+        if (ev.critical) alerts.push(`<div class="alert-cdss">${icon('siren')}<div>Critical value: ${esc(r.name)} ${esc(v)} ${esc(r.unit)}. ${k === 'final' ? '' : 'When submitted it appears on the critical results console for telephone notification.'}</div></div>`);
+        if (d && d.fail) alerts.push(`<div class="alert-cdss warn">${icon('git-compare-arrows')}<div>Delta check: ${esc(r.name)} changed ${d.pct > 0 ? '+' : ''}${d.pct}% since ${esc(Kit.day(pv.at))} (limit ${d.lim}%). Check sample identity or repeat before release.</div></div>`);
+      });
+      $('#alerts', host).innerHTML = alerts.length ? alerts.join('') + '<div></div>' : '';
+      const ready = rows.every((r, i) => $(`[data-i="${i}"]`, host).value.trim() !== '');
+      const sb = $('#wfSubmit', host); if (sb) sb.disabled = !canAdd || !ready;
+    };
+    $$('.res-in', host).forEach(i => i.addEventListener('input', live));
+    $$('[data-cm]', host).forEach(b => b.addEventListener('click', () => { const t2 = $('#cmt', host); t2.value = (t2.value ? t2.value.trim() + ' ' : '') + COMMENTS[+b.dataset.cm]; }));
+    // Upload
+    const drawUpl = () => {
+      $('#upl', host).innerHTML = o.attachment ? `<div class="upload"><div class="thumb">${icon('file-text')}</div><div class="grow"><b>${esc(o.attachment.name)}</b><div class="small muted">${esc(o.attachment.size)} · uploaded by ${esc(o.attachment.by)} ${esc(Kit.when(o.attachment.at))}</div></div>${editable ? `<button class="btn sm danger" id="uRm">${icon('trash-2')} Remove</button>` : ''}</div>`
+        : `<div class="upload"><div class="thumb">${icon('upload')}</div><div class="grow"><b>Attach a result PDF</b><div class="small muted">From an analyser or an outsource laboratory. Up to 10 MB, shown to the doctor with the report.</div></div><label class="btn sm ${editable ? '' : 'disabled'}">${icon('paperclip')} Choose file<input type="file" id="uIn" accept="application/pdf,.pdf" hidden ${editable ? '' : 'disabled'}></label></div><div class="err hidden" data-err="uIn"></div>`;
+      const inp = $('#uIn', host);
+      if (inp) inp.addEventListener('change', () => { const f = inp.files[0]; if (!f) return; if (!/\.pdf$/i.test(f.name)) { UI.showErrors(host, { uIn: 'Only PDF files can be attached.' }); return; } if (f.size > 10 * 1048576) { UI.showErrors(host, { uIn: 'The file is larger than 10 MB.' }); return; } o.attachment = { name: f.name, size: Math.max(1, Math.round(f.size / 1024)) + ' KB', by: Lab.meName(), at: nowStamp() }; save(); audit('Result file uploaded', 'Lab order', { id: o.id, label: o.no }, [['Attachment', '', f.name]]); drawUpl(); });
+      const rm = $('#uRm', host); if (rm) rm.addEventListener('click', () => { const n = o.attachment.name; delete o.attachment; save(); audit('Result file removed', 'Lab order', { id: o.id, label: o.no }, [['Attachment', n, '']]); drawUpl(); });
+    };
+    drawUpl();
+    // Workflow
+    const wf = $('#wf', host), foot = $('#wfFoot', host);
+    const steps = [['Entered', o.resultedBy, o.resultedAt], ['Verified (technologist)', o.techVerifiedBy, o.techVerifiedAt], ['Approved (pathologist)', o.verifiedBy, o.verifiedAt]];
+    wf.innerHTML = `<div class="grid g3">${steps.map(([l, by, at]) => `<div class="note-box"><div class="small muted">${esc(l)}</div><b>${by ? esc(by) : '<span class="mute">Pending</span>'}</b>${at ? `<div class="xs muted">${esc(UI.fmtDate(at))}</div>` : ''}</div>`).join('')}</div>
+      ${k === 'resulted' && Lab.isMe(o.resultedBy) ? `<div class="banner warn" style="margin-top:12px">${icon('user-x')}<span>You entered these results. Another technologist must verify them.</span></div>` : ''}
+      ${k === 'tech' && (Lab.isMe(o.resultedBy) || Lab.isMe(o.techVerifiedBy)) ? `<div class="banner warn" style="margin-top:12px">${icon('user-x')}<span>No self-approval: you entered or verified these results, so another pathologist must approve them.</span></div>` : ''}
+      ${o.returnNote ? `<div class="banner info" style="margin-top:12px">${icon('undo-2')}<span>Returned for correction: ${esc(o.returnNote)}</span></div>` : ''}`;
+    const noPerm = (p2) => `disabled title="Needs ${p2} permission"`;
+    if (editable) foot.innerHTML = `<span class="small muted grow">Results are saved as a draft until you submit them.</span><button class="btn" id="wfDraft" ${canAdd || canEdit ? '' : noPerm('Edit')}>${icon('save')} Save draft</button><button class="btn primary" id="wfSubmit" disabled>${icon('send')} Submit results</button>`;
+    else if (k === 'resulted') foot.innerHTML = `<button class="btn danger" id="wfReturn" ${canVerify ? '' : noPerm('Verify')}>${icon('undo-2')} Return for correction</button><span class="grow"></span><button class="btn primary" id="wfVerify" ${!canVerify ? noPerm('Verify') : Lab.isMe(o.resultedBy) ? 'disabled title="You entered these results"' : ''}>${icon('check-check')} Verify results</button>`;
+    else if (k === 'tech') foot.innerHTML = `<button class="btn danger" id="wfReturn" ${canApprove || canVerify ? '' : noPerm('Approve')}>${icon('undo-2')} Return for correction</button><span class="grow"></span><button class="btn primary" id="wfApprove" ${!canApprove ? noPerm('Approve') : Lab.isMe(o.resultedBy) || Lab.isMe(o.techVerifiedBy) ? 'disabled title="No self-approval"' : ''}>${icon('signature')} Approve and sign</button>`;
+    else foot.innerHTML = `<span class="small muted grow">${o.status === 'Verified' ? 'Approved and released to the EMR.' : ''}</span>${o.status === 'Verified' ? `<a class="btn primary" href="${R('lab/dispatch.html')}">${icon('send')} Print or e-send</a>` : ''}`;
+    const collect = () => isMicro(o) ? microCollect(o, host) : rows.map((r, i) => { const v = $(`[data-i="${i}"]`, host).value.trim(); const ev = evalRow(r, v); return { name: r.name, value: v === '' ? '' : (r.text || isNaN(+v) ? v : +v), unit: r.unit, low: r.text ? '' : r.r.low, high: r.text ? '' : r.r.high, flag: ev.flag, critical: ev.critical }; });
+    const on = (id, f) => { const b = $('#' + id, host); if (b) b.addEventListener('click', f); };
+    on('wfDraft', () => {
+      const res = collect(); o.results = res.results || res; if (res.sensitivity) o.sensitivity = res.sensitivity; o.comments = $('#cmt', host).value.trim();
+      const before = o.status; o.status = 'In progress'; save(); audit('Lab results saved as draft', 'Lab order', { id: o.id, label: o.no }, [['Status', before, 'In progress']]); toast('Draft saved'); follow(o);
+    });
+    on('wfSubmit', () => {
+      const res = collect(), list = res.results || res, crit = list.filter(r => r.critical);
+      const doIt = () => {
+        o.results = list; if (res.sensitivity) o.sensitivity = res.sensitivity; o.comments = $('#cmt', host).value.trim();
+        const before = o.status; Object.assign(o, { status: 'Resulted', resultedAt: nowStamp(), resultedBy: Lab.meName() }); delete o.techVerifiedAt; delete o.techVerifiedBy; delete o.returnNote;
+        save(); audit('Lab results entered', 'Lab order', { id: o.id, label: o.no }, [['Status', before, 'Resulted']].concat(crit.map(r => ['Critical', '', r.name + ' ' + r.value])));
+        toast(crit.length ? 'Results submitted. Critical value sent to the critical results console.' : 'Results submitted for verification'); follow(o);
+      };
+      if (crit.length) UI.confirm({ title: 'Submit with a critical value?', tone: 'danger', icon: 'siren', confirm: 'Submit results', body: crit.map(r => `<b>${esc(r.name)} ${esc(r.value)} ${esc(r.unit)}</b>`).join(', ') + ' is in the critical range. Confirm you have checked the sample and repeated the test if your SOP requires it. The value goes to the critical console for telephone notification.', onConfirm: doIt });
+      else doIt();
+    });
+    on('wfVerify', () => UI.confirm({ title: 'Verify these results?', tone: 'primary', icon: 'check-check', confirm: 'Verify', body: 'You confirm the results are technically valid (QC in range, sample acceptable, flags and deltas reviewed). The pathologist approves next.',
+      onConfirm: () => { Object.assign(o, { techVerifiedAt: nowStamp(), techVerifiedBy: Lab.meName() }); save(); audit('Lab results verified', 'Lab order', { id: o.id, label: o.no }, [['Stage', 'To verify', 'To approve']]); toast('Verified. Waiting for pathologist approval.'); follow(o); } }));
+    on('wfApprove', () => Lab.esign({ title: 'Approve and sign the report', body: `${esc(t.name)} for ${esc(p.name)} (${esc(Lab.acc(o))}). After approval the report is released to the EMR, the patient app and the doctor.`, role: 'Pathologist', entity: 'Lab order', recordId: o.id, label: o.no,
+      onOk: (sig) => { Object.assign(o, { status: 'Verified', verifiedAt: nowStamp(), verifiedBy: Lab.meName(), signature: sig }); save(); audit('Lab report approved (e-signature)', 'Lab order', { id: o.id, label: o.no }, [['Status', 'Resulted', 'Verified'], ['Signed by', '', sig]]); toast('Approved, signed and released'); follow(o); } }));
+    on('wfReturn', () => UI.confirm({ title: 'Return for correction?', reason: true, confirm: 'Return', body: 'The results go back to the bench for correction and must be submitted and verified again.',
+      onConfirm: (reason) => { const before = Lab.stageKey(o); Object.assign(o, { status: 'In progress', returnNote: reason }); delete o.techVerifiedAt; delete o.techVerifiedBy; save(); audit('Lab results returned for correction', 'Lab order', { id: o.id, label: o.no }, [['Stage', before, 'In progress']], { reason }); toast('Returned for correction'); follow(o); } }));
+    live();
+  }
+
+  /* ---------- Microbiology (organism and sensitivity) ---------- */
+  function drawMicro(o, grid, editable) {
+    const res = o.results || [], org = (res.find(r => r.name === 'Organism') || {}).value || '', cc = (res.find(r => r.name === 'Colony count') || {}).value || '';
+    const outcome = org ? 'Growth' : (res.find(r => r.name === 'Culture') || {}).value ? 'No growth' : '';
+    const abx = (db.labAntibiotics || []).filter(a => a.status !== 'Inactive');
+    const sens = o.sensitivity || [];
+    const dis = editable ? '' : 'disabled';
+    grid.innerHTML = `<div class="card-pad"><div class="form-grid c3">
+        <div class="field"><label for="mOut">Culture result<span class="req">*</span></label><select class="input" id="mOut" ${dis}><option value="">Select</option>${['No growth', 'Growth', 'Mixed growth (probable contamination)'].map(x => `<option ${x === outcome ? 'selected' : ''}>${x}</option>`).join('')}</select></div>
+        <div class="field"><label for="mOrg">Organism</label><select class="input" id="mOrg" ${dis}><option value="">Select</option>${(db.labOrganisms || []).filter(x => x.status !== 'Inactive').map(x => `<option value="${esc(x.name)}" ${x.name === org ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></div>
+        <div class="field"><label for="mCc">Colony count</label><select class="input" id="mCc" ${dis}><option value="">Select</option>${['<10,000 CFU/mL', '10,000-100,000 CFU/mL', '>100,000 CFU/mL', 'Not applicable'].map(x => `<option ${x === cc ? 'selected' : ''}>${x}</option>`).join('')}</select></div>
+      </div>
+      <div id="mAlert" style="margin-top:10px"></div>
+      <div id="mSens" style="margin-top:12px"><div class="section-t" style="margin:0 0 8px">Antibiotic sensitivity (S sensitive, I intermediate, R resistant)</div>
+        <div class="grid g3 sens">${abx.map(a => { const s = sens.find(x => x.code === a.code); return `<div class="row" style="gap:8px;justify-content:space-between;border:1px solid var(--line);border-radius:8px;padding:6px 10px"><span class="small"><b>${esc(a.code)}</b> ${esc(a.name)}</span><select class="input" data-ab="${esc(a.code)}" ${dis} aria-label="${esc(a.name)}"><option value="">-</option>${['S', 'I', 'R'].map(x => `<option ${s && s.result === x ? 'selected' : ''}>${x}</option>`).join('')}</select></div>`; }).join('')}</div></div></div>`;
+  }
+  function microLive(o, host) {
+    const out = $('#mOut', host).value, org = $('#mOrg', host).value;
+    $('#mOrg', host).disabled = $('#mOut', host).disabled || out !== 'Growth'; $('#mCc', host).disabled = $('#mOut', host).disabled || out !== 'Growth';
+    $('#mSens', host).style.display = out === 'Growth' ? '' : 'none';
+    const om = (db.labOrganisms || []).find(x => x.name === org);
+    $('#mAlert', host).innerHTML = om && om.alert ? `<div class="alert-cdss">${icon('shield-alert')}<div>${esc(om.alert)}: ${esc(om.name)}. Inform the infection control nurse.</div></div>` : '';
+    const sb = $('#wfSubmit', host); if (sb) sb.disabled = !canAdd || !out || (out === 'Growth' && (!org || !$('#mCc', host).value));
+    if (!host.dataset.microBound) { host.dataset.microBound = 1; $$('#mOut, #mOrg, #mCc, [data-ab]', host).forEach(i => i.addEventListener('change', () => microLive(o, host))); }
+  }
+  function microCollect(o, host) {
+    const out = $('#mOut', host).value;
+    if (out !== 'Growth') return { results: [{ name: 'Culture', value: out === 'No growth' ? 'No growth after ' + (o.code === 'BCS' ? '5 days' : '48 hours') : out, unit: '', low: '', high: '', flag: out === 'No growth' ? '' : 'A', critical: false }], sensitivity: [] };
+    return { results: [{ name: 'Organism', value: $('#mOrg', host).value, unit: '', low: '', high: '', flag: 'A', critical: o.code === 'BCS' }, { name: 'Colony count', value: $('#mCc', host).value, unit: '', low: '', high: '', flag: 'A', critical: false }],
+      sensitivity: $$('[data-ab]', host).filter(s => s.value).map(s => ({ code: s.dataset.ab, result: s.value })) };
+  }
+
+  /* ---------- Batch ---------- */
+  function renderBatch() {
+    const toEnter = Lab.orders().filter(TABS[0][2]).filter(o => !isMicro(o));
+    const tests = [...new Set(toEnter.map(o => o.code))];
+    let code = tests[0] || '';
+    $('#page').innerHTML = `<div class="card" style="margin-bottom:16px"><div class="card-head"><h3>${icon('rows-3')} Batch result entry</h3><div class="actions"><select class="input" id="bTest" style="width:260px" aria-label="Test">${tests.map(c => `<option value="${esc(c)}">${esc(Lab.test(c).name)} (${toEnter.filter(o => o.code === c).length})</option>`).join('')}</select></div></div><div id="bGrid"></div></div>
+      <div class="grid g2"><div class="card"><div class="card-head"><h3>${icon('check-check')} Batch verify</h3><div class="actions"><button class="btn primary sm" id="bVer" ${canVerify ? '' : 'disabled title="Needs Verify permission"'}>${icon('check-check')} Verify selected</button></div></div><div id="bV"></div></div>
+      <div class="card"><div class="card-head"><h3>${icon('signature')} Batch approve</h3><div class="actions"><button class="btn primary sm" id="bApp" ${canApprove ? '' : 'disabled title="Needs Approve permission"'}>${icon('signature')} Approve and sign selected</button></div></div><div id="bA"></div></div></div>`;
+    const drawGrid = () => {
+      const list = Lab.orders().filter(TABS[0][2]).filter(o => o.code === code);
+      if (!list.length) { $('#bGrid').innerHTML = `<div class="empty">${icon('inbox')}<b>No samples waiting for entry</b><span>Microbiology cultures are entered one by one.</span></div>`; return; }
+      const ps = params(list[0]);
+      $('#bGrid').innerHTML = `<div class="table-wrap"><table class="tbl compact"><thead><tr><th>Patient</th><th>Accession</th>${ps.map(r => `<th>${esc(r.name)}<div class="xs muted" style="text-transform:none;letter-spacing:0">${esc(r.unit)} ${r.text ? '' : '· ' + esc(Lab.refText(r.r.low, r.r.high))}</div></th>`).join('')}</tr></thead><tbody>
+        ${list.map(o => `<tr data-row="${o.id}"><td><b>${esc(Kit.ptName(o.patientId))}</b><div class="xs muted">${esc((Kit.pt(o.patientId) || {}).mrn)} · ${esc(Kit.sexAge(Kit.pt(o.patientId)))}</div></td><td class="mono">${esc(Lab.acc(o))}${o.priority !== 'Routine' ? ' ' + Kit.priority(o.priority) : ''}</td>
+          ${params(o).map((r, i) => `<td><div class="row" style="gap:6px"><input class="input res-in bt-in" data-b="${o.id}" data-i="${i}" value="${esc(r.value)}" aria-label="${esc(r.name)}" ${canAdd ? '' : 'readonly'}><span data-bf="${o.id}-${i}"></span></div></td>`).join('')}</tr>`).join('')}</tbody></table></div>
+        <div class="card-foot"><span class="small muted grow">Rows with every value filled are submitted. Critical values go to the critical console.</span><button class="btn primary" id="bSub" ${canAdd ? '' : 'disabled title="Needs Add permission"'}>${icon('send')} Submit filled rows</button></div>`;
+      const upd = (inp) => { const o = db.orders.find(x => x.id === inp.dataset.b), r = params(o)[+inp.dataset.i], ev = evalRow(r, inp.value.trim()); inp.classList.toggle('crit', ev.critical); $(`[data-bf="${o.id}-${inp.dataset.i}"]`).innerHTML = inp.value.trim() ? Lab.flagHtml(ev.flag, ev.critical) : ''; };
+      $$('[data-b]').forEach(i => { i.addEventListener('input', () => upd(i)); upd(i); });
+      $('#bSub').addEventListener('click', () => {
+        let n = 0, c = 0;
+        list.forEach(o => {
+          const ins = $$(`[data-b="${o.id}"]`); if (!ins.every(i => i.value.trim() !== '')) return;
+          const ps2 = params(o);
+          o.results = ins.map((inp, i) => { const r = ps2[i], v = inp.value.trim(), ev = evalRow(r, v); return { name: r.name, value: r.text || isNaN(+v) ? v : +v, unit: r.unit, low: r.text ? '' : r.r.low, high: r.text ? '' : r.r.high, flag: ev.flag, critical: ev.critical }; });
+          if (o.results.some(r => r.critical)) c++;
+          const before = o.status; Object.assign(o, { status: 'Resulted', resultedAt: nowStamp(), resultedBy: Lab.meName() }); n++;
+          audit('Lab results entered (batch)', 'Lab order', { id: o.id, label: o.no }, [['Status', before, 'Resulted']]);
+        });
+        if (!n) { toast('Fill every value in a row to submit it.', 'err'); return; }
+        save(); toast(n + ' result' + (n > 1 ? 's' : '') + ' submitted' + (c ? ', ' + c + ' with a critical value' : '')); renderBatch();
+      });
+    };
+    if ($('#bTest')) $('#bTest').addEventListener('change', (e) => { code = e.target.value; drawGrid(); });
+    drawGrid();
+    const mini = (host, list, own) => {
+      host.innerHTML = list.length ? `<div class="table-wrap"><table class="tbl compact"><thead><tr><th><input type="checkbox" data-all aria-label="Select all"></th><th>Patient</th><th>Test</th><th>Results</th></tr></thead><tbody>${list.map(o => `<tr><td><input type="checkbox" data-s="${o.id}" ${own(o) ? 'disabled title="Your own work: no self-verification or self-approval"' : ''} aria-label="Select"></td><td><b>${esc(Kit.ptName(o.patientId))}</b><div class="xs mono muted">${esc(Lab.acc(o))}</div></td><td>${esc(o.name)}${own(o) ? '<div class="xs muted">Your own work</div>' : ''}</td><td class="small">${(o.results || []).map(r => `${esc(r.name)} <b>${esc(r.value)}</b> ${r.flag ? Lab.flagHtml(r.flag, r.critical) : ''}`).join(' · ')}</td></tr>`).join('')}</tbody></table></div>` : `<div class="empty">${icon('inbox')}<b>Nothing waiting</b></div>`;
+      const all = $('[data-all]', host); if (all) all.addEventListener('change', () => $$('[data-s]:not(:disabled)', host).forEach(c => { c.checked = all.checked; }));
+    };
+    const vList = Lab.orders().filter(TABS[1][2]), aList = Lab.orders().filter(TABS[2][2]);
+    mini($('#bV'), vList, o => Lab.isMe(o.resultedBy)); mini($('#bA'), aList, o => Lab.isMe(o.resultedBy) || Lab.isMe(o.techVerifiedBy));
+    $('#bVer').addEventListener('click', () => {
+      const ids = $$('[data-s]:checked', $('#bV')).map(c => c.dataset.s); if (!ids.length) { toast('Select results to verify.', 'err'); return; }
+      UI.confirm({ title: `Verify ${ids.length} result${ids.length > 1 ? 's' : ''}?`, tone: 'primary', confirm: 'Verify', body: 'You confirm each result is technically valid.', onConfirm: () => { ids.forEach(id => { const o = db.orders.find(x => x.id === id); Object.assign(o, { techVerifiedAt: nowStamp(), techVerifiedBy: Lab.meName() }); audit('Lab results verified (batch)', 'Lab order', { id: o.id, label: o.no }, []); }); save(); toast(ids.length + ' verified'); renderBatch(); } });
+    });
+    $('#bApp').addEventListener('click', () => {
+      const ids = $$('[data-s]:checked', $('#bA')).map(c => c.dataset.s); if (!ids.length) { toast('Select results to approve.', 'err'); return; }
+      Lab.esign({ title: `Approve ${ids.length} report${ids.length > 1 ? 's' : ''}`, body: 'One signature approves and releases every selected report.', role: 'Pathologist', entity: 'Lab order', recordId: 'batch', label: ids.length + ' reports',
+        onOk: (sig) => { ids.forEach(id => { const o = db.orders.find(x => x.id === id); Object.assign(o, { status: 'Verified', verifiedAt: nowStamp(), verifiedBy: Lab.meName(), signature: sig }); audit('Lab report approved (batch e-signature)', 'Lab order', { id: o.id, label: o.no }, [['Status', 'Resulted', 'Verified']]); }); save(); toast(ids.length + ' approved and released'); renderBatch(); } });
+    });
+  }
+
+  const id = UI.param('id');
+  if (id) { const o = db.orders.find(x => x.id === id && x.type === 'lab'); if (o) { const t = TABS.find(x => x[2](o)); if (t) tab = t[0]; cur = o.id; } }
+  render();
+})();
+</script>
+</body>
+</html>

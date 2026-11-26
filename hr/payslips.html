@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Payslips and Bank File · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-hr.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/hr.js"></script>
+<style>.nw{white-space:nowrap}#bank td{white-space:nowrap}</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, confirm, field } = UI;
+  const OPT = 'hr.payslips';
+  if (!UI.page({ opt: OPT, title: 'Payslips and Bank File', subtitle: 'Printable payslips (PDF), payslip email and the bank salary file for approved payroll runs.' })) return;
+  const ME = UI.me(), canP = can(OPT, 'print');
+  const ready = () => db.hrPayrollRuns.filter(r => r.lines && ['Approved', 'Posted'].includes(r.status)).sort((a, b) => b.month.localeCompare(a.month));
+  let month = UI.param('month') && ready().some(r => r.month === UI.param('month')) ? UI.param('month') : (ready()[0] || {}).month;
+  let tab = UI.param('tab') || 'slips';
+  const EMPLOYER = { name: 'Tibbi Health Holding K.S.C.C.', mosal: 'MOSAL-1-458812', bank: 'NBOK', account: 'KW81NBOK0000000000001009876541' };
+  const M = (n) => Kit.money(n, false);
+  const pending = db.hrPayrollRuns.filter(r => !['Approved', 'Posted'].includes(r.status));
+  $('#page').innerHTML = `<div class="card card-pad" style="margin-bottom:14px"><div class="row wrap" style="gap:12px;align-items:flex-end">
+      <div class="field" style="margin:0;min-width:240px"><label for="m">Payroll month</label><select class="input" id="m">${ready().map(r => `<option value="${r.month}" ${r.month === month ? 'selected' : ''}>${esc(HR.monthLabel(r.month))} · ${esc(r.status)}</option>`).join('')}</select></div>
+      <div class="grow small muted" id="mInfo"></div></div>
+      ${pending.length ? `<div class="small muted" style="margin-top:10px">${icon('info')} ${pending.map(r => esc(HR.monthLabel(r.month)) + ' is ' + esc(r.status.toLowerCase())).join(', ')}. Payslips are available once a run is approved.</div>` : ''}</div>
+    <div id="tabs" style="margin-bottom:14px"></div><div id="body"></div>`;
+  const run = () => HR.runOf(month);
+  const mails = () => db.hrPayslipMails.filter(x => x.month === month);
+  const drawTabs = () => Kit.tabs($('#tabs'), [{ id: 'slips', label: 'Payslips', icon: 'file-text', count: run() ? run().lines.length : 0 }, { id: 'bank', label: 'Bank salary file', icon: 'landmark' }, { id: 'log', label: 'Email log', icon: 'mail', count: mails().length }], tab, (t) => { tab = t; show(); });
+  function show() {
+    if (!run()) { $('#body').innerHTML = `<div class="card"><div class="empty">${icon('file-text')}<b>No approved payroll run yet</b><span>Approve a run in Monthly Payroll Run first.</span><a class="btn sm" href="${R('hr/payroll.html')}">Open payroll</a></div></div>`; return; }
+    const r = run();
+    $('#mInfo').innerHTML = `${esc(r.no)} · ${r.lines.length} employees · net ${Kit.money(Kit.sumBy(r.lines, l => l.net))} · pay date ${esc(Kit.day(r.payDate))}${r.journal ? ' · ' + esc(r.journal) : ''}`;
+    ({ slips, bank, log })[tab]();
+  }
+
+  /* ---------- Payslips ---------- */
+  function slipHtml(r, l) {
+    const v = HR.get(l.empId) || {}, bl = HR.leaveBal(l.empId, 'AL');
+    const earn = [['Basic salary', l.basic]].concat(Object.entries(l.allow).map(([c, n]) => [HR.comp(c).name, n])).concat(l.ot ? [['Overtime (' + l.otHours + ' h)', l.ot]] : []);
+    const ded = [['PIFSS social security', l.pifss], ['Loan instalment', l.loan], ['Absence (' + l.absDays + ' day)', l.absence], ['Unpaid leave (' + l.unpaidDays + ' day)', l.unpaid]].filter(x => x[1]);
+    const n = Math.max(earn.length, ded.length);
+    return `<h3 style="margin:0 0 8px">Payslip for ${esc(HR.monthLabel(r.month))}</h3>
+      <table class="slip"><tbody><tr><td><b>Employee</b></td><td>${esc(l.name)}</td><td><b>Employee no.</b></td><td>${esc(l.empNo)}</td></tr>
+      <tr><td><b>Designation</b></td><td>${esc(l.designation)}</td><td><b>Department</b></td><td>${esc(HR.dept(l.deptId))}</td></tr>
+      <tr><td><b>Civil ID</b></td><td>${esc(l.civilId)}</td><td><b>Days paid</b></td><td>${l.days} of ${l.monthDays}</td></tr>
+      <tr><td><b>Bank</b></td><td>${esc(l.bank)} ****${esc(String(l.iban).slice(-4))}</td><td><b>Pay date</b></td><td>${esc(Kit.day(r.payDate))}</td></tr></tbody></table>
+      <table class="slip" style="margin-top:12px"><thead><tr><th>Earnings</th><th class="r">KWD</th><th>Deductions</th><th class="r">KWD</th></tr></thead><tbody>
+      ${Array.from({ length: n }, (_, i) => `<tr><td>${earn[i] ? esc(earn[i][0]) : ''}</td><td class="r">${earn[i] ? M(earn[i][1]) : ''}</td><td>${ded[i] ? esc(ded[i][0]) : ''}</td><td class="r">${ded[i] ? M(ded[i][1]) : ''}</td></tr>`).join('')}
+      <tr><td><b>Total earnings</b></td><td class="r"><b>${M(l.earnings)}</b></td><td><b>Total deductions</b></td><td class="r"><b>${M(l.deductions)}</b></td></tr></tbody></table>
+      <table class="slip" style="margin-top:12px"><tbody><tr><td style="font-size:15px"><b>Net pay</b></td><td class="r" style="font-size:15px"><b>KWD ${M(l.net)}</b></td></tr></tbody></table>
+      <p style="font-size:11px;color:#555;margin-top:10px">Annual leave balance: ${bl.balance} days. This payslip is computer generated and does not need a signature. ${esc(r.no)}.</p>`;
+  }
+  const viewSlip = (l) => { const r = run(); Kit.printDoc({ title: 'Payslip ' + l.empNo, sub: HR.monthLabel(r.month) + ' · ' + l.name, html: slipHtml(r, l), extra: canP ? `<button class="btn" id="pdfMail">${icon('mail')} Email to employee</button>` : '' }); const b = document.getElementById('pdfMail'); if (b) b.addEventListener('click', () => sendMail([l])); };
+  function sendMail(list) {
+    const ok = list.filter(l => (HR.get(l.empId) || {}).email), skip = list.length - ok.length;
+    confirm({ title: list.length === 1 ? 'Email payslip to ' + list[0].name + '?' : `Email ${ok.length} payslips?`, tone: 'primary', icon: 'mail', confirm: 'Send',
+      body: `PDF payslips for ${esc(HR.monthLabel(month))} are sent to the employees' work email, password protected with the last 4 digits of the Civil ID.${skip ? ` ${skip} employee(s) without an email are skipped.` : ''}`,
+      onConfirm: () => {
+        ok.forEach(l => db.hrPayslipMails.unshift({ id: UI.uid('hpm'), month, empId: l.empId, to: HR.get(l.empId).email, at: UI.nowStamp(), by: ME.displayName, status: 'Sent', file: `payslip_${l.empNo}_${month}.pdf` }));
+        save(); audit('Emailed payslips', 'Payslip', { id: run().id, label: run().no }, [['Payslips', '', String(ok.length)]]);
+        toast(`${ok.length} payslip${ok.length === 1 ? '' : 's'} emailed`); drawTabs(); show();
+      } });
+  }
+  function slips() {
+    $('#body').innerHTML = `<div id="t"></div>`;
+    const lastMail = (id) => mails().find(x => x.empId === id);
+    UI.table($('#t'), {
+      rows: () => run().lines, search: (l) => [l.name, l.empNo].join(' '), searchPlaceholder: 'Employee',
+      toolbar: `<button class="btn sm" id="allMail" ${canP ? '' : 'disabled title="Needs Print permission"'}>${icon('mails')} Email all payslips</button>`,
+      filters: [{ label: 'Department', options: HR.deptsInUse(), test: (l, x) => l.deptId === x }, { label: 'Email', options: [['sent', 'Sent'], ['not', 'Not sent']], test: (l, x) => (x === 'sent') === !!lastMail(l.empId) }],
+      columns: [
+        { label: 'Employee', sort: (l) => l.name, render: (l) => `<div class="cell-main"><b>${esc(l.name)}</b><span class="mono">${esc(l.empNo)}</span><span> · ${esc(HR.dept(l.deptId))}</span></div>` },
+        { label: 'Earnings', cls: 'num', render: (l) => `<span class="num nw">${M(l.earnings)}</span>` },
+        { label: 'Deductions', cls: 'num', render: (l) => `<span class="num nw">${M(l.deductions)}</span>` },
+        { label: 'Net pay', cls: 'num', sort: (l) => l.net, render: (l) => `<b class="num nw">${Kit.money(l.net)}</b>` },
+        { label: 'Email', render: (l) => `<span class="small">${esc((HR.get(l.empId) || {}).email || '')}</span>` },
+        { label: 'Sent', render: (l) => { const m = lastMail(l.empId); return m ? `<span class="badge b-ok nw">Sent ${esc(Kit.when(m.at))}</span>` : '<span class="muted small">Not sent</span>'; } },
+        { label: '', cls: 'actions', render: (l) => `<button class="btn xs" data-v="${l.empId}" ${canP ? '' : 'disabled title="Needs Print permission"'}>${icon('file-text')} Payslip</button> <button class="btn xs" data-m="${l.empId}" ${canP ? '' : 'disabled title="Needs Print permission"'} aria-label="Email payslip">${icon('mail')}</button>` },
+      ],
+      afterDraw: (tb) => { $$('[data-v]', tb).forEach(b => b.addEventListener('click', () => viewSlip(run().lines.find(l => l.empId === b.dataset.v)))); $$('[data-m]', tb).forEach(b => b.addEventListener('click', () => sendMail([run().lines.find(l => l.empId === b.dataset.m)]))); },
+      pageSize: 15,
+    });
+    const a = $('#allMail'); if (a && canP) a.addEventListener('click', () => sendMail(run().lines));
+  }
+
+  /* ---------- Bank file ---------- */
+  const COLS = ['Record type', 'Employer MOSAL no.', 'Employee Civil ID', 'Employee name', 'Employee no.', 'Bank code', 'IBAN', 'Salary month', 'Days paid', 'Basic salary', 'Allowances', 'Overtime', 'Deductions', 'Net salary', 'Payment reference'];
+  const ibanOk = (i) => /^KW\d{2}[A-Z]{4}[A-Z0-9]{22}$/.test(String(i || ''));
+  function bankRows() { const r = run(); return r.lines.map((l, i) => ({ l, ok: ibanOk(l.iban) && l.net > 0, row: ['D', EMPLOYER.mosal, l.civilId, l.name, l.empNo, l.bank, l.iban, r.month.replace('-', ''), l.days, M(l.basic).replace(/,/g, ''), M(l.allowSum).replace(/,/g, ''), M(l.ot).replace(/,/g, ''), M(l.deductions).replace(/,/g, ''), M(l.net).replace(/,/g, ''), `SAL${r.month.replace('-', '')}${String(i + 1).padStart(4, '0')}`] })); }
+  function bank() {
+    const r = run(), rows = bankRows(), good = rows.filter(x => x.ok), bad = rows.filter(x => !x.ok);
+    const total = Kit.sumBy(good, x => x.l.net);
+    const files = db.hrBankFiles.filter(f => f.month === month);
+    $('#body').innerHTML = `<div class="row" style="margin-bottom:12px">${Kit.scopeNote('Scope to be confirmed: one bank file format to be agreed with Tibbi and its bank. The preview uses WPS-like columns.')}</div>
+      <div class="grid g4" style="margin-bottom:14px">${Kit.kpi('Payments', good.length, { icon: 'users' })}${Kit.kpi('Total to transfer', M(total), { icon: 'landmark', unit: 'KWD' })}${Kit.kpi('Excluded', bad.length, { icon: 'circle-alert', foot: bad.length ? 'Invalid IBAN or zero net' : 'None' })}${Kit.kpi('Files generated', files.length, { icon: 'file-down', foot: files[0] ? 'Last ' + Kit.when(files[0].at) : 'Not yet' })}</div>
+      <div class="card" style="margin-bottom:14px"><div class="card-head"><div><h3>${icon('landmark')} Header record</h3></div><div class="actions"><button class="btn primary sm" id="dl" ${canP && r.status === 'Posted' ? '' : `disabled title="${canP ? 'Available when the run is posted' : 'Needs Print permission'}"`}>${icon('download')} Download CSV</button></div></div>
+        <div class="card-pad"><dl class="kv tight" style="grid-template-columns:170px 1fr 170px 1fr"><dt>Employer</dt><dd>${esc(EMPLOYER.name)}</dd><dt>MOSAL file no.</dt><dd class="mono">${esc(EMPLOYER.mosal)}</dd><dt>Debit account</dt><dd class="mono">${esc(EMPLOYER.account)}</dd><dt>Value date</dt><dd>${esc(Kit.day(r.payDate))}</dd><dt>Records</dt><dd>${good.length}</dd><dt>Total (KWD)</dt><dd><b>${M(total)}</b></dd></dl>
+        ${r.status !== 'Posted' ? `<div class="banner warn" style="margin-top:10px">${icon('lock')}<span>The run is approved but not posted. Post it in Monthly Payroll Run to release the bank file.</span></div>` : ''}</div></div>
+      ${bad.length ? `<div class="banner err" style="margin-bottom:12px">${icon('circle-alert')}<span>Excluded: ${bad.map(x => esc(x.l.name)).join(', ')}. Correct the IBAN in Employees.</span></div>` : ''}
+      <div class="card"><div class="card-head"><h3>${icon('table')} Detail records (preview)</h3></div><div class="table-wrap" id="bank" style="max-height:460px;overflow:auto"><table class="tbl compact"><thead><tr>${COLS.map(c => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${good.map(x => `<tr>${x.row.map((c, i) => `<td class="${i >= 8 && i <= 13 ? 'num' : i === 2 || i === 6 ? 'mono' : ''}">${esc(c)}</td>`).join('')}</tr>`).join('')}</tbody></table></div></div>
+      <div class="card" style="margin-top:14px"><div class="card-head"><h3>${icon('history')} Files generated</h3></div><div class="list-rows pad">${files.length ? files.map(f => `<div><span class="mono">${esc(f.no)}</span><span class="grow small">${esc(f.format)} · ${f.rows} records · ${Kit.money(f.total)}</span><span class="small muted">${esc(f.by)} · ${esc(Kit.when(f.at))}</span></div>`).join('') : '<div><span class="muted small">No file generated for this month yet.</span></div>'}</div></div>`;
+    const d = $('#dl'); if (d && !d.disabled) d.addEventListener('click', () => {
+      Kit.csv(`salary_${month}_${EMPLOYER.bank}`, COLS, [['H', EMPLOYER.mosal, '', EMPLOYER.name, '', EMPLOYER.bank, EMPLOYER.account, month.replace('-', ''), '', '', '', '', '', M(total).replace(/,/g, ''), 'COUNT ' + good.length]].concat(good.map(x => x.row)));
+      const f = { id: UI.uid('hbf'), no: Kit.nextNo('BNK-' + month + '-', db.hrBankFiles), month, format: 'WPS-like CSV (draft)', rows: good.length, total: HR.r3(total), by: ME.displayName, at: UI.nowStamp() };
+      db.hrBankFiles.unshift(f); save(); audit('Generated bank salary file', 'Payroll run', { id: r.id, label: r.no }, [['Records', '', String(good.length)], ['Total', '', Kit.money(total)]]);
+      toast('Bank file downloaded'); show();
+    });
+  }
+  function log() {
+    $('#body').innerHTML = `<div id="t"></div>`;
+    UI.table($('#t'), {
+      rows: () => mails(), search: (m) => [HR.name(m.empId), m.to].join(' '), searchPlaceholder: 'Employee or email',
+      columns: [
+        { label: 'Sent', sort: (m) => m.at, render: (m) => esc(Kit.when(m.at)) },
+        { label: 'Employee', render: (m) => esc(HR.name(m.empId)) },
+        { label: 'To', render: (m) => `<span class="small">${esc(m.to)}</span>` },
+        { label: 'Attachment', render: (m) => `<span class="tag">${icon('file-text')} ${esc(m.file)}</span>` },
+        { label: 'By', render: (m) => esc(m.by) },
+        { label: 'Status', render: (m) => Kit.status(m.status) },
+      ], empty: 'No payslips emailed for this month', emptyIcon: 'mail',
+    });
+  }
+  $('#m').addEventListener('change', (e) => { month = e.target.value; drawTabs(); show(); });
+  drawTabs(); show();
+})();
+</script>
+</body>
+</html>

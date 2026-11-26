@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Appointment Book · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<style>
+  .cal-scroll { overflow: auto; max-height: calc(100vh - 290px); min-height: 360px; }
+  .cal-scroll .c-h { position: sticky; top: 0; z-index: 2; text-transform: none; letter-spacing: 0; font-size: 12px; color: var(--ink); }
+  .cal-scroll .c-h small { display: block; font-weight: 600; color: var(--mute); font-size: 11px; }
+  .cal-scroll .c-h.today { background: var(--sel); }
+  .cal-scroll .c-t { position: sticky; inset-inline-start: 0; background: var(--card); z-index: 1; }
+  .cal .c-s.off { background: repeating-linear-gradient(135deg, var(--soft), var(--soft) 6px, transparent 6px, transparent 12px); }
+  .appt.a-block { background: var(--neutral-bg); color: var(--sub); border-color: var(--outline); cursor: default; }
+  .appt.a-past { background: none; border: 0; color: var(--mute); font-weight: 600; cursor: default; }
+  .doc-row .tag { font-size: 10.5px; }
+</style>
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-appointments.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/appointments.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, esc, icon, $, $$, R, can, fmtDate } = UI;
+  const canAdd = can('appointments.book.slot', 'add');
+  if (!UI.page({ opt: 'appointments.book.slot', title: 'Appointment Book', subtitle: 'Doctor calendars from the slot master. Click a free slot to book.', wide: true,
+    actions: `<a class="btn" href="${R('appointments/tracking.html')}">${icon('list-checks')} Tracking</a><button class="btn primary" id="newBk" ${canAdd ? '' : 'disabled title="Needs Add permission"'}>${icon('calendar-plus')} Book appointment</button>` })) return;
+  const T = Appt.T;
+  const ctx = UI.session().ctx;
+  const st = { view: 'day', date: UI.param('date') || T, doc: UI.param('doc') || '', q: '', spec: '', branch: ctx.branchId, lang: '', avail: '' };
+  if (st.doc) st.view = 'week';
+  const docs = Appt.bookDoctors();
+  const specs = Array.from(new Set(docs.map(d => d.specialty))).sort();
+  const langs = Array.from(new Set(docs.reduce((a, d) => a.concat(d.languages || []), []))).sort();
+  const brs = Array.from(new Set(docs.map(d => d.branchId))).map(id => UI.L.branch(id)).filter(Boolean);
+
+  $('#page').innerHTML = `
+    <div class="split" style="grid-template-columns:330px minmax(0,1fr)">
+      <div class="card list-pane">
+        <div class="card-head"><h3>${icon('user-search')} Find a doctor</h3><div class="actions"><span class="small muted" id="dCnt"></span></div></div>
+        <div class="card-pad stack" style="gap:10px;border-bottom:1px solid var(--line)">
+          <div class="search">${icon('search')}<input class="input" id="dq" placeholder="Doctor name" aria-label="Doctor name"></div>
+          <div class="form-grid" style="gap:8px">
+            <select class="input" id="fSpec" aria-label="Specialty"><option value="">All specialties</option>${specs.map(s => `<option>${esc(s)}</option>`).join('')}</select>
+            <select class="input" id="fBr" aria-label="Branch"><option value="">All branches</option>${brs.map(b => `<option value="${b.id}" ${b.id === st.branch ? 'selected' : ''} title="${esc(b.name)}">${esc(b.name.replace(/^Tibbi /, '').replace(/ Hospital$/, ''))}</option>`).join('')}</select>
+            <select class="input" id="fLang" aria-label="Language"><option value="">Any language</option>${langs.map(l => `<option>${esc(l)}</option>`).join('')}</select>
+            <select class="input" id="fAv" aria-label="Availability"><option value="">Any availability</option><option value="0">Free on selected day</option><option value="3">Free in next 3 days</option><option value="7">Free in next 7 days</option></select>
+          </div>
+        </div>
+        <div id="dList"></div>
+      </div>
+      <div class="card">
+        <div class="card-head" style="flex-wrap:wrap">
+          <div class="row" style="gap:6px"><button class="btn sm icon" id="prev" aria-label="Previous">${icon('chevron-left')}</button><button class="btn sm" id="tdy">Today</button><button class="btn sm icon" id="next" aria-label="Next">${icon('chevron-right')}</button>
+            <input type="date" class="input" id="dt" style="height:30px;width:150px" aria-label="Date"></div>
+          <h3 id="calTitle" style="margin-inline-start:6px"></h3>
+          <div class="actions"><div id="vSeg"></div></div>
+        </div>
+        <div class="card-pad" style="padding-bottom:8px"><div class="legend"><span><i style="background:var(--info)"></i>Booked or confirmed</span><span><i style="background:var(--success)"></i>Arrived or walk-in</span><span><i style="background:var(--outline)"></i>Completed or blocked</span><span><i style="background:var(--error)"></i>No-show</span><span><i style="border:1px dashed var(--line-strong)"></i>Free slot</span>
+          <span class="grow"></span>${Kit.scopeNote('Slots before ' + Appt.NOW + ' today are in the past (prototype clock).')}</div></div>
+        <div id="calHost" style="padding:0 16px 16px"></div>
+      </div>
+    </div>`;
+
+  const match = () => docs.filter(d => {
+    if (st.q && !d.name.toLowerCase().includes(st.q.toLowerCase())) return false;
+    if (st.spec && d.specialty !== st.spec) return false;
+    if (st.branch && d.branchId !== st.branch) return false;
+    if (st.lang && !(d.languages || []).includes(st.lang)) return false;
+    if (st.avail !== '') { const days = +st.avail || 1; if (!Appt.freeCount(d.id, st.avail === '0' ? st.date : T, days)) return false; }
+    return true;
+  });
+
+  function drawList() {
+    const ds = match();
+    $('#dCnt').textContent = ds.length + ' doctor' + (ds.length === 1 ? '' : 's');
+    $('#dList').innerHTML = ds.length ? ds.map(d => {
+      const nf = Appt.nextFree(d.id, T, 14);
+      return `<div class="qitem doc-row ${st.view === 'week' && st.doc === d.id ? 'on' : ''}" data-d="${d.id}">
+        <span class="avatar sm">${UI.initials(d.name)}</span>
+        <div class="grow" style="min-width:0"><b style="font-size:13px">${esc(d.name)}</b><div class="small muted">${esc(d.specialty)} · ${esc((UI.L.branch(d.branchId) || {}).code || '')} · ${esc(d.grade)}</div>
+          <div class="row wrap" style="gap:4px;margin-top:4px">${(d.languages || []).map(l => `<span class="tag">${esc(l)}</span>`).join('')}</div>
+          <div class="xs" style="margin-top:4px;color:${nf ? 'var(--success)' : 'var(--error)'};font-weight:700">${nf ? 'Next free: ' + esc(nf.date === T ? 'Today' : Appt.dayLabel(nf.date)) + ' ' + esc(nf.time) : 'No free slot in 14 days'}</div></div>
+        ${icon('chevron-right', 'mute')}</div>`;
+    }).join('') : `<div class="empty">${icon('user-search')}<b>No doctor matches</b><span>Change the filters.</span></div>`;
+    $$('[data-d]', $('#dList')).forEach(r => r.addEventListener('click', () => { st.doc = r.dataset.d; st.view = 'week'; drawSeg(); drawAll(); }));
+  }
+
+  function cell(d, date, s) {
+    if (!s) return '';
+    if (s.block) return `<div class="appt a-block" title="${esc(s.block.kind + ': ' + s.block.reason)}">${icon('ban', 'mute')} ${esc(s.block.kind)}<span>${esc(s.block.reason)}</span></div>`;
+    let h = s.appts.filter(Appt.ACTIVE).map(a => `<div class="appt ${Appt.statusCls(a.status)}" data-a="${a.id}" title="${esc(a.no + ' · ' + a.status)}">${esc(a.time)} ${esc(Kit.ptName(a.patientId))}<span>${esc(Appt.typeName(a.type))} · ${esc(a.status)}</span></div>`).join('');
+    if (s.walkIn) h += `<div class="appt a-arrived" title="Walk-in OPD visit">${esc(s.time)} ${esc(Kit.ptName(s.walkIn.patientId))}<span>Walk-in · ${esc(s.walkIn.status)}</span></div>`;
+    if (!h) h = s.past ? `<div class="appt a-past" title="Past slot, not booked">-</div>` : `<div class="appt a-free" data-free="${d.id}|${date}|${s.time}" role="button" tabindex="0" ${canAdd ? '' : 'title="Needs Add permission"'}>${esc(s.time)} Free</div>`;
+    const cx = s.appts.filter(a => a.status === 'Cancelled').length;
+    if (cx) h += `<div class="xs muted" style="padding:0 4px">${cx} cancelled</div>`;
+    return h;
+  }
+
+  function grid(cols) {
+    // cols: [{ key, head, sub, doc, date, today }]
+    const per = cols.map(c => { const sl = Appt.slots(c.doc.id, c.date); const m = {}; sl.forEach(s => { m[s.time] = s; }); return { c, m, has: sl.length > 0 }; });
+    const times = Array.from(new Set(per.reduce((a, p) => a.concat(Object.keys(p.m)), []))).sort();
+    if (!times.length) return `<div class="empty">${icon('calendar-x')}<b>No clinic sessions</b><span>${st.view === 'day' ? 'None of these doctors has a session on ' + esc(Appt.DOW[Appt.dow(st.date)]) + '.' : 'This doctor has no sessions this week.'}</span></div>`;
+    const inSess = (p, t) => Appt.sessionsFor(p.c.doc.id, p.c.date).some(s => { const sh = Appt.shift(s.shiftCode); return sh && t >= sh.start && t < sh.end; });
+    return `<div class="cal-scroll"><div class="cal" style="grid-template-columns:64px repeat(${cols.length}, minmax(168px, 1fr))">
+      <div class="c-h" style="inset-inline-start:0;z-index:3">Time</div>
+      ${per.map(p => `<div class="c-h ${p.c.today ? 'today' : ''}">${esc(p.c.head)}<small>${esc(p.c.sub)}${p.has ? ` · ${Object.values(p.m).filter(Appt.isFree).length} free` : ''}</small></div>`).join('')}
+      ${times.map(t => `<div class="c-t">${t}</div>${per.map(p => `<div class="c-s ${p.m[t] || inSess(p, t) ? '' : 'off'}">${cell(p.c.doc, p.c.date, p.m[t])}</div>`).join('')}`).join('')}
+    </div></div>`;
+  }
+
+  function drawCal() {
+    $('#dt').value = st.date;
+    let cols;
+    if (st.view === 'week') {
+      const d = Kit.doc(st.doc) || match()[0];
+      if (!d) { $('#calHost').innerHTML = `<div class="empty">${icon('user-search')}<b>Select a doctor</b></div>`; return; }
+      st.doc = d.id;
+      const start = Kit.addDays(st.date, -Appt.dow(st.date));
+      cols = Array.from({ length: 7 }, (_, i) => Kit.addDays(start, i)).map(date => ({ doc: d, date, head: Appt.DOW3[Appt.dow(date)] + ' ' + fmtDate(date).slice(0, 6), sub: date === T ? 'Today' : '', today: date === T }));
+      $('#calTitle').innerHTML = `${esc(d.name)} <span class="muted small" style="font-weight:600">${esc(d.specialty)} · week of ${esc(fmtDate(start))}</span>`;
+    } else {
+      cols = match().map(d => ({ doc: d, date: st.date, head: d.name, sub: d.specialty + ' · ' + (d.room || ''), today: false }));
+      $('#calTitle').innerHTML = `${esc(Appt.dayLabel(st.date))}${st.date === T ? ' <span class="badge b-info nodot">Today</span>' : ''}`;
+      if (!cols.length) { $('#calHost').innerHTML = `<div class="empty">${icon('user-search')}<b>No doctor matches the filters</b></div>`; return; }
+    }
+    $('#calHost').innerHTML = grid(cols);
+    $$('[data-a]', $('#calHost')).forEach(b => b.addEventListener('click', () => Appt.detailDrawer(Appt.appt(b.dataset.a), drawAll)));
+    $$('[data-free]', $('#calHost')).forEach(b => {
+      const go = () => { if (!canAdd) { UI.toast('You need Add permission to book.', 'err'); return; } const [doctorId, date, time] = b.dataset.free.split('|'); Appt.bookDrawer({ doctorId, date, time, onDone: drawAll }); };
+      b.addEventListener('click', go); b.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+    });
+  }
+  function drawAll() { drawList(); drawCal(); }
+  function drawSeg() { Kit.seg($('#vSeg'), [['day', 'Day', 'calendar-days'], ['week', 'Week', 'calendar-range']], st.view, (v) => { st.view = v; drawAll(); }); }
+
+  $('#dq').addEventListener('input', (e) => { st.q = e.target.value.trim(); drawAll(); });
+  $('#fSpec').addEventListener('change', (e) => { st.spec = e.target.value; drawAll(); });
+  $('#fBr').addEventListener('change', (e) => { st.branch = e.target.value; drawAll(); });
+  $('#fLang').addEventListener('change', (e) => { st.lang = e.target.value; drawAll(); });
+  $('#fAv').addEventListener('change', (e) => { st.avail = e.target.value; drawAll(); });
+  $('#dt').addEventListener('change', (e) => { if (e.target.value) { st.date = e.target.value; drawAll(); } });
+  $('#prev').addEventListener('click', () => { st.date = Kit.addDays(st.date, st.view === 'week' ? -7 : -1); drawAll(); });
+  $('#next').addEventListener('click', () => { st.date = Kit.addDays(st.date, st.view === 'week' ? 7 : 1); drawAll(); });
+  $('#tdy').addEventListener('click', () => { st.date = T; drawAll(); });
+  $('#newBk').addEventListener('click', () => Appt.bookDrawer({ doctorId: st.view === 'week' ? st.doc : '', date: st.date >= T ? st.date : T, onDone: drawAll }));
+  drawSeg(); drawAll();
+})();
+</script>
+</body>
+</html>

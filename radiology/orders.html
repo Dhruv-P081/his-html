@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Radiology orders · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-radiology.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/lab.js"></script><script src="../assets/radiology.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, nowStamp, field } = UI;
+  const OPT = 'radiology.orders';
+  if (!UI.page({ opt: OPT, title: 'Radiology orders', subtitle: 'Accept and schedule, reject or cancel imaging requests, record the exam and give the patient the preparation instructions.',
+    actions: `<a class="btn primary" href="${R('radiology/reporting.html')}">${icon('file-pen-line')} Reporting worklist</a>` })) return;
+  const canEdit = can(OPT, 'edit'), canCancel = can(OPT, 'cancel'), canVerify = can(OPT, 'verify'), canApprove = can(OPT, 'approve');
+  const TABS = [['open', 'Open', o => Rad.isOpen(o)], ['new', 'New', o => Rad.stageKey(o) === 'new'], ['scheduled', 'Scheduled', o => Rad.stageKey(o) === 'scheduled'], ['performed', 'To report', o => Rad.stageKey(o) === 'performed'],
+    ['reported', 'To verify', o => Rad.stageKey(o) === 'reported'], ['verified', 'To approve', o => Rad.stageKey(o) === 'verified'], ['final', 'Approved', o => o.status === 'Approved'], ['closed', 'Rejected or cancelled', o => /Rejected|Cancelled/.test(o.status)], ['all', 'All', () => true]];
+  let tab = 'open';
+  const ROOMS = { 'X-ray': ['X-ray Room 1', 'X-ray Room 2', 'Portable (ward)'], Ultrasound: ['US Room 1', 'US Room 2'], CT: ['CT Suite'], MRI: ['MRI Suite'], Mammography: ['Mammo Room'] };
+  $('#page').innerHTML = `<div id="oTabs" style="margin-bottom:12px"></div><div id="oTbl"></div>
+    <div style="margin-top:14px">${Kit.phase2('Modality scheduling and booking, safety screening console and DICOM modality worklist are 2nd phase (SOW V4). Here the exam is given a planned time and room on acceptance.')}</div>`;
+  const drawTabs = () => Kit.tabs($('#oTabs'), TABS.map(([id, label, f]) => ({ id, label, count: Rad.orders().filter(f).length })), tab, (t) => { tab = t; tbl.redraw(); });
+  const mods = [...new Set(db.radExams.map(x => x.modality))];
+  const tbl = UI.table($('#oTbl'), {
+    columns: [
+      { label: 'Patient', sort: o => Kit.ptName(o.patientId), render: o => Kit.patientCell(Kit.pt(o.patientId)) },
+      { label: 'Exam', sort: o => o.name, render: o => `<b>${esc(o.name)}</b>${Rad.side(o) ? ' <span class="tag">' + esc(Rad.side(o)) + '</span>' : ''}<div class="small muted"><span class="mono">${esc(Rad.acc(o))}</span> · ${esc(Rad.exam(o.code).modality)}${Rad.exam(o.code).contrast ? ' · with contrast' : ''}</div>` },
+      { label: 'Location', render: o => `${esc(Lab.location(o))}<div class="small muted">${esc(Kit.docName(o.by))}</div>` },
+      { label: 'Priority', sort: o => ({ STAT: 0, Urgent: 1 }[o.priority] ?? 2), render: o => Kit.priority(o.priority) },
+      { label: 'Ordered', sort: o => o.orderedAt, render: o => esc(Kit.when(o.orderedAt)) },
+      { label: 'Scheduled', sort: o => o.scheduledAt || '', render: o => o.scheduledAt ? `${esc(Kit.when(o.scheduledAt))}<div class="small muted">${esc(o.room || '')}</div>` : '<span class="mute">-</span>' },
+      { label: 'Report TAT', sort: o => Rad.tat(o).pct, render: o => Rad.tatCell(o) },
+      { label: 'Stage', render: o => Rad.stageBadge(o) },
+    ],
+    rows: () => Rad.orders().filter(TABS.find(t => t[0] === tab)[2]).sort((a, b) => (a.orderedAt < b.orderedAt ? 1 : -1)),
+    search: o => [Rad.acc(o), o.no, o.name, Kit.ptName(o.patientId), (Kit.pt(o.patientId) || {}).mrn].join(' '), searchPlaceholder: 'Accession, order, patient, MRN or exam',
+    filters: [{ label: 'Modality', options: mods.map(m => [m, m]), test: (o, v) => Rad.exam(o.code).modality === v }, { label: 'Priority', options: [['STAT', 'STAT'], ['Urgent', 'Urgent'], ['Routine', 'Routine']], test: (o, v) => o.priority === v },
+      { label: 'Setting', options: [['OPD', 'OPD'], ['ER', 'Emergency'], ['IPD', 'Inpatient']], test: (o, v) => Lab.setting(o) === v }],
+    onRow: (o) => open(o), empty: 'No imaging requests in this list',
+  });
+  drawTabs();
+  const refresh = () => { drawTabs(); tbl.redraw(); };
+
+  function printPrep(o) {
+    const prep = Rad.prepFor(o);
+    Kit.printDoc({ title: 'Patient instructions', sub: 'Radiology · exam preparation', html: Rad.instructionsHtml(o, prep) });
+    audit('Exam instructions printed', 'Radiology order', { id: o.id, label: o.no }, []);
+  }
+  function accept(o, after) {
+    const ex = Rad.exam(o.code), rooms = ROOMS[ex.modality] || ['Radiology'];
+    const def = Lab.local(o.scheduledAt || (o.orderedAt.slice(0, 10) >= db.TODAY ? o.orderedAt : nowStamp()));
+    UI.drawer({ title: 'Accept and schedule', sub: esc(o.name + ' · ' + Kit.ptName(o.patientId)),
+      body: `<div class="err-summary hidden"></div><div class="form-grid">
+        ${field({ id: 'sAt', label: 'Planned date and time', type: 'datetime-local', value: def, req: true })}
+        ${field({ id: 'sRoom', label: 'Room', type: 'select', options: rooms.map(r => [r, r]), value: rooms[0], placeholder: false, req: true })}
+        ${ex.laterality ? field({ id: 'sSide', label: 'Laterality', type: 'select', options: [['Right', 'Right'], ['Left', 'Left'], ['Bilateral', 'Bilateral']], value: o.laterality || '', req: true }) : ''}
+        ${ex.contrast ? `<label class="check full"><input type="checkbox" id="sCon"> Contrast checks done: allergy history, creatinine or eGFR within 30 days, metformin advice</label>` : ''}
+        ${ex.modality === 'MRI' ? `<label class="check full"><input type="checkbox" id="sMr"> MRI safety questionnaire sent to the patient</label>` : ''}
+        ${field({ id: 'sNote', label: 'Notes for the technologist', type: 'textarea', full: true })}</div>
+        <div class="note-box" style="margin-top:12px"><b>${icon('clipboard-list')} Preparation</b><div class="small" style="margin-top:4px">${esc((Rad.prepFor(o) || {}).instructions || 'No special preparation.')}</div></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="sGo">${icon('calendar-check')} Accept and schedule</button>`,
+      onMount: (el, close) => {
+        const go = $('#sGo', el);
+        const chk = () => { go.disabled = !$('#sAt', el).value || (ex.laterality && !$('#sSide', el).value) || (ex.contrast && !$('#sCon', el).checked); };
+        $$('input,select', el).forEach(i => { i.addEventListener('input', chk); i.addEventListener('change', chk); }); chk();
+        go.addEventListener('click', () => {
+          const at = Lab.fromLocal($('#sAt', el).value);
+          if (!UI.showErrors(el, at < o.orderedAt ? { sAt: 'The planned time is before the order time.' } : {})) return;
+          Object.assign(o, { status: 'Scheduled', acceptedAt: nowStamp(), acceptedBy: Lab.meName(), scheduledAt: at, room: $('#sRoom', el).value, techNote: $('#sNote', el).value.trim() });
+          if (ex.laterality) o.laterality = $('#sSide', el).value;
+          save(); audit('Radiology order accepted', 'Radiology order', { id: o.id, label: o.no }, [['Status', 'Ordered', 'Scheduled'], ['Planned', '', at + ' · ' + o.room]]);
+          close(); toast('Accepted and scheduled for ' + Kit.when(at)); refresh(); after && after();
+        });
+      } });
+  }
+  function perform(o, after) {
+    const ex = Rad.exam(o.code);
+    const reps = (db.radiologyRejectReasons || []).filter(r => r.type === 'Repeat' && r.status !== 'Inactive');
+    UI.drawer({ title: 'Record exam performed', sub: esc(o.name + ' · ' + Kit.ptName(o.patientId)),
+      body: `<div class="err-summary hidden"></div><div class="form-grid">
+        ${field({ id: 'pAt', label: 'Performed at', type: 'datetime-local', value: Lab.local(nowStamp()), req: true })}
+        ${field({ id: 'pBy', label: 'Technologist', value: Lab.meName(), req: true })}
+        <label class="check full"><input type="checkbox" id="pId"> Patient identity, exam and ${ex.laterality ? 'side (' + esc(o.laterality || 'not set') + ')' : 'body part'} confirmed before the exam</label>
+        ${ex.contrast ? field({ id: 'pCon', label: 'Contrast given', placeholder: 'for example Omnipaque 350, 80 mL IV' }) : ''}
+        ${field({ id: 'pRep', label: 'Repeat images (reason)', type: 'select', options: reps.map(r => [r.code, r.name]), placeholder: 'No repeat' })}
+        ${field({ id: 'pNote', label: 'Technologist notes', type: 'textarea', full: true })}</div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="pGo" disabled>${icon('check')} Mark performed</button>`,
+      onMount: (el, close) => {
+        const go = $('#pGo', el); const chk = () => { go.disabled = !$('#pId', el).checked || !$('#pAt', el).value || !$('#pBy', el).value.trim(); };
+        $$('input,select', el).forEach(i => { i.addEventListener('input', chk); i.addEventListener('change', chk); });
+        go.addEventListener('click', () => {
+          const rep = $('#pRep', el).value, rr = reps.find(r => r.code === rep);
+          Object.assign(o, { status: 'Performed', performedAt: Lab.fromLocal($('#pAt', el).value), performedBy: $('#pBy', el).value.trim(), contrastGiven: ex.contrast ? ($('#pCon', el).value.trim() || true) : false, techNotes: $('#pNote', el).value.trim(), repeats: rr ? [{ code: rr.code, reason: rr.name, at: nowStamp() }] : [] });
+          save(); audit('Radiology exam performed', 'Radiology order', { id: o.id, label: o.no }, [['Status', 'Scheduled', 'Performed']].concat(rr ? [['Repeat', '', rr.name]] : []));
+          close(); toast('Exam recorded. It is now on the reporting worklist.'); refresh(); after && after();
+        });
+      } });
+  }
+  function reject(o, after) {
+    Lab.reasonConfirm({ title: 'Reject this request?', confirm: 'Reject request', label: 'Rejection reason (master)', body: `${esc(o.name)} for ${esc(Kit.ptName(o.patientId))}. The referring doctor sees the reason in the EMR.`,
+      reasons: (db.radiologyRejectReasons || []).filter(r => r.type === 'Reject' && r.status !== 'Inactive'),
+      onConfirm: (code, name, text) => { const b = o.status; Object.assign(o, { status: 'Rejected', rejectCode: code, rejectReason: text, rejectedBy: Lab.meName(), rejectedAt: nowStamp() }); save(); audit('Radiology order rejected', 'Radiology order', { id: o.id, label: o.no }, [['Status', b, 'Rejected'], ['Reason code', '', code]], { reason: text }); toast('Request rejected'); refresh(); after && after(); } });
+  }
+  function cancel(o, after) {
+    UI.confirm({ title: 'Cancel (delete) this request?', reason: true, confirm: 'Cancel request', body: `${esc(o.name)} for ${esc(Kit.ptName(o.patientId))}. Requests are not physically deleted; they are cancelled and stay in the audit trail.`, impact: o.scheduledAt ? ['The planned slot ' + esc(Kit.when(o.scheduledAt)) + ' is released.', 'Any charge is reversed by billing.'] : ['Any charge is reversed by billing.'],
+      onConfirm: (reason) => { const b = o.status; Object.assign(o, { status: 'Cancelled', cancelReason: reason, cancelledBy: Lab.meName(), cancelledAt: nowStamp() }); save(); audit('Radiology order cancelled', 'Radiology order', { id: o.id, label: o.no }, [['Status', b, 'Cancelled']], { reason }); toast('Request cancelled'); refresh(); after && after(); } });
+  }
+  function open(o) {
+    const p = Kit.pt(o.patientId), e = Kit.enc(o.encounterId), ex = Rad.exam(o.code), k = Rad.stageKey(o), prep = Rad.prepFor(o), r = o.report || {};
+    const steps = [['Ordered', o.orderedAt, Kit.docName(o.by)], ['Accepted and scheduled', o.acceptedAt, (o.acceptedBy || '') + (o.scheduledAt ? ' · for ' + Kit.when(o.scheduledAt) + ' ' + (o.room || '') : '')], ['Exam performed', o.performedAt, o.performedBy],
+      ['Report written', r.authoredAt, r.author], ['Report verified', r.verifiedAt, r.verifiedBy], ['Approved and signed', r.approvedAt, r.approvedBy]];
+    const closed = o.status === 'Rejected' ? ['Rejected', o.rejectedAt, o.rejectedBy, o.rejectReason] : o.status === 'Cancelled' ? ['Cancelled', o.cancelledAt, o.cancelledBy, o.cancelReason] : null;
+    UI.drawer({ title: o.name, sub: `<span class="mono">${esc(Rad.acc(o))}</span> · ${esc(o.no)} · ${Rad.stageBadge(o)}`, wide: true,
+      body: `${Kit.patientBanner(p, e)}
+        ${closed ? `<div class="banner err" style="margin-bottom:12px">${icon('ban')}<span>${esc(closed[0])} by ${esc(closed[2])} on ${esc(UI.fmtDate(closed[1]))}: ${esc(closed[3])}</span></div>` : ''}
+        ${ex.contrast && (p.allergies || []).some(a => /Iodine|contrast/i.test(a)) ? `<div class="alert-cdss" style="margin-bottom:12px">${icon('triangle-alert')}<div>Contrast allergy on record. Check with the radiologist before scheduling.</div></div>` : ''}
+        <div class="grid g2">
+          <div class="card card-pad"><div class="section-t" style="margin:0 0 10px">Exam</div><dl class="kv tight">
+            <dt>Exam</dt><dd>${esc(ex.code)} · ${esc(ex.name)}</dd><dt>Modality</dt><dd>${Rad.modTag(ex.modality)}</dd><dt>Body part</dt><dd>${esc(ex.bodyPart)}${Rad.side(o) ? ' · ' + esc(Rad.side(o)) : ''}</dd>
+            <dt>Contrast</dt><dd>${ex.contrast ? 'Yes' + (typeof o.contrastGiven === 'string' ? ' · ' + esc(o.contrastGiven) : '') : 'No'}</dd><dt>Priority</dt><dd>${Kit.priority(o.priority)}</dd><dt>Referred by</dt><dd>${esc(Kit.docName(o.by))}</dd>
+            <dt>Location</dt><dd>${esc(Lab.location(o))}</dd><dt>Price</dt><dd>${Kit.money(ex.price)}</dd>${(o.repeats || []).length ? `<dt>Repeats</dt><dd>${o.repeats.map(x => esc(x.reason)).join(', ')}</dd>` : ''}</dl></div>
+          <div class="card card-pad"><div class="section-t" style="margin:0 0 10px">Progress</div><div class="timeline">
+            ${steps.map(([l, at, by]) => `<div class="tl-item ${at ? 'ok' : 'mute'}"><b class="${at ? '' : 'mute'}">${esc(l)}</b><div class="meta">${at ? esc(UI.fmtDate(at)) + (by ? ' · ' + esc(by) : '') : 'Pending'}</div></div>`).join('')}
+            ${closed ? `<div class="tl-item err"><b>${esc(closed[0])}</b><div class="meta">${esc(UI.fmtDate(closed[1]))}</div></div>` : ''}</div></div>
+        </div>
+        <div class="card" style="margin-top:16px"><div class="card-head"><h3>${icon('clipboard-list')} Exam preparation and patient instructions</h3><div class="actions"><button class="btn sm" id="dPrep">${icon('printer')} Print for the patient</button></div></div><div class="card-pad">
+          ${prep ? `<div class="row wrap" style="gap:8px;margin-bottom:8px"><span class="tag">${esc(prep.code)}</span><b>${esc(prep.name)}</b>${prep.fasting ? `<span class="badge b-warn">Fasting ${esc(prep.fasting)} h</span>` : ''}</div><div>${esc(prep.instructions)}</div>` : '<span class="muted">No special preparation in the master for this exam.</span>'}</div></div>`,
+      foot: `<button class="btn" data-close>Close</button><span class="grow"></span>
+        ${['new', 'scheduled'].includes(k) ? `<button class="btn danger" id="dCancel" ${canCancel ? '' : 'disabled title="Needs Cancel permission"'}>${icon('trash-2')} Cancel request</button>` : ''}
+        ${k === 'new' ? `<button class="btn danger" id="dReject" ${canCancel ? '' : 'disabled title="Needs Cancel permission"'}>${icon('ban')} Reject</button><button class="btn primary" id="dAccept" ${canEdit ? '' : 'disabled title="Needs Edit permission"'}>${icon('calendar-check')} Accept and schedule</button>` : ''}
+        ${k === 'scheduled' ? `<button class="btn" id="dResched" ${canEdit ? '' : 'disabled title="Needs Edit permission"'}>${icon('calendar-clock')} Reschedule</button><button class="btn primary" id="dPerform" ${canEdit ? '' : 'disabled title="Needs Edit permission"'}>${icon('check')} Mark performed</button>` : ''}
+        ${k === 'performed' ? `<a class="btn primary" href="${R('radiology/reporting.html?id=' + o.id)}">${icon('file-pen-line')} Write report</a>` : ''}
+        ${k === 'reported' ? (canVerify ? `<a class="btn primary" href="${R('radiology/reporting.html?id=' + o.id)}">${icon('check-check')} Verify report</a>` : `<button class="btn primary" disabled title="Needs Verify permission">${icon('check-check')} Verify report</button>`) : ''}
+        ${k === 'verified' ? (canApprove ? `<a class="btn primary" href="${R('radiology/reporting.html?id=' + o.id)}">${icon('signature')} Approve and sign</a>` : `<button class="btn primary" disabled title="Needs Approve permission">${icon('signature')} Approve and sign</button>`) : ''}
+        ${k === 'final' ? `<a class="btn" href="${R('radiology/dispatch.html')}">${icon('send')} Print or e-send</a>` : ''}`,
+      onMount: (el, close) => {
+        const b = (id, f) => { const x = $('#' + id, el); if (x) x.addEventListener('click', () => f(o, close)); };
+        b('dAccept', (o2, c) => accept(o2, c)); b('dResched', (o2, c) => accept(o2, c)); b('dPerform', (o2, c) => perform(o2, c)); b('dReject', (o2, c) => reject(o2, c)); b('dCancel', (o2, c) => cancel(o2, c));
+        $('#dPrep', el).addEventListener('click', () => printPrep(o));
+      } });
+  }
+  const id = UI.param('id'); if (id) { const o = db.orders.find(x => x.id === id); if (o) { tab = 'all'; drawTabs(); tbl.redraw(); open(o); } }
+})();
+</script>
+</body>
+</html>

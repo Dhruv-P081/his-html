@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stock and expiry · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-pharmacy.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/pharmacy.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, me, nowStamp } = UI;
+  const P = Pharmacy, T = db.TODAY;
+  const OPT = 'pharmacy.stock';
+  if (!UI.page({ opt: OPT, title: 'Stock and expiry', subtitle: 'Pharmacy stock by store and batch. Near-expiry (90 days), expired and below-minimum lists.',
+    actions: `<button class="btn" id="prt" ${can(OPT, 'print') ? '' : 'disabled title="Needs Print permission"'}>${icon('printer')} Print list</button>` })) return;
+
+  let wh = 'both', tab = 'near';
+  const whs = () => wh === 'both' ? [P.WH.OPD, P.WH.IPD] : [wh];
+  const batches = () => db.stock.filter(s => whs().includes(s.warehouseId) && Number(s.qty) > 0 && (Kit.item(s.itemId) || {}).type === 'Drug');
+  const belowRows = () => { const out = []; db.items.filter(i => i.type === 'Drug' && i.status !== 'Inactive').forEach(it => whs().forEach(w => { const q = P.available(it.id, w); if (q < it.min) out.push({ id: it.id + w, it, w, q }); })); return out; };
+  const TABS = [
+    { id: 'all', label: 'All batches', rows: () => batches() },
+    { id: 'near', label: 'Near expiry (90 days)', rows: () => batches().filter(s => s.expiry > T && P.daysTo(s.expiry) <= 90) },
+    { id: 'exp', label: 'Expired', rows: () => batches().filter(s => s.expiry <= T) },
+    { id: 'below', label: 'Below minimum', rows: belowRows },
+    { id: 'quar', label: 'Quarantine', rows: () => db.pharmacyQuarantine.filter(q => whs().includes(q.warehouseId)) },
+  ];
+  $('#page').innerHTML = `<div class="grid g4" style="margin-bottom:16px" id="kpis"></div>
+    <div class="row wrap" style="gap:12px;margin-bottom:12px"><div id="tabs" class="grow"></div><div id="whSeg"></div></div><div id="tbl"></div>`;
+  Kit.seg($('#whSeg'), [['both', 'Both pharmacies'], [P.WH.OPD, 'Outpatient'], [P.WH.IPD, 'Inpatient']], wh, (v) => { wh = v; drawAll(); });
+  const val = (s) => Number(s.qty) * Number(s.cost || (Kit.item(s.itemId) || {}).cost || 0);
+  function drawAll() {
+    const b = batches();
+    $('#kpis').innerHTML = Kit.kpi('Stock value', Kit.money(Kit.sumBy(b.filter(s => s.expiry > T), val)), { icon: 'wallet', foot: `${b.length} batches · ${new Set(b.map(s => s.itemId)).size} items` })
+      + Kit.kpi('Near expiry', TABS[1].rows().length, { icon: 'calendar-clock', foot: Kit.money(Kit.sumBy(TABS[1].rows(), val)) + ' at cost, next 90 days' })
+      + Kit.kpi('Expired, not quarantined', TABS[2].rows().length, { icon: 'octagon-alert', foot: 'Blocked from dispensing and sale' })
+      + Kit.kpi('Below minimum', TABS[3].rows().length, { icon: 'package-minus', foot: 'Raise a stock request to the Main Store' });
+    Kit.tabs($('#tabs'), TABS.map(x => ({ id: x.id, label: x.label, count: x.rows().length })), tab, (id) => { tab = id; drawTable(); });
+    drawTable();
+  }
+  const batchCols = [
+    { label: 'Item', sort: s => Kit.item(s.itemId).name, render: s => { const it = Kit.item(s.itemId); return `<b>${esc(it.name)}</b>${it.schedule ? ' <span class="badge b-violet nodot">CD</span>' : ''}<div class="small muted"><span class="mono">${esc(it.code)}</span> · ${esc(it.brand)} · ${esc(it.manufacturer)}</div>`; } },
+    { label: 'Store', sort: s => s.warehouseId, render: s => esc(P.WH_NAME[s.warehouseId]) },
+    { label: 'Batch', sort: s => s.batch, render: s => `<span class="mono">${esc(s.batch)}</span>` },
+    { label: 'Expiry', sort: s => s.expiry, render: s => { const d = P.daysTo(s.expiry); return `${esc(Kit.day(s.expiry))}<div class="small" style="color:${d <= 0 ? 'var(--error)' : d <= 90 ? 'var(--warning)' : 'var(--sub)'}">${d <= 0 ? 'Expired ' + (-d) + ' days ago' : d + ' days left'}</div>`; } },
+    { label: 'Quantity', cls: 'num', sort: s => Number(s.qty), render: s => `<span class="num b">${s.qty}</span> <span class="small muted">${esc((Kit.item(s.itemId).uom || '').toLowerCase())}</span>` },
+    { label: 'Value (KWD)', cls: 'num', sort: val, render: s => `<span class="num">${Kit.money(val(s), false)}</span>` },
+    { label: 'Status', render: s => Kit.status(s.expiry <= T ? 'Expired' : P.daysTo(s.expiry) <= 90 ? 'Expiring' : 'Available') },
+    { label: '', cls: 'actions', render: s => s.expiry <= T ? `<button class="btn xs danger" data-q="${s.id}" ${can(OPT, 'view') ? '' : 'disabled'}>${icon('shield-ban')} Quarantine</button>` : '' },
+  ];
+  function drawTable() {
+    const cur = TABS.find(x => x.id === tab);
+    if (tab === 'below') {
+      UI.table($('#tbl'), { columns: [
+        { label: 'Item', sort: r => r.it.name, render: r => `<b>${esc(r.it.name)}</b><div class="small muted"><span class="mono">${esc(r.it.code)}</span> · ${esc(r.it.brand)}</div>` },
+        { label: 'Store', sort: r => r.w, render: r => esc(P.WH_NAME[r.w]) },
+        { label: 'Usable stock', cls: 'num', sort: r => r.q, render: r => `<b class="num" style="color:${r.q ? 'var(--warning)' : 'var(--error)'}">${r.q}</b>` },
+        { label: 'Minimum', cls: 'num', sort: r => r.it.min, render: r => `<span class="num">${r.it.min}</span>` },
+        { label: 'Maximum', cls: 'num', render: r => `<span class="num">${r.it.max}</span>` },
+        { label: 'Suggested request', cls: 'num', sort: r => r.it.max - r.q, render: r => `<b class="num">${r.it.max - r.q}</b>` },
+        { label: 'Main Store', cls: 'num', render: r => `<span class="num">${P.available(r.it.id, 'wh_01')}</span>` },
+        { label: 'Status', render: r => Kit.status(r.q ? 'Low stock' : 'Out of stock') },
+      ], rows: cur.rows(), search: r => [r.it.name, r.it.code, r.it.brand].join(' '), searchPlaceholder: 'Search item', empty: 'No items below minimum', emptyIcon: 'circle-check' });
+      return;
+    }
+    if (tab === 'quar') {
+      UI.table($('#tbl'), { columns: [
+        { label: 'Item', sort: q => Kit.item(q.itemId).name, render: q => `<b>${esc(Kit.item(q.itemId).name)}</b><div class="small muted mono">${esc(q.batch)}</div>` },
+        { label: 'Store', render: q => esc(P.WH_NAME[q.warehouseId]) },
+        { label: 'Expiry', sort: q => q.expiry, render: q => esc(Kit.day(q.expiry)) },
+        { label: 'Quantity', cls: 'num', sort: q => q.qty, render: q => `<span class="num b">${q.qty}</span>` },
+        { label: 'Reason', render: q => esc(q.reason) },
+        { label: 'By', sort: q => q.at, render: q => `${esc(q.by)}<div class="small muted">${esc(Kit.when(q.at))}</div>` },
+        { label: 'Status', render: q => Kit.status(q.status, 'err') },
+      ], rows: cur.rows(), search: q => [Kit.item(q.itemId).name, q.batch, q.reason].join(' '), searchPlaceholder: 'Search item or batch', empty: 'Nothing in quarantine', emptyIcon: 'shield-check' });
+      return;
+    }
+    UI.table($('#tbl'), { columns: batchCols, rows: cur.rows(), sort: 3, search: s => [Kit.item(s.itemId).name, Kit.item(s.itemId).code, Kit.item(s.itemId).brand, s.batch].join(' '), searchPlaceholder: 'Search item, code or batch',
+      filters: [{ label: 'Category', options: Array.from(new Set(db.items.filter(i => i.type === 'Drug').map(i => i.category))).sort().map(c => [c, c]), test: (s, v) => Kit.item(s.itemId).category === v }, { label: 'Controlled', options: [['yes', 'Controlled only']], test: (s) => !!Kit.item(s.itemId).schedule }],
+      empty: 'No batches in this list', emptyIcon: 'boxes', pageSize: 12,
+      afterDraw: (tb) => $$('[data-q]', tb).forEach(b => b.addEventListener('click', () => {
+        const s = db.stock.find(x => x.id === b.dataset.q), it = Kit.item(s.itemId);
+        UI.confirm({ title: `Quarantine batch ${s.batch}?`, body: `${s.qty} ${esc((it.uom || '').toLowerCase())} of ${esc(it.name)} are moved out of usable stock in ${esc(P.WH_NAME[s.warehouseId])}. They wait for return to the vendor or destruction.`,
+          impact: ['Stock quantity of this batch becomes 0', it.schedule ? 'A wastage entry is written to the controlled drug register' : 'The batch can no longer be picked'], reason: true, confirm: 'Quarantine', onConfirm: (reason) => {
+            const q = Number(s.qty);
+            db.pharmacyQuarantine.unshift({ id: UI.uid('pq'), stockId: s.id, itemId: s.itemId, warehouseId: s.warehouseId, batch: s.batch, expiry: s.expiry, qty: q, reason, by: me().displayName, at: nowStamp(), status: 'Quarantined' });
+            s.qty = 0;
+            if (it.schedule) P.cdAdd({ itemId: it.id, warehouseId: s.warehouseId, type: 'Wastage', qty: q, ref: `Expired batch ${s.batch} quarantined`, witness: '' });
+            save(); audit('Expired batch quarantined', 'Stock batch', { id: s.id, label: `${it.code} ${s.batch}` }, [['Quantity', String(q), '0']], { reason });
+            toast(`Batch ${s.batch} quarantined`); drawAll();
+          } });
+      })) });
+  }
+  drawAll();
+  $('#prt').addEventListener('click', () => {
+    const cur = TABS.find(x => x.id === tab), rows = cur.rows();
+    const head = tab === 'below' ? ['Item', 'Store', 'Usable', 'Minimum', 'Suggested'] : ['Item', 'Store', 'Batch', 'Expiry', 'Quantity'];
+    const body = rows.map(r => tab === 'below' ? [r.it.name, P.WH_NAME[r.w], r.q, r.it.min, r.it.max - r.q] : [Kit.item(r.itemId).name, P.WH_NAME[r.warehouseId], r.batch, Kit.day(r.expiry), r.qty]);
+    Kit.printDoc({ title: 'Pharmacy stock: ' + cur.label, sub: `${wh === 'both' ? 'Both pharmacies' : P.WH_NAME[wh]} · ${Kit.day(T)}`, html: `<table><thead><tr>${head.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${body.map(r => `<tr>${r.map(v => `<td>${esc(v)}</td>`).join('')}</tr>`).join('')}</tbody></table>` });
+  });
+})();
+</script>
+</body>
+</html>

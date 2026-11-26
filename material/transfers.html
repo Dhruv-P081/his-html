@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Transfers and issues · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-material.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/material.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, drawer, confirm, field, showErrors, nowStamp, fmtDate, param } = UI;
+  const M = Material, OPT = 'material.stock.issue';
+  if (!UI.page({ opt: OPT, title: 'Transfers and issues', subtitle: 'Move stock between stores by batch (dispatch, then receive) and issue goods against approved material requests.',
+    actions: M.btn({ id: 'newTr', cls: 'primary', icon: 'arrow-left-right', label: 'New transfer', allow: can(OPT, 'add'), why: 'Needs Add permission' }) })) return;
+  const list = () => db.materialTransfers;
+  const storeOpts = M.storeOpts(OPT);
+  let store = param('wh') || M.ctxWh() || (storeOpts[0] || [])[0] || '';
+  const dest = (t) => t.type === 'Issue' ? (t.wardId ? M.wardName(t.wardId) : M.deptName(t.deptId)) : M.whName(t.toWh);
+  const val = (t) => M.total(t.lines, 'qty', 'cost');
+  const toIssue = () => db.materialRequests.filter(r => r.fromWarehouseId === store && /^Approved$|Partially issued/.test(r.status));
+
+  $('#page').innerHTML = `<div class="card card-pad" style="margin-bottom:16px"><div class="row wrap" style="gap:16px;align-items:flex-end"><div class="field" style="min-width:260px;margin:0"><label for="whSel">Store</label><select class="input" id="whSel">${storeOpts.map(o => `<option value="${o[0]}" ${o[0] === store ? 'selected' : ''}>${esc(o[1])}</option>`).join('')}</select></div>
+    <div class="small muted grow" style="padding-bottom:10px;min-width:280px">${icon('info')} Batches are picked first-expiry, first-out. Expired batches are never issued. Stock leaves the sending store on dispatch and arrives at the receiving store on receipt.</div></div></div>
+    <div class="grid g4" style="margin-bottom:16px" id="kpis"></div><div id="tabs" style="margin-bottom:12px"></div><div id="body"></div>`;
+  let tab = param('tab') || (param('mr') ? 'issue' : 'transit');
+  const TABS = [
+    ['issue', 'Requests to issue', null],
+    ['transit', 'In transit', t => t.status === 'In transit' && (t.fromWh === store || t.toWh === store)],
+    ['Draft', 'Drafts', t => t.status === 'Draft' && t.fromWh === store],
+    ['done', 'Received or issued', t => /Received|Issued/.test(t.status) && (t.fromWh === store || t.toWh === store)],
+    ['all', 'All', t => t.fromWh === store || t.toWh === store],
+  ];
+  const drawTabs = () => Kit.tabs($('#tabs'), TABS.map(([id, label, f]) => ({ id, label, count: f ? list().filter(f).length : toIssue().length })), tab, (t) => { tab = t; drawBody(); });
+  const drawKpis = () => {
+    const mine = list().filter(t => t.fromWh === store || t.toWh === store);
+    $('#kpis').innerHTML = Kit.kpi('Requests to issue', toIssue().length, { icon: 'package-open', foot: toIssue().filter(r => r.priority === 'Urgent').length + ' urgent' })
+      + Kit.kpi('Incoming in transit', mine.filter(t => t.status === 'In transit' && t.toWh === store).length, { icon: 'truck', foot: 'Waiting for you to receive' })
+      + Kit.kpi('Outgoing in transit', mine.filter(t => t.status === 'In transit' && t.fromWh === store).length, { icon: 'send', foot: 'Dispatched, not yet received' })
+      + Kit.kpi('Issued this month', Kit.money(Kit.sumBy(mine.filter(t => t.fromWh === store && /Issued|Received|In transit/.test(t.status) && t.date.slice(0, 7) === db.TODAY.slice(0, 7)), val)), { icon: 'arrow-up-right', foot: 'Value sent out of ' + M.whName(store) });
+  };
+  let t1 = null;
+  const drawBody = () => {
+    if (tab === 'issue') {
+      const rs = toIssue();
+      $('#body').innerHTML = `<div class="card">${rs.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>Request</th><th>For</th><th>Lines</th><th>Priority</th><th>Approved by</th><th>Status</th><th></th></tr></thead><tbody>
+        ${rs.map(r => `<tr><td><a class="mono b" href="${R('material/requests.html?id=' + r.id)}">${esc(r.no)}</a><div class="xs muted">${Kit.when(r.at)}</div></td><td><b>${esc(r.wardId ? M.wardName(r.wardId) : M.deptName(r.deptId))}</b><div class="xs muted">${r.forWarehouseId ? 'To ' + esc(M.whName(r.forWarehouseId)) + ' (transfer)' : 'Direct consumption (issue)'}</div></td>
+          <td>${r.lines.map(l => `${esc(M.item(l.itemId).name)} <span class="muted">${Kit.num((l.approvedQty || 0) - (l.issuedQty || 0))}</span>`).join('<br>')}</td><td>${Kit.priority(r.priority)}</td><td>${esc(r.approvedBy || '')}</td><td>${M.st(r.status)}</td>
+          <td class="actions">${M.btn({ cls: 'sm primary', icon: 'package-open', label: 'Issue', data: `data-mr="${r.id}"`, allow: can(OPT, 'add'), why: 'Needs Add permission' })}</td></tr>`).join('')}</tbody></table></div>`
+        : `<div class="empty">${icon('package-open')}<b>No approved requests waiting for ${esc(M.whName(store))}</b><span>Approved material requests appear here for issue.</span></div>`}</div>`;
+      $$('[data-mr]', $('#body')).forEach(b => b.addEventListener('click', () => issue(db.materialRequests.find(r => r.id === b.dataset.mr))));
+      return;
+    }
+    $('#body').innerHTML = '<div id="tbl"></div>';
+    t1 = UI.table($('#tbl'), {
+      columns: [
+        { label: 'Document', sort: t => t.no, render: t => `<span class="mono b nw">${esc(t.no)}</span><div class="xs muted">${fmtDate(t.date)}</div>` },
+        { label: 'Type', sort: t => t.type, render: t => `<span class="tag">${t.type === 'Issue' ? 'Goods issue' : 'Transfer'}</span>${t.fromWh === store ? '<div class="xs muted">Outgoing</div>' : '<div class="xs muted">Incoming</div>'}` },
+        { label: 'From', render: t => esc(M.whName(t.fromWh)) },
+        { label: 'To', render: t => `<b>${esc(dest(t))}</b>${t.mrId ? `<div class="xs muted mono">${esc((db.materialRequests.find(r => r.id === t.mrId) || {}).no || '')}</div>` : ''}` },
+        { label: 'Items', render: t => `${t.lines.length} batch line(s)<div class="xs muted">${Kit.num(Kit.sumBy(t.lines, l => l.qty))} units</div>` },
+        { label: 'Value', cls: 'num', sort: t => val(t), render: t => `<span class="num nw">${Kit.money(val(t))}</span>` },
+        { label: 'Status', sort: t => t.status, render: t => M.st(t.status) },
+      ],
+      rows: () => list().filter(TABS.find(x => x[0] === tab)[2]).slice().sort((a, b) => b.date.localeCompare(a.date) || b.no.localeCompare(a.no)),
+      search: t => [t.no, dest(t), M.whName(t.fromWh), t.lines.map(l => M.itemLabel(l.itemId) + ' ' + l.batch).join(' ')].join(' '),
+      searchPlaceholder: 'Search document, store, item or batch',
+      filters: [{ label: 'Type', options: [['Transfer', 'Transfer'], ['Issue', 'Goods issue']], test: (t, v) => t.type === v }],
+      onRow: open, empty: 'Nothing in this view', emptyIcon: 'arrow-left-right',
+    });
+  };
+  const refresh = () => { drawTabs(); drawKpis(); drawBody(); };
+  $('#whSel').addEventListener('change', (e) => { store = e.target.value; refresh(); });
+  refresh();
+
+  function printNote(t) {
+    M.docPrint({ title: (t.type === 'Issue' ? 'Goods issue note ' : 'Stock transfer note ') + t.no, heading: t.type === 'Issue' ? 'GOODS ISSUE NOTE' : 'STOCK TRANSFER NOTE',
+      left: [['From store', M.whName(t.fromWh)], ['To', dest(t)], ['Request', t.mrId ? (db.materialRequests.find(r => r.id === t.mrId) || {}).no : '-']], right: [['Document', t.no], ['Date', fmtDate(t.date)], ['Status', t.status]],
+      columns: ['#', 'Item', 'Batch', 'Expiry', 'Qty sent', 'Qty received', 'Value'], rows: t.lines.map((l, i) => [i + 1, M.itemLabel(l.itemId), l.batch, fmtDate(l.expiry), Kit.num(l.qty), l.recvQty != null ? Kit.num(l.recvQty) : '', Kit.money(l.qty * l.cost, false)]),
+      foot: ['', '', '', '', '', 'Total KWD', Kit.money(val(t), false)], note: t.note, sign: ['Dispatched by: ' + (t.dispatchedBy || ''), 'Received by: ' + (t.receivedBy || ''), 'Checked by'] });
+  }
+
+  function dispatch(t) {
+    t.lines.forEach(l => M.deduct(l.stockId, l.qty));
+    t.status = 'In transit'; t.dispatchedBy = M.meName(); t.dispatchedAt = nowStamp();
+  }
+
+  function open(t) {
+    const canRecv = can(OPT, 'verify');
+    const short = t.status === 'Draft' ? t.lines.filter(l => { const s = db.stock.find(x => x.id === l.stockId); return !s || s.qty < l.qty; }) : [];
+    drawer({ title: t.no, sub: `${t.type === 'Issue' ? 'Goods issue' : 'Stock transfer'} · ${M.st(t.status)}`, wide: true,
+      body: `${t.status === 'In transit' ? `<div class="banner info" style="margin-bottom:12px">${icon('truck')}<span>Dispatched by ${esc(t.dispatchedBy)} ${Kit.when(t.dispatchedAt)}. ${t.toWh ? 'Receive at ' + esc(M.whName(t.toWh)) + ' to add the stock there.' : ''}</span></div>` : ''}
+        ${t.status === 'Draft' ? `<div class="banner warn" style="margin-bottom:12px">${icon('file-clock')}<span>Draft. Stock has not moved yet.${short.length ? ' Not enough stock now for ' + short.map(l => esc(M.item(l.itemId).code)).join(', ') + '.' : ''}</span></div>` : ''}
+        <div class="card card-pad" style="margin-bottom:14px">${M.kv([['From', esc(M.whName(t.fromWh))], ['To', esc(dest(t))], ['Material request', t.mrId ? `<a class="mono" href="${R('material/requests.html?id=' + t.mrId)}">${esc((db.materialRequests.find(r => r.id === t.mrId) || {}).no)}</a>` : ''], ['Note', esc(t.note)], ['Created by', esc(t.createdBy)], ['Dispatched', t.dispatchedBy ? esc(t.dispatchedBy) + ' · ' + fmtDate(t.dispatchedAt) : ''], ['Received', t.receivedBy ? esc(t.receivedBy) + ' · ' + fmtDate(t.receivedAt) : '']])}</div>
+        <div class="card"><div class="card-head"><h3>${icon('list')} Batch lines</h3></div><div class="table-wrap"><table class="tbl compact"><thead><tr><th>Item</th><th>Batch</th><th>Expiry</th><th class="num">Qty sent</th><th class="num" style="width:130px">Qty received</th><th class="num">Value</th></tr></thead><tbody>
+          ${t.lines.map((l, i) => `<tr><td>${M.itemCell(l.itemId)}</td><td class="mono nw">${esc(l.batch)}</td><td>${fmtDate(l.expiry)}</td><td class="num">${Kit.num(l.qty)}</td><td class="num">${t.status === 'In transit' && t.type === 'Transfer' && canRecv ? `<input class="input" type="number" min="0" max="${l.qty}" value="${l.qty}" data-rq="${i}" aria-label="Received quantity">` : l.recvQty != null ? Kit.num(l.recvQty) + (l.recvQty < l.qty ? ' <span class="badge b-err nodot">Short</span>' : '') : '<span class="mute">-</span>'}</td><td class="num">${Kit.money(l.qty * l.cost, false)}</td></tr>`).join('')}
+        </tbody><tfoot><tr><td colspan="5" style="text-align:end"><b>Total</b></td><td class="num"><b>${Kit.money(val(t))}</b></td></tr></tfoot></table></div></div>
+        ${t.status === 'In transit' && t.type === 'Transfer' && canRecv ? `<div class="field hidden" id="rqWhy" style="margin-top:12px"><label for="rqReason">Reason for the shortage<span class="req">*</span></label><textarea class="input" id="rqReason" maxlength="300"></textarea><div class="err hidden" data-err="rqReason"></div></div>` : ''}`,
+      foot: `${M.btn({ id: 'dPrint', icon: 'printer', label: 'Print note', allow: can(OPT, 'print'), why: 'Needs Print permission' })}<span class="grow"></span><button class="btn" data-close>Close</button>
+        ${t.status === 'Draft' ? M.btn({ id: 'dDisp', cls: 'primary', icon: 'send', label: 'Dispatch', allow: short.length ? { ok: false, why: 'Not enough stock in a batch' } : can(OPT, 'add'), why: 'Needs Add permission' }) : ''}
+        ${t.status === 'In transit' && t.type === 'Transfer' ? M.btn({ id: 'dRecv', cls: 'success', icon: 'package-check', label: 'Receive', allow: canRecv ? true : { ok: false, why: 'Needs Verify permission' } }) : ''}`,
+      onMount: (el, close) => {
+        const on = (id, fn) => { const b = $('#' + id, el); if (b) b.addEventListener('click', fn); };
+        on('dPrint', () => printNote(t));
+        const rq = $$('[data-rq]', el);
+        rq.forEach(i => i.addEventListener('input', () => { $('#rqWhy', el).classList.toggle('hidden', !rq.some(x => +x.value < +x.max)); }));
+        on('dDisp', () => confirm({ title: 'Dispatch ' + t.no + '?', tone: 'primary', icon: 'send', confirm: 'Dispatch', body: `Stock leaves ${esc(M.whName(t.fromWh))} now.`, impact: t.lines.map(l => `${Kit.num(l.qty)} × ${esc(M.item(l.itemId).name)} (batch ${esc(l.batch)})`),
+          onConfirm: () => { dispatch(t); save(); audit('Transfer dispatched', 'Stock transfer', { id: t.id, label: t.no }, [['Status', 'Draft', 'In transit']]); toast(t.no + ' dispatched'); close(); refresh(); } }));
+        on('dRecv', () => {
+          const q = rq.map(i => Math.max(0, Math.min(+i.max, Number(i.value || 0))));
+          const shortRec = t.lines.some((l, i) => q[i] < l.qty);
+          const why = shortRec ? ($('#rqReason', el).value || '').trim() : '';
+          if (shortRec && why.length < 3) { showErrors(el, { rqReason: 'Say why less was received (for example damaged in transit).' }); return; }
+          confirm({ title: 'Receive ' + t.no + '?', tone: 'primary', icon: 'package-check', confirm: 'Receive', body: `Stock is added to ${esc(M.whName(t.toWh))}.${shortRec ? ' The shortage is recorded as a transfer loss.' : ''}`,
+            onConfirm: () => {
+              t.lines.forEach((l, i) => { l.recvQty = q[i]; if (q[i] > 0) M.addStock(l.itemId, t.toWh, l.batch, l.expiry, q[i], l.cost); });
+              t.status = 'Received'; t.receivedBy = M.meName(); t.receivedAt = nowStamp(); if (why) t.shortReason = why;
+              if (t.mrId) { const r = db.materialRequests.find(x => x.id === t.mrId); if (r) { /* already counted at issue */ } }
+              save(); audit('Transfer received', 'Stock transfer', { id: t.id, label: t.no }, [['Status', 'In transit', 'Received']].concat(t.lines.filter(l => l.recvQty < l.qty).map(l => [M.item(l.itemId).code + ' received', String(l.qty), String(l.recvQty)])), { reason: why });
+              toast(t.no + ' received into ' + M.whName(t.toWh)); close(); refresh();
+            } });
+        });
+      } });
+  }
+
+  /* ---------- New transfer ---------- */
+  function create() {
+    const toOpts = db.warehouses.filter(w => w.status === 'Active' && w.companyId === M.ctx().companyId && w.id !== store).map(w => [w.id, w.name]);
+    let le, alloc = [];
+    drawer({ title: 'New stock transfer', sub: 'From ' + esc(M.whName(store)) + '. Batches are allocated first-expiry, first-out.', wide: true,
+      body: `<div class="err-summary hidden"></div><div class="form-grid c3">
+        ${field({ id: 'tFrom', label: 'From store', value: M.whName(store), readonly: true })}
+        ${field({ id: 'tTo', label: 'To store', type: 'select', options: toOpts, req: true })}
+        ${field({ id: 'tNote', label: 'Note', max: 200 })}</div>
+        <div class="section-t" style="margin-top:14px">Items</div><div id="tLines"></div>
+        <div class="section-t" style="margin-top:14px">Batch allocation</div><div id="tAlloc"></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><span class="grow"></span><button class="btn" id="tDraft" disabled>${icon('save')} Save draft</button><button class="btn primary" id="tDisp" disabled>${icon('send')} Save and dispatch</button>`,
+      onMount: (el, close) => {
+        const upd = () => {
+          alloc = []; let shortBy = [];
+          (le ? le.get() : []).forEach(l => { const a = M.fefo(l.itemId, store, l.qty); alloc = alloc.concat(a.lines); if (a.short > 0) shortBy.push(M.item(l.itemId).code + ' short by ' + a.short); });
+          $('#tAlloc', el).innerHTML = alloc.length ? `<div class="table-wrap"><table class="tbl compact"><thead><tr><th>Item</th><th>Batch</th><th>Expiry</th><th class="num">Qty</th></tr></thead><tbody>${alloc.map(a => `<tr><td>${esc(M.itemLabel(a.itemId))}</td><td class="mono nw">${esc(a.batch)}</td><td>${fmtDate(a.expiry)} ${M.expTone(a.expiry) ? M.st(M.expTone(a.expiry)) : ''}</td><td class="num">${Kit.num(a.qty)}</td></tr>`).join('')}</tbody></table></div>` : `<div class="small muted">Add items to see the batches that will be sent.</div>`;
+          if (shortBy.length) $('#tAlloc', el).innerHTML += `<div class="banner err" style="margin-top:8px">${icon('triangle-alert')}<span>Not enough usable stock: ${esc(shortBy.join('; '))}.</span></div>`;
+          const ok = le && le.valid() && $('#tTo', el).value && !shortBy.length;
+          $('#tDraft', el).disabled = !ok; $('#tDisp', el).disabled = !ok;
+        };
+        le = M.lineEditor($('#tLines', el), { wh: () => store, items: (x) => M.onHand(x.id, store) > 0, onChange: upd });
+        $('#tTo', el).addEventListener('change', upd);
+        const go = (disp) => {
+          const e = {}; if (!$('#tTo', el).value) e.tTo = 'Choose the receiving store.'; le.problems().forEach((m, i) => { e['l' + i] = m; });
+          if (!showErrors(el, e)) return;
+          const t = { id: UI.uid('mtr'), no: M.docNo('TRF-26-', 'materialTransfers'), type: 'Transfer', date: db.TODAY, fromWh: store, toWh: $('#tTo', el).value, deptId: null, mrId: null, status: 'Draft', note: $('#tNote', el).value.trim(), createdBy: M.meName(), lines: alloc.map(a => Object.assign({}, a, { recvQty: null })) };
+          if (disp) dispatch(t);
+          db.materialTransfers.push(t); save(); audit(disp ? 'Transfer dispatched' : 'Transfer drafted', 'Stock transfer', { id: t.id, label: t.no }, [['From', '', M.whName(t.fromWh)], ['To', '', M.whName(t.toWh)], ['Status', '', t.status]]);
+          toast(t.no + (disp ? ' dispatched' : ' saved as draft')); close(); tab = disp ? 'transit' : 'Draft'; refresh();
+        };
+        $('#tDraft', el).addEventListener('click', () => go(false));
+        $('#tDisp', el).addEventListener('click', () => go(true));
+        upd();
+      } });
+  }
+
+  /* ---------- Issue against an approved material request ---------- */
+  function issue(r) {
+    if (!r) return;
+    const toSub = !!r.forWarehouseId;
+    const rows = r.lines.map(l => { const rem = Math.max(0, (l.approvedQty || 0) - (l.issuedQty || 0)); return { l, rem, qty: Math.min(rem, M.usable(l.itemId, r.fromWarehouseId)) }; }).filter(x => x.rem > 0);
+    drawer({ title: 'Issue against ' + r.no, sub: `${esc(r.wardId ? M.wardName(r.wardId) : M.deptName(r.deptId))} · from ${esc(M.whName(r.fromWarehouseId))}`, wide: true,
+      body: `<div class="banner info" style="margin-bottom:12px">${icon('info')}<span>${toSub ? `The goods go to <b>${esc(M.whName(r.forWarehouseId))}</b>. A transfer is dispatched and the ward receives it into its sub store.` : 'Direct consumption: the goods are issued to the ward or department and leave stock now.'}</span></div>
+        <div class="table-wrap"><table class="tbl compact"><thead><tr><th>Item</th><th class="num">Approved</th><th class="num">Issued before</th><th class="num">Usable stock</th><th style="width:120px">Issue now</th></tr></thead><tbody>
+        ${rows.map((x, i) => `<tr data-i="${i}"><td>${M.itemCell(x.l.itemId)}</td><td class="num">${Kit.num(x.l.approvedQty)}</td><td class="num">${Kit.num(x.l.issuedQty || 0)}</td><td class="num">${Kit.num(M.usable(x.l.itemId, r.fromWarehouseId))}</td><td><input class="input" type="number" min="0" max="${Math.min(x.rem, M.usable(x.l.itemId, r.fromWarehouseId))}" value="${x.qty}" aria-label="Issue quantity"></td></tr>`).join('')}</tbody></table></div>
+        <div class="section-t" style="margin-top:14px">Batches picked (first expiry, first out)</div><div id="iAlloc"></div><div class="err-summary hidden" style="margin-top:10px"></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><span class="grow"></span><button class="btn primary" id="iGo">${icon('package-open')} ${toSub ? 'Dispatch to sub store' : 'Issue goods'}</button>`,
+      onMount: (el, close) => {
+        let alloc = [];
+        const upd = () => {
+          alloc = []; rows.forEach(x => { alloc = alloc.concat(M.fefo(x.l.itemId, r.fromWarehouseId, x.qty).lines); });
+          $('#iAlloc', el).innerHTML = alloc.length ? `<div class="table-wrap"><table class="tbl compact"><thead><tr><th>Item</th><th>Batch</th><th>Expiry</th><th class="num">Qty</th></tr></thead><tbody>${alloc.map(a => `<tr><td>${esc(M.itemLabel(a.itemId))}</td><td class="mono nw">${esc(a.batch)}</td><td>${fmtDate(a.expiry)}</td><td class="num">${Kit.num(a.qty)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="small muted">Nothing to issue.</div>';
+          $('#iGo', el).disabled = !alloc.length || rows.some(x => x.qty < 0 || x.qty > Math.min(x.rem, M.usable(x.l.itemId, r.fromWarehouseId)));
+        };
+        $$('tbody input', el).forEach(inp => inp.addEventListener('input', () => { rows[+inp.closest('tr').dataset.i].qty = Number(inp.value || 0); upd(); }));
+        $('#iGo', el).addEventListener('click', () => {
+          const t = { id: UI.uid('mtr'), no: toSub ? M.docNo('TRF-26-', 'materialTransfers') : M.docNo('GI-26-', 'materialTransfers'), type: toSub ? 'Transfer' : 'Issue', date: db.TODAY, fromWh: r.fromWarehouseId, toWh: toSub ? r.forWarehouseId : null, deptId: r.deptId, wardId: r.wardId, mrId: r.id, status: 'Draft', note: 'Against ' + r.no, createdBy: M.meName(),
+            lines: alloc.map(a => Object.assign({}, a, { recvQty: null })) };
+          dispatch(t);
+          if (!toSub) { t.status = 'Issued'; t.receivedBy = r.requestedBy; t.receivedAt = nowStamp(); }
+          rows.forEach(x => { x.l.issuedQty = (x.l.issuedQty || 0) + x.qty; });
+          const before = r.status;
+          r.status = r.lines.every(l => (l.issuedQty || 0) >= (l.approvedQty || 0)) ? 'Issued' : 'Partially issued';
+          db.materialTransfers.push(t); save();
+          audit(toSub ? 'Request dispatched to sub store' : 'Goods issued', 'Goods issue', { id: t.id, label: t.no }, [['Request ' + r.no, before, r.status], ['Value', '', Kit.money(val(t))]]);
+          toast(t.no + (toSub ? ' dispatched to ' + M.whName(r.forWarehouseId) : ' issued')); close(); tab = toSub ? 'transit' : 'done'; refresh();
+          if (can(OPT, 'print')) printNote(t);
+        });
+        upd();
+      } });
+  }
+
+  $('#newTr').addEventListener('click', create);
+  if (param('mr')) { const r = db.materialRequests.find(x => x.id === param('mr')); if (r && can(OPT, 'add')) { if (storeOpts.some(o => o[0] === r.fromWarehouseId)) { store = r.fromWarehouseId; $('#whSel').value = store; refresh(); } issue(r); } }
+  M.openFromQuery(list(), open);
+})();
+</script>
+</body>
+</html>

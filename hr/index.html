@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HR and Payroll overview · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-hr.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/hr.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, esc, icon, $, R } = UI;
+  if (!UI.page({ module: 'hr', title: 'HR and Payroll overview', subtitle: 'Headcount, credentials, attendance, leave and payroll (SOW V4 Module 12).',
+    actions: `<a class="btn" href="${R('hr/roster.html')}">${icon('calendar-range')} Duty roster</a><a class="btn primary" href="${R('hr/payroll.html')}">${icon('calculator')} Payroll run</a>` })) return;
+  const T = db.TODAY;
+  const staff = HR.active();
+  const kw = staff.filter(v => v.nationality === 'Kuwaiti').length;
+  const creds = HR.credentials().map(c => Object.assign({ b: HR.credBand(c) }, { c }));
+  const due = creds.filter(x => x.b.band !== 'Valid');
+  const todayAtt = db.hrAttendance.filter(a => a.date === T && HR.attStatus(a) !== 'Leave');
+  const inNow = todayAtt.filter(a => ['Present', 'On duty', 'Late'].includes(HR.attStatus(a)));
+  const late = todayAtt.filter(a => HR.attStatus(a) === 'Late').length;
+  const pendLv = db.hrLeaves.filter(l => l.status === 'Pending approval');
+  const pendOt = db.hrOvertime.filter(o => o.status === 'Pending approval');
+  const month = T.slice(0, 7), run = HR.runOf(month);
+  const prevRun = HR.runOf(HR.monthAdd(month, -1));
+  const runNet = run && run.lines ? Kit.sumBy(run.lines, l => l.net) : null;
+
+  // Attendance trend: last 10 working days
+  const days = Array.from(new Set(db.hrAttendance.map(a => a.date))).sort().filter(d => HR.dow(d) < 5).slice(-10);
+  const cnt = (d, sts) => db.hrAttendance.filter(a => a.date === d && sts.includes(HR.attStatus(a))).length;
+
+  const byDept = Kit.groupBy(staff, v => HR.dept(v.deptId));
+  const cats = Kit.groupBy(staff, v => v.category);
+  const approvals = []
+    .concat(pendLv.map(l => ({ kind: 'Leave', no: l.no, who: l.empId, what: `${HR.leaveType(l.type).name}, ${l.days} day${l.days === 1 ? '' : 's'} from ${Kit.day(l.from)}`, at: l.requestedAt, href: R('hr/leave.html?id=' + l.id) })))
+    .concat(pendOt.map(o => ({ kind: 'Overtime', no: o.no, who: o.empId, what: `${o.hours} h ${o.type.toLowerCase()} on ${Kit.day(o.date)}`, at: o.requestedAt, href: R('hr/leave.html?tab=ot&id=' + o.id) })))
+    .concat(db.hrLoans.filter(l => l.status === 'Pending approval').map(l => ({ kind: 'Loan', no: l.no, who: l.empId, what: `${HR.loanType(l.type).name}, ${Kit.money(l.amount)} in ${l.instalments}`, at: l.requestedAt, href: R('hr/loans.html?id=' + l.id) })))
+    .concat(db.hrEosb.filter(c => c.status === 'Pending approval').map(c => ({ kind: 'End of service', no: c.no, who: c.empId, what: `${c.reason}, last day ${Kit.day(c.lastDay)}`, at: c.createdAt, href: R('hr/eosb.html?id=' + c.id) })))
+    .concat(db.hrRosters.filter(r => r.status === 'Pending approval').map(r => ({ kind: 'Roster', no: r.no, who: null, what: `${HR.dept(r.deptId)}, week of ${Kit.day(r.weekStart)}`, at: r.submittedAt, href: R('hr/roster.html?week=' + r.weekStart + '&dept=' + r.deptId) })))
+    .sort((a, b) => String(b.at).localeCompare(String(a.at)));
+
+  $('#page').innerHTML = `
+    <div class="grid g5" style="margin-bottom:16px">
+      ${Kit.kpi('Headcount', staff.length, { icon: 'users', foot: `${kw} Kuwaiti · ${staff.length - kw} expatriate`, href: R('hr/employees.html') })}
+      ${Kit.kpi('Licences due in 90 days', due.length, { icon: 'id-card', foot: `${due.filter(x => x.b.band === 'Expired').length} expired · ${due.filter(x => x.b.band === '30 days').length} within 30 days`, href: R('hr/credentials.html') })}
+      ${Kit.kpi('Attendance today', todayAtt.length ? Math.round(100 * inNow.length / todayAtt.length) + '%' : '-', { icon: 'fingerprint', foot: `${inNow.length} of ${todayAtt.length} rostered in · ${late} late`, href: R('hr/attendance.html') })}
+      ${Kit.kpi('Leave pending', pendLv.length, { icon: 'plane', foot: `${pendOt.length} overtime requests pending`, href: R('hr/leave.html') })}
+      ${Kit.kpi('Payroll ' + HR.monthLabel(month), run ? run.status : 'Not started', { icon: 'calculator', foot: runNet != null ? 'Net ' + Kit.money(runNet) : prevRun && prevRun.lines ? 'Last month net ' + Kit.money(Kit.sumBy(prevRun.lines, l => l.net)) : '', href: R('hr/payroll.html') })}
+    </div>
+    <div class="grid g-side">
+      <div class="card"><div class="card-head"><h3>${icon('chart-line')} Attendance, last 10 working days</h3><div class="actions"><span class="small muted">Staff per day, ${esc(Kit.day(days[0]))} to ${esc(Kit.day(days[days.length - 1]))}</span><a class="btn sm" href="${R('hr/attendance.html?tab=exc')}">Exceptions ${icon('arrow-right')}</a></div></div><div class="card-pad">
+        ${Kit.lineChart({ labels: days.map(d => String(+d.slice(8))), series: [{ name: 'Present', color: '#0E9F6E', values: days.map(d => cnt(d, ['Present', 'On duty', 'Regularized'])) }, { name: 'Late', color: '#E0670E', values: days.map(d => cnt(d, ['Late'])) }, { name: 'Absent or missing punch', color: '#D23F6A', values: days.map(d => cnt(d, ['Absent', 'Missing punch'])) }], min: 0, title: 'Attendance trend' })}
+        <div class="section-t" style="margin:18px 0 10px">Today, ${esc(Kit.day(T))}</div>
+        <div class="grid g5">${[['In on time', todayAtt.filter(a => ['Present', 'On duty'].includes(HR.attStatus(a))).length, 'ok'], ['Late', late, 'warn'], ['Not punched yet', todayAtt.filter(a => HR.attStatus(a) === 'Not punched').length, 'err'], ['On leave', db.hrAttendance.filter(a => a.date === T && HR.attStatus(a) === 'Leave').length + staff.filter(v => HR.onLeave(v.id, T) && !db.hrAttendance.some(a => a.date === T && a.empId === v.id)).length, 'violet'], ['Missing punch, yesterday', db.hrAttendance.filter(a => a.date === Kit.addDays(T, -1) && HR.attStatus(a) === 'Missing punch').length, 'warn']].map(([l, n, t]) => `<div><div class="small muted" style="white-space:nowrap">${esc(l)}</div><div style="font-size:22px;font-weight:800;margin:2px 0 6px">${n}</div><div class="progress ${t === 'ok' ? 'ok' : t === 'err' ? 'err' : 'warn'}"><i style="width:${Math.max(4, Math.round(100 * n / Math.max(1, todayAtt.length)))}%"></i></div></div>`).join('')}</div></div></div>
+      <div class="card"><div class="card-head"><h3>${icon('users')} Staff by category</h3></div><div class="card-pad">
+        ${Kit.donut(Object.entries(cats).sort((a, b) => b[1].length - a[1].length).map(([k, l], i) => [k, l.length, Kit.PALETTE[i]]), { centerLabel: 'Staff' })}
+        <div class="section-t" style="margin:18px 0 10px">Headcount by department</div>
+        ${Kit.barList(Object.entries(byDept).sort((a, b) => b[1].length - a[1].length).map(([k, l]) => [k, l.length]))}</div></div>
+      <div class="card"><div class="card-head"><h3>${icon('list-checks')} Waiting for approval</h3><div class="actions"><span class="tag">${approvals.length}</span></div></div>
+        <div class="table-wrap"><table class="tbl"><thead><tr><th>Type</th><th>Reference</th><th>Employee</th><th>Request</th><th>Raised</th><th></th></tr></thead><tbody>
+        ${approvals.length ? approvals.slice(0, 8).map(a => `<tr><td>${Kit.status(a.kind, 'info')}</td><td class="mono">${esc(a.no)}</td><td>${a.who ? HR.empCell(HR.get(a.who), HR.dept(HR.get(a.who).deptId)) : '<span class="muted">Department roster</span>'}</td><td>${esc(a.what)}</td><td class="small muted">${esc(Kit.when(a.at))}</td><td class="actions"><a class="btn xs" href="${a.href}">Open ${icon('arrow-right')}</a></td></tr>`).join('') : `<tr><td colspan="6"><div class="empty">${icon('circle-check')}<b>Nothing waiting</b></div></td></tr>`}
+        </tbody></table></div></div>
+      <div class="card"><div class="card-head"><h3>${icon('id-card')} Licences expiring first</h3><div class="actions"><a class="btn sm" href="${R('hr/credentials.html')}">All ${icon('arrow-right')}</a></div></div>
+        <div class="list-rows pad">${due.sort((a, b) => a.b.days - b.b.days).slice(0, 7).map(x => `<div><div class="grow cell-main"><b>${esc(HR.name(x.c.empId))}</b><span>${esc(x.c.type)}</span></div><span class="badge b-${x.b.tone}">${esc(x.b.label)}</span></div>`).join('') || `<div class="empty">${icon('circle-check')}<b>No licences due</b></div>`}</div></div>
+    </div>`;
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Critical findings · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-radiology.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/lab.js"></script><script src="../assets/radiology.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { icon, $, R } = UI;
+  const OPT = 'radiology.critical';
+  if (!UI.page({ opt: OPT, title: 'Critical findings console', subtitle: 'Critical imaging findings waiting for telephone notification. Log every call with read-back; escalate when the team cannot be reached.' })) return;
+  $('#page').innerHTML = `<div class="banner info" style="margin-bottom:14px">${icon('info')}<span>Policy: the reporting radiologist phones the referring doctor within 60 minutes of identifying a critical finding. After 60 minutes or 2 failed attempts, escalate to the consultant on call.</span></div><div id="crit"></div>`;
+  Lab.criticalPage($('#crit'), { opt: OPT, kind: 'rad', key: 'radiologyCalls', targetMins: 60,
+    items: () => Rad.orders().filter(o => o.report && o.report.critical && /Reported|Approved/.test(o.status)).map(o => ({ o, detected: o.report.authoredAt, finding: o.report.criticalText, testName: o.name, ref: Rad.acc(o) })),
+    view: (o) => { location.href = R('radiology/reporting.html?id=' + o.id); } });
+})();
+</script>
+</body>
+</html>

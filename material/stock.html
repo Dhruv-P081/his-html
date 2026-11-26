@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stock and valuation · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-material.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/material.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, esc, icon, $, $$, R, can, fmtDate, param, drawer } = UI;
+  const M = Material, OPT = 'material.stock.view';
+  if (!UI.page({ opt: OPT, title: 'Stock and valuation', subtitle: 'Stock by store, item and batch, valued by FIFO and weighted average, with min/max reorder alerts.',
+    actions: M.btn({ id: 'prt', icon: 'printer', label: 'Print view', allow: can(OPT, 'print'), why: 'Needs Print permission' }) })) return;
+  const storeOpts = M.storeOpts(OPT);
+  const ALL = '__all';
+  let store = param('wh') || M.ctxWh() || (storeOpts[0] || [])[0] || '';
+  if (!storeOpts.some(o => o[0] === store)) store = (storeOpts[0] || [])[0] || '';
+  let view = param('view') || 'item';
+  let vm = M.method();
+  const whIds = () => store === ALL ? storeOpts.map(o => o[0]) : [store];
+  const rowsIn = () => db.stock.filter(s => whIds().includes(s.warehouseId) && s.qty > 0);
+  const cats = Array.from(new Set(db.items.map(x => x.category))).sort();
+
+  $('#page').innerHTML = `<div class="card card-pad" style="margin-bottom:16px"><div class="row wrap" style="gap:16px;align-items:flex-end">
+      <div class="field" style="min-width:260px;margin:0"><label for="whSel">Store</label><select class="input" id="whSel">${storeOpts.length > 1 ? `<option value="${ALL}" ${store === ALL ? 'selected' : ''}>All my stores (${storeOpts.length})</option>` : ''}${storeOpts.map(o => `<option value="${o[0]}" ${o[0] === store ? 'selected' : ''}>${esc(o[1])}</option>`).join('')}</select></div>
+      <div class="field" style="margin:0"><label>Valuation shown</label><div id="vmSeg"></div></div>
+      <div class="small muted grow" style="padding-bottom:10px;min-width:280px">${icon('info')} Book method is <b>${esc(M.methodName())}</b> (set in <a href="${R('material/masters.html')}">Material Masters</a>). Both methods are always computed. Your context store is <b>${esc(M.whName(M.ctxWh()) || 'none')}</b>${M.isMainCtx() ? '' : '; you see only the stores in your assignments'}.</div>
+    </div></div>
+    <div class="grid g4" style="margin-bottom:16px" id="kpis"></div><div id="tabs" style="margin-bottom:12px"></div><div id="body"></div>`;
+
+  const val = (rows) => vm === 'WAVG' ? M.wavgValue(rows) : M.fifoValue(rows);
+  const drawKpis = () => {
+    const r = rowsIn(); const al = whIds().reduce((a, w) => a.concat(M.alerts(w)), []);
+    const exp = r.filter(s => M.expTone(s.expiry) === 'Expired'), near = r.filter(s => M.expTone(s.expiry) === 'Near expiry');
+    $('#kpis').innerHTML = Kit.kpi('Stock value (' + M.methodName(vm) + ')', Kit.money(val(r)), { icon: 'wallet', foot: (vm === 'WAVG' ? 'FIFO ' + Kit.money(M.fifoValue(r)) : 'Weighted average ' + Kit.money(M.wavgValue(r))) })
+      + Kit.kpi('Items in stock', new Set(r.map(s => s.itemId)).size, { icon: 'boxes', foot: r.length + ' batches' })
+      + Kit.kpi('Reorder alerts', al.length, { icon: 'bell-ring', foot: al.filter(a => a.status === 'Out of stock').length + ' out of stock', href: '#', })
+      + Kit.kpi('Expired / near expiry', exp.length + ' / ' + near.length, { icon: 'calendar-x', foot: 'Batches, expiry within 90 days' });
+    const k = $$('#kpis .kpi')[2]; if (k) { k.removeAttribute('onclick'); k.addEventListener('click', () => tabs.set('alerts')); }
+  };
+  Kit.seg($('#vmSeg'), [['FIFO', 'FIFO'], ['WAVG', 'Weighted average']], vm, (v) => { vm = v; drawKpis(); drawBody(); });
+  const TABS = [['item', 'By item', 'package'], ['batch', 'By batch', 'barcode'], ['valuation', 'Valuation', 'calculator'], ['alerts', 'Reorder alerts', 'bell-ring']];
+  let tabs;
+  const makeTabs = () => { tabs = Kit.tabs($('#tabs'), TABS.map(([id, label, ic]) => ({ id, label, icon: ic, count: id === 'alerts' ? whIds().reduce((n, w) => n + M.alerts(w).length, 0) : undefined })), view, (t) => { view = t; drawBody(); }); };
+  makeTabs();
+
+  let printRows = () => ({ cols: [], rows: [] });
+  function drawBody() {
+    const host = $('#body'); host.innerHTML = '<div id="tbl"></div>';
+    const r = rowsIn();
+    if (view === 'item') {
+      const byItem = Object.entries(Kit.groupBy(r, s => s.itemId + '|' + (store === ALL ? '' : s.warehouseId))).map(([k, list]) => {
+        const itemId = k.split('|')[0]; const lv = M.levels().find(l => l.itemId === itemId && whIds().includes(l.whId) && store !== ALL);
+        const q = Kit.sumBy(list, s => s.qty);
+        return { itemId, list, q, value: val(list), first: list.map(s => s.expiry).sort()[0], lv, state: lv ? (q < lv.min ? 'Below min' : q > lv.max ? 'Above max' : 'OK') : '' };
+      });
+      printRows = () => ({ cols: ['Item', 'Category', 'UOM', 'On hand', 'Batches', 'First expiry', 'Value'], rows: byItem.map(x => [M.itemLabel(x.itemId), M.item(x.itemId).category, M.item(x.itemId).uom, Kit.num(x.q), x.list.length, fmtDate(x.first), Kit.money(x.value, false)]) });
+      UI.table($('#tbl'), {
+        columns: [
+          { label: 'Item', sort: x => M.item(x.itemId).name, render: x => M.itemCell(x.itemId, esc(M.item(x.itemId).category)) },
+          { label: 'UOM', render: x => esc(M.item(x.itemId).uom) },
+          { label: 'On hand', cls: 'num', sort: x => x.q, render: x => `<span class="num b">${Kit.num(x.q)}</span>` },
+          { label: 'Min / max', cls: 'num', render: x => x.lv ? `<span class="small nw">${Kit.num(x.lv.min)} / ${Kit.num(x.lv.max)}</span>` : '<span class="mute">-</span>' },
+          { label: 'Batches', cls: 'num', sort: x => x.list.length, render: x => x.list.length },
+          { label: 'First expiry', sort: x => x.first, render: x => `<span class="nw">${fmtDate(x.first)}</span> ${M.expTone(x.first) ? M.st(M.expTone(x.first)) : ''}` },
+          { label: 'Value', cls: 'num', sort: x => x.value, render: x => `<span class="num nw">${Kit.money(x.value)}</span>` },
+          { label: 'Level', render: x => x.state && x.state !== 'OK' ? M.st(x.state) : x.state === 'OK' ? '<span class="badge b-ok nodot">OK</span>' : '' },
+        ],
+        rows: () => byItem.sort((a, b) => M.item(a.itemId).name.localeCompare(M.item(b.itemId).name)),
+        search: x => M.itemLabel(x.itemId) + ' ' + M.item(x.itemId).category, searchPlaceholder: 'Search item code or name',
+        filters: [{ label: 'Category', options: cats.map(c => [c, c]), test: (x, v) => M.item(x.itemId).category === v }, { label: 'Type', options: [['Drug', 'Drug'], ['Consumable', 'Consumable'], ['Reagent', 'Reagent'], ['General', 'General']], test: (x, v) => M.item(x.itemId).type === v }],
+        onRow: (x) => batchDrawer(x.itemId), empty: 'No stock in this store', emptyIcon: 'package',
+      });
+    } else if (view === 'batch') {
+      printRows = () => ({ cols: ['Store', 'Item', 'Batch', 'Expiry', 'Qty', 'Layer cost', 'Value'], rows: r.map(s => [M.whName(s.warehouseId), M.itemLabel(s.itemId), s.batch, fmtDate(s.expiry), Kit.num(s.qty), Kit.money(M.layerCost(s), false), Kit.money(s.qty * M.layerCost(s), false)]) });
+      const t = UI.table($('#tbl'), {
+        columns: [
+          { label: 'Item', sort: s => M.item(s.itemId).name, render: s => M.itemCell(s.itemId) },
+          { label: 'Store', sort: s => M.whName(s.warehouseId), render: s => esc(M.whName(s.warehouseId)) },
+          { label: 'Batch', sort: s => s.batch, render: s => `<span class="mono nw">${esc(s.batch)}</span>` },
+          { label: 'Expiry', sort: s => s.expiry, render: s => `<span class="nw">${fmtDate(s.expiry)}</span> ${M.expTone(s.expiry) ? M.st(M.expTone(s.expiry)) : ''}` },
+          { label: 'Qty', cls: 'num', sort: s => s.qty, render: s => `<span class="num b">${Kit.num(s.qty)}</span>` },
+          { label: 'Layer cost', cls: 'num', sort: s => M.layerCost(s), render: s => `<span class="num">${Kit.money(M.layerCost(s), false)}</span>` },
+          { label: 'Value (' + M.methodName(vm) + ')', sort: s => val([s]), render: s => `<span class="num nw">${Kit.money(val([s]))}</span>` },
+        ],
+        rows: () => r.slice().sort((a, b) => String(a.expiry).localeCompare(String(b.expiry))),
+        search: s => M.itemLabel(s.itemId) + ' ' + s.batch, searchPlaceholder: 'Search item or batch',
+        filters: [{ label: 'Expiry', options: [['exp', 'Expired'], ['near', 'Expiring within 90 days'], ['risk', 'Expired or near expiry']], test: (s, v) => v === 'exp' ? M.expTone(s.expiry) === 'Expired' : v === 'near' ? M.expTone(s.expiry) === 'Near expiry' : !!M.expTone(s.expiry) }, { label: 'Category', options: cats.map(c => [c, c]), test: (s, v) => M.item(s.itemId).category === v }],
+        empty: 'No batches', emptyIcon: 'barcode',
+      });
+      if (param('exp')) { const f = $('#tbl [data-f="0"]'); if (f) { f.value = 'risk'; f.dispatchEvent(new Event('change')); } }
+    } else if (view === 'valuation') {
+      const by = Object.entries(Kit.groupBy(r, s => s.itemId)).map(([itemId, list]) => { const q = Kit.sumBy(list, s => s.qty); const f = M.fifoValue(list), w = M.wavgValue(list); return { itemId, q, f, w, fu: q ? f / q : 0, wu: M.wac(itemId) }; });
+      const byStore = whIds().map(w => { const l = db.stock.filter(s => s.warehouseId === w && s.qty > 0); return [M.whName(w), M.fifoValue(l), M.wavgValue(l)]; });
+      printRows = () => ({ cols: ['Item', 'Qty', 'FIFO unit', 'FIFO value', 'W.avg unit', 'W.avg value', 'Difference'], rows: by.map(x => [M.itemLabel(x.itemId), Kit.num(x.q), Kit.money(x.fu, false), Kit.money(x.f, false), Kit.money(x.wu, false), Kit.money(x.w, false), Kit.money(x.w - x.f, false)]) });
+      host.innerHTML = `<div class="grid g-side-l" style="margin-bottom:14px">
+        <div class="card"><div class="card-head"><h3>${icon('calculator')} Method comparison</h3></div><div class="card-pad">
+          <div class="grid g2" style="margin-bottom:12px"><div class="card card-pad ${vm === 'FIFO' ? '' : ''}" style="${vm === 'FIFO' ? 'outline:2px solid var(--primary-light)' : ''}"><div class="small muted">FIFO</div><div style="font-size:19px;font-weight:800" class="nw">${Kit.num(Kit.sumBy(by, x => x.f))} <small class="muted" style="font-size:11px">KWD</small></div>${M.method() === 'FIFO' ? '<span class="badge b-ok nodot">Book method</span>' : ''}</div>
+          <div class="card card-pad" style="${vm === 'WAVG' ? 'outline:2px solid var(--primary-light)' : ''}"><div class="small muted">Weighted average</div><div style="font-size:19px;font-weight:800" class="nw">${Kit.num(Kit.sumBy(by, x => x.w))} <small class="muted" style="font-size:11px">KWD</small></div>${M.method() === 'WAVG' ? '<span class="badge b-ok nodot">Book method</span>' : ''}</div></div>
+          <div class="small muted">${icon('info')} <b>FIFO</b> values each batch at the price of the receipt it came in on, so the oldest stock leaves first. <b>Weighted average</b> values all stock of an item at the average price of its receipts in the last 12 months.</div></div></div>
+        <div class="card"><div class="card-head"><h3>${icon('warehouse')} By store</h3></div><div class="table-wrap"><table class="tbl compact"><thead><tr><th>Store</th><th class="num">FIFO</th><th class="num">Weighted avg.</th><th class="num">Difference</th></tr></thead><tbody>${byStore.map(s => `<tr><td>${esc(s[0])}</td><td class="num">${Kit.money(s[1], false)}</td><td class="num">${Kit.money(s[2], false)}</td><td class="num">${Kit.money(s[2] - s[1], false)}</td></tr>`).join('')}</tbody></table></div></div></div><div id="tbl"></div>`;
+      UI.table($('#tbl'), {
+        columns: [
+          { label: 'Item', sort: x => M.item(x.itemId).name, render: x => M.itemCell(x.itemId) },
+          { label: 'Qty', cls: 'num', sort: x => x.q, render: x => `<span class="num">${Kit.num(x.q)}</span>` },
+          { label: 'FIFO unit', cls: 'num', render: x => `<span class="num">${Kit.money(x.fu, false)}</span>` },
+          { label: 'FIFO value', cls: 'num', sort: x => x.f, render: x => `<span class="num ${vm === 'FIFO' ? 'b' : ''}">${Kit.money(x.f, false)}</span>` },
+          { label: 'W.avg unit', cls: 'num', render: x => `<span class="num">${Kit.money(x.wu, false)}</span>` },
+          { label: 'W.avg value', cls: 'num', sort: x => x.w, render: x => `<span class="num ${vm === 'WAVG' ? 'b' : ''}">${Kit.money(x.w, false)}</span>` },
+          { label: 'Difference', cls: 'num', sort: x => x.w - x.f, render: x => `<span class="num ${x.w - x.f < 0 ? 'mm-var-neg' : ''}">${Kit.money(x.w - x.f, false)}</span>` },
+        ],
+        rows: () => by.sort((a, b) => (vm === 'WAVG' ? b.w - a.w : b.f - a.f)), search: x => M.itemLabel(x.itemId), searchPlaceholder: 'Search item',
+        filters: [{ label: 'Category', options: cats.map(c => [c, c]), test: (x, v) => M.item(x.itemId).category === v }], empty: 'No stock to value',
+      });
+    } else {
+      const al = whIds().reduce((a, w) => a.concat(M.alerts(w)), []).sort((a, b) => (a.onHand / a.min) - (b.onHand / b.min));
+      const sel = new Set();
+      printRows = () => ({ cols: ['Store', 'Item', 'Min', 'Max', 'On hand', 'On order', 'Suggested'], rows: al.map(a => [M.whName(a.whId), M.itemLabel(a.itemId), a.min, a.max, a.onHand, a.onOrder, a.suggest]) });
+      host.innerHTML = `<div class="card">${al.length ? `<div class="filters"><span class="small muted grow">${icon('info')} Suggested quantity = max − on hand − already on order. Tick lines of one store and create a requisition.</span><button class="btn primary sm" id="mkPr" disabled>${icon('file-plus-2')} Create PR for selected</button></div>
+        <div class="table-wrap"><table class="tbl"><thead><tr><th style="width:34px"><input type="checkbox" id="selAll" aria-label="Select all"></th><th>Item</th><th>Store</th><th class="num">Min</th><th class="num">Max</th><th class="num">On hand</th><th class="num">On order</th><th class="num">Suggested</th><th>Status</th><th></th></tr></thead><tbody>
+        ${al.map((a, i) => `<tr><td><input type="checkbox" data-sel="${i}" aria-label="Select ${esc(M.item(a.itemId).name)}" ${a.suggest > 0 ? '' : 'disabled'}></td><td>${M.itemCell(a.itemId)}</td><td>${esc(M.whName(a.whId))}<div class="xs muted">${esc(a.src)}</div></td><td class="num">${Kit.num(a.min)}</td><td class="num">${Kit.num(a.max)}</td><td class="num b ${a.onHand < a.min ? 'mm-var-neg' : ''}">${Kit.num(a.onHand)}</td><td class="num">${Kit.num(a.onOrder)}</td><td class="num b">${Kit.num(a.suggest)}</td><td>${M.st(a.status)}</td>
+          <td class="actions">${a.suggest > 0 ? (can('material.pr', 'add') ? `<a class="btn xs" href="${R(`material/pr.html?new=1&wh=${a.whId}&items=${a.itemId}:${a.suggest}`)}">${icon('file-plus-2')} Create PR</a>` : M.btn({ cls: 'xs', icon: 'file-plus-2', label: 'Create PR', allow: false, why: 'Needs Add permission on Purchase Requisitions' })) : '<span class="small muted">Covered by open POs</span>'}</td></tr>`).join('')}</tbody></table></div>`
+        : `<div class="empty">${icon('bell-ring')}<b>No reorder alerts</b><span>Every item with a min/max level is above its minimum.</span></div>`}</div>`;
+      const btn = $('#mkPr');
+      const upd = () => { if (!btn) return; const s = [...sel].map(i => al[i]); const one = new Set(s.map(a => a.whId)).size === 1; btn.disabled = !s.length || !one || !can('material.pr', 'add'); btn.title = !can('material.pr', 'add') ? 'Needs Add permission on Purchase Requisitions' : s.length && !one ? 'Select lines of one store only' : ''; };
+      $$('[data-sel]', host).forEach(c => c.addEventListener('change', () => { c.checked ? sel.add(+c.dataset.sel) : sel.delete(+c.dataset.sel); upd(); }));
+      const sa = $('#selAll'); if (sa) sa.addEventListener('change', () => { $$('[data-sel]:not(:disabled)', host).forEach(c => { c.checked = sa.checked; c.checked ? sel.add(+c.dataset.sel) : sel.delete(+c.dataset.sel); }); upd(); });
+      if (btn) btn.addEventListener('click', () => { const s = [...sel].map(i => al[i]); location.href = R(`material/pr.html?new=1&wh=${s[0].whId}&items=${s.map(a => a.itemId + ':' + a.suggest).join(',')}`); });
+    }
+  }
+  function batchDrawer(itemId) {
+    const x = M.item(itemId);
+    const all = db.stock.filter(s => s.itemId === itemId && s.qty > 0 && storeOpts.some(o => o[0] === s.warehouseId));
+    drawer({ title: x.name, sub: esc(x.code) + ' · ' + esc(x.category) + ' · ' + esc(x.uom), wide: true,
+      body: `<div class="grid g3" style="margin-bottom:14px">${Kit.kpi('On hand, my stores', Kit.num(Kit.sumBy(all, s => s.qty)), { icon: 'boxes' })}${Kit.kpi('FIFO value', Kit.money(M.fifoValue(all)), { icon: 'layers' })}${Kit.kpi('Weighted average cost', Kit.money(M.wac(itemId)), { icon: 'calculator', foot: 'Last purchase ' + Kit.money(x.cost) })}</div>
+        <div class="card"><div class="card-head"><h3>${icon('barcode')} Batches by store</h3></div><div class="table-wrap"><table class="tbl compact"><thead><tr><th>Store</th><th>Batch</th><th>Expiry</th><th class="num">Qty</th><th class="num">Layer cost</th></tr></thead><tbody>
+        ${all.sort((a, b) => a.warehouseId.localeCompare(b.warehouseId) || String(a.expiry).localeCompare(String(b.expiry))).map(s => `<tr><td>${esc(M.whName(s.warehouseId))}</td><td class="mono nw">${esc(s.batch)}</td><td>${fmtDate(s.expiry)} ${M.expTone(s.expiry) ? M.st(M.expTone(s.expiry)) : ''}</td><td class="num">${Kit.num(s.qty)}</td><td class="num">${Kit.money(M.layerCost(s), false)}</td></tr>`).join('')}</tbody></table></div></div>
+        <div class="card" style="margin-top:14px"><div class="card-head"><h3>${icon('receipt')} Receipt history (cost layers)</h3></div><div class="table-wrap"><table class="tbl compact"><thead><tr><th>Date</th><th>Source</th><th>Batch</th><th class="num">Qty</th><th class="num">Price</th></tr></thead><tbody>
+        ${(db.materialReceipts || []).filter(r => r.itemId === itemId).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 8).map(r => `<tr><td>${fmtDate(r.date)}</td><td>${esc(r.source)}</td><td class="mono">${esc(r.batch)}</td><td class="num">${Kit.num(r.qty)}</td><td class="num">${Kit.money(r.price, false)}</td></tr>`).join('')}</tbody></table></div></div>`,
+      foot: `<span class="grow"></span><button class="btn" data-close>Close</button>` });
+  }
+  $('#whSel').addEventListener('change', (e) => { store = e.target.value; drawKpis(); makeTabs(); drawBody(); });
+  $('#prt').addEventListener('click', () => { const p = printRows(); Kit.printDoc({ title: 'Stock ' + TABS.find(t => t[0] === view)[1].toLowerCase(), sub: (store === ALL ? 'All my stores' : M.whName(store)) + ' · valuation ' + M.methodName(vm), html: `<table><thead><tr>${p.cols.map(c => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${p.rows.map(r => `<tr>${r.map(v => `<td>${esc(v)}</td>`).join('')}</tr>`).join('')}</tbody></table>` }); });
+  drawKpis(); drawBody();
+})();
+</script>
+</body>
+</html>

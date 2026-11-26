@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Departments · Tibbi Orbit</title>
+<link rel="stylesheet" href="assets/styles.css">
+<script src="assets/icons.js"></script><script src="assets/data.js"></script><script src="assets/data-core.js"></script><script src="assets/ui.js"></script>
+</head>
+<body>
+<script>
+const { db, save, $, $$, icon, esc, page, can, table, drawer, field, showErrors, badge, L, toast, audit, me, nowStamp, uid, CODE_RE, normCode, historyDrawer, statusToggle, lastUpdated, codeName, fmtDate } = UI;
+const OPT = 'admin.masters.dept';
+const canAdd = can(OPT, 'add'), canEdit = can(OPT, 'edit');
+const SETTINGS = ['OPD', 'IPD', 'Day Case'];
+const ACC = [['opdRev', 'OPD Revenue Account', 'Revenue', 'OPD'], ['opdExp', 'OPD Expense Account', 'Expense', 'OPD'], ['ipdRev', 'IPD Revenue Account', 'Revenue', 'IPD'], ['ipdExp', 'IPD Expense Account', 'Expense', 'IPD']];
+const accOk = id => { const a = L.account(id); return a && a.status === 'Active' && a.posting; };
+function accState(d) {
+  const need = ACC.filter(a => d.settings.includes(a[3]) || (a[3] === 'IPD' && d.settings.includes('Day Case')));
+  if (Object.values(d.acc).some(id => id && id !== 'NA' && !accOk(id))) return ['err', 'Inactive account'];
+  if (need.some(a => !d.acc[a[0]] || d.acc[a[0]] === 'NA')) return ['warn', 'Missing mapping'];
+  return ['ok', 'Complete'];
+}
+if (page({ active: 'departments.html', opt: OPT, title: 'Department Master', subtitle: 'Departments per branch, with head of department, clinics and finance accounts.', crumbs: [['Home', 'home.html'], ['Administration', 'admin.html'], ['Departments']],
+  actions: canAdd ? `<button class="btn primary" id="new">${icon('plus')} New department</button>` : '', body: '<div id="list"></div>' })) {
+
+  const tbl = table($('#list'), {
+    searchPlaceholder: 'Search code, name or HOD', search: d => d.code + ' ' + d.name + ' ' + ((L.emp(d.hodEmpId) || {}).name || ''),
+    filters: [
+      { label: 'Company', options: db.companies.map(c => [c.id, c.code + ' · ' + c.name]), test: (d, v) => d.companyId === v },
+      { label: 'Branch', options: db.branches.map(b => [b.id, b.name]), test: (d, v) => d.branchId === v },
+      { label: 'Type', options: [['Admin', 'Admin'], ['Clinical', 'Clinical']], test: (d, v) => d.type === v },
+      { label: 'Setting', options: SETTINGS.map(s => [s, s]), test: (d, v) => d.settings.includes(v) },
+      { label: 'Status', options: [['Active', 'Active'], ['Inactive', 'Inactive']], test: (d, v) => d.status === v }],
+    rows: () => db.departments,
+    columns: [
+      { label: 'Department', render: d => codeName(d.code, d.name), sort: d => d.code },
+      { label: 'Branch', render: d => `${esc(L.bName(d.branchId))}<br><span class="small muted">${esc(L.company(d.companyId).code)}</span>`, sort: d => L.bName(d.branchId) },
+      { label: 'Type', render: d => `<span class="tag">${esc(d.type)}</span>`, sort: d => d.type },
+      { label: 'Setting', render: d => d.settings.length ? d.settings.map(s => `<span class="chip" style="padding:2px 8px">${s}</span>`).join(' ') : '<span class="muted">—</span>' },
+      { label: 'Head of Department', render: d => { const e = L.emp(d.hodEmpId); return e ? `${esc(e.name)}${e.hrStatus !== 'Active' ? ' ' + badge('Pending separation', e.hrStatus) : ''}<br><span class="small muted">${d.hodSource === 'HR' ? 'From HR' : 'Override'}</span>` : `<span class="badge b-warn">Not set</span>`; } },
+      { label: 'Clinics', render: d => d.clinicIds.length ? `<b>${d.clinicIds.length}</b> <span class="small muted">${esc(d.clinicIds.map(L.clName).join(', '))}</span>` : '<span class="muted">—</span>' },
+      { label: 'Accounts', render: d => { const s = accState(d); return `<span class="badge b-${s[0]}">${s[1]}</span>`; } },
+      { label: 'Status', render: d => badge(d.status), sort: d => d.status },
+      { label: 'Last updated', render: lastUpdated, sort: d => d.updatedAt },
+    ],
+    onRow: d => openDept(d),
+  });
+
+  function openDept(d) {
+    const hod = L.emp(d.hodEmpId);
+    const asg = db.assignments.filter(a => a.deptId === d.id);
+    drawer({ title: d.name, sub: `Department · <span class="mono">${esc(d.code)}</span> · ${esc(L.bName(d.branchId))} (${esc(L.cName(d.companyId))}) · version ${d.version}`, wide: true,
+      body: `<div class="row" style="margin-bottom:14px">${badge(d.status)}<span class="tag">${esc(d.type)}</span>${d.settings.map(s => `<span class="chip">${s}</span>`).join('')}${d.deactivationReason ? `<span class="small muted">Deactivated ${fmtDate(d.deactivatedAt)}: ${esc(d.deactivationReason)}</span>` : ''}</div>
+      <div class="grid g2">
+        <div class="card card-pad"><h3 style="font-size:14px;margin-bottom:10px">Head of Department <span class="req-ref">DEP-09</span></h3>
+          ${hod ? `<div class="row"><span class="avatar">${UI.initials(hod.name)}</span><div class="grow"><b>${esc(hod.name)}</b><div class="small muted">${esc(hod.empNo)} · ${esc(hod.designation)}</div></div><span class="inherit ${d.hodSource === 'HR' ? 'inh-co' : 'inh-br'}">${d.hodSource === 'HR' ? 'From HR' : 'Override'}</span></div>
+          ${hod.hrStatus !== 'Active' ? `<div class="banner warn" style="margin-top:10px">${icon('triangle-alert')}<span>HR status is "${esc(hod.hrStatus)}". Review this HOD reference.</span></div>` : ''}` : `<div class="banner warn">${icon('triangle-alert')}<span>No HOD linked.</span></div>`}
+          <div class="small muted" style="margin-top:10px">HOD assignment alone does not grant access or approval authority.</div></div>
+        <div class="card card-pad"><h3 style="font-size:14px;margin-bottom:10px">Clinic or specialty links <span class="req-ref">DEP-10</span></h3>
+          ${d.clinicIds.length ? `<table class="tbl"><tbody>${d.clinicIds.map(id => { const c = L.clinic(id); return `<tr><td class="mono">${esc(c.code)}</td><td>${esc(c.name)}</td><td>${badge(c.status)}</td></tr>`; }).join('')}</tbody></table>` : '<div class="muted">No clinic links.</div>'}</div>
+      </div>
+      <div class="card" style="margin-top:16px"><div class="card-head"><h3>Financial account mapping</h3><span class="req-ref">DEP-04 to DEP-08</span><div class="actions">${(s => `<span class="badge b-${s[0]}">${s[1]}</span>`)(accState(d))}</div></div>
+        <table class="tbl"><tbody>${ACC.map(a => { const id = d.acc[a[0]]; const acc = L.account(id); return `<tr><td style="width:220px"><b>${a[1]}</b></td><td>${id === 'NA' ? '<span class="tag">Not Applicable</span>' : acc ? `<span class="mono">${esc(acc.code)}</span> ${esc(acc.name)}` : '<span class="badge b-warn">Not mapped</span>'}</td><td>${acc && !accOk(id) ? '<span class="badge b-err">Inactive or non-posting</span>' : ''}</td></tr>`; }).join('')}</tbody></table></div>
+      <div class="grid g2" style="margin-top:16px">
+        <div class="card card-pad"><h3 style="font-size:14px;margin-bottom:10px">Additional flags <span class="req-ref">DEP-13</span></h3><dl class="kv"><dt>Flag A</dt><dd>${d.flags.a ? 'Yes' : 'No'}</dd><dt>Flag B</dt><dd>${d.flags.b ? 'Yes' : 'No'}</dd><dt>Flag C</dt><dd>${esc(d.flags.c || '—')}</dd></dl><div class="small muted" style="margin-top:8px">Labels and types are pending business confirmation.</div></div>
+        <div class="card card-pad"><h3 style="font-size:14px;margin-bottom:10px">Access using this department</h3><dl class="kv"><dt>Current</dt><dd>${asg.filter(a => UI.assignmentUsable(a).ok).length} assignments</dd><dt>Future</dt><dd>${asg.filter(a => a.status === 'Active' && a.from > UI.today()).length} assignments</dd><dt>Description</dt><dd>${esc(d.description || '—')}</dd></dl></div>
+      </div>`,
+      foot: `<button class="btn ghost" id="hist">${icon('history')} History</button><span class="grow"></span>${canEdit ? `<button class="btn ${d.status === 'Active' ? 'danger' : ''}" id="tog">${d.status === 'Active' ? icon('ban') + ' Deactivate' : icon('circle-check') + ' Activate'}</button><button class="btn primary" id="ed">${icon('pencil')} Edit</button>` : ''}`,
+      onMount: (el, close) => {
+        $('#hist', el).addEventListener('click', () => historyDrawer(d.id, d.code + ' ' + d.name));
+        const ed = $('#ed', el); if (ed) ed.addEventListener('click', () => { close(); edit(d); });
+        const tg = $('#tog', el); if (tg) tg.addEventListener('click', () => { close();
+          if (d.status !== 'Active' && L.branch(d.branchId).status !== 'Active') { UI.confirm({ title: 'Branch is inactive', body: 'Activate the branch first.', tone: 'warn', confirm: 'OK' }); return; }
+          const cur = asg.filter(a => UI.assignmentUsable(a).ok), fut = asg.filter(a => a.status === 'Active' && a.from > UI.today());
+          statusToggle({ record: d, entity: 'Department', label: d.code + ' ' + d.name, impact: [`${cur.length} current assignments stop authorizing: ${esc(cur.map(a => L.uName(a.userId)).join(', ') || 'none')}`, `${fut.length} future assignments will not start`, `${db.warehouses.filter(w => w.branchId === d.branchId).length} warehouses in the branch are not affected`, 'History is kept'], done: tbl.redraw }); });
+      } });
+  }
+
+  function edit(d) {
+    const isNew = !d; const referenced = d && db.assignments.some(a => a.deptId === d.id);
+    const st = { clinics: d ? d.clinicIds.slice() : [], hodSource: d ? d.hodSource : 'HR' };
+    drawer({ title: isNew ? 'New department' : 'Edit department', sub: isNew ? 'Fields marked * are required.' : `<span class="mono">${esc(d.code)}</span> · version ${d.version}`, wide: true,
+      body: `<div class="err-summary hidden" style="margin-bottom:14px"></div><div class="form-grid">
+        <div class="section-t">Organization</div>
+        ${field({ id: 'fCo', label: 'Company', type: 'select', req: true, value: d ? d.companyId : UI.session().ctx.companyId, options: db.companies.filter(c => c.status === 'Active' || (d && c.id === d.companyId)).map(c => [c.id, c.code + ' · ' + c.name]), disabled: referenced })}
+        <div class="field" id="brWrap"></div>
+        <div class="section-t">Department</div>
+        ${field({ id: 'fCode', label: 'Department code', req: true, value: d ? d.code : '', max: 30, readonly: referenced, hint: 'Unique within the branch.' })}
+        ${field({ id: 'fType', label: 'Department type', type: 'select', req: true, value: d ? d.type : '', options: [['Admin', 'Admin'], ['Clinical', 'Clinical']], hint: 'Admin or Clinical.' })}
+        ${field({ id: 'fName', label: 'Department name (English)', req: true, value: d ? d.name : '', max: 150 })}
+        ${field({ id: 'fNameAr', label: 'Department name (Arabic)', value: d ? d.nameAr || '' : '', max: 150, attrs: 'dir="rtl"' })}
+        <div class="field full"><label>Care setting <span class="req-ref">DEP-12</span></label><div class="row wrap">${SETTINGS.map(s => `<label class="check"><input type="checkbox" data-set="${s}" ${d && d.settings.includes(s) ? 'checked' : ''}> ${s}</label>`).join('')}</div><div class="hint">Controls which revenue and expense accounts are required. Final list to be confirmed.</div></div>
+        <div class="section-t">Head of Department <span class="req-ref">DEP-09</span></div>
+        <div class="field full"><label for="fHod">Employee</label><div class="row"><select class="input grow" id="fHod"></select><button type="button" class="btn sm" id="hrHod">${icon('refresh-cw')} Use HR-designated HOD</button></div><div class="hint" id="hodSrc"></div></div>
+        <div class="section-t">Clinic or specialty links <span class="req-ref">DEP-10</span></div>
+        <div class="field full"><div class="chips" id="clChips"></div><div class="row" style="margin-top:8px"><select class="input" id="clAdd" style="max-width:320px"></select><button type="button" class="btn sm" id="clBtn">${icon('plus')} Link</button></div><div class="err hidden" data-err="clAdd"></div></div>
+        <div class="section-t">Financial accounts <span class="req-ref">DEP-05 to DEP-07</span></div>
+        <div class="full banner info">${icon('info')}<span>Revenue selectors list revenue accounts only, expense selectors list expense accounts only, from the owning company. Changes apply to future transactions only.</span></div>
+        ${ACC.map(a => `<div class="field"><label for="a_${a[0]}">${a[1]}<span class="req" data-reqm="${a[3]}"></span></label><select class="input" id="a_${a[0]}"></select><div class="err hidden" data-err="a_${a[0]}"></div></div>`).join('')}
+        <div class="section-t">Other</div>
+        <label class="check"><input type="checkbox" id="fA" ${d && d.flags.a ? 'checked' : ''}> Flag A</label><label class="check"><input type="checkbox" id="fB" ${d && d.flags.b ? 'checked' : ''}> Flag B</label>
+        ${field({ id: 'fC', label: 'Flag C', value: d ? d.flags.c : '', max: 100, hint: 'Flag labels to be confirmed.' })}
+        ${field({ id: 'fDesc', label: 'Description', type: 'textarea', value: d ? d.description : '', full: true, max: 500 })}
+      </div>`,
+      foot: `<span class="grow req-ref">ADM-02 · DEP-01 · DEP-02</span><button class="btn" data-close>Cancel</button><button class="btn primary" id="sv">${isNew ? 'Create department' : 'Save changes'}</button>`,
+      onMount: (el, close) => {
+        const coSel = $('#fCo', el);
+        function drawBranch() {
+          const brs = db.branches.filter(b => b.companyId === coSel.value && (b.status === 'Active' || (d && b.id === d.branchId)));
+          $('#brWrap', el).innerHTML = `<label for="fBr">Branch<span class="req">*</span></label><select class="input" id="fBr" ${referenced ? 'disabled' : ''}><option value="">Select</option>${brs.map(b => `<option value="${b.id}" ${d && d.branchId === b.id ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}</select>${referenced ? '<div class="hint">A referenced department cannot move to another branch.</div>' : ''}<div class="err hidden" data-err="fBr"></div>`;
+          const emps = db.employees.filter(e => db.branches.find(b => b.id === e.branchId).companyId === coSel.value);
+          $('#fHod', el).innerHTML = `<option value="">None</option>` + emps.map(e => `<option value="${e.id}" ${d && d.hodEmpId === e.id ? 'selected' : ''}>${esc(e.name)} · ${esc(e.empNo)} · ${esc(e.designation)}${e.hrStatus !== 'Active' ? ' (' + e.hrStatus + ')' : ''}</option>`).join('');
+          ACC.forEach(a => { const s = $('#a_' + a[0], el); const cur = d ? d.acc[a[0]] : ''; const list = db.accounts.filter(x => x.companyId === coSel.value && x.kind === a[2]);
+            s.innerHTML = `<option value="">Select ${a[2].toLowerCase()} account</option><option value="NA" ${cur === 'NA' ? 'selected' : ''}>Not Applicable</option>` + list.map(x => `<option value="${x.id}" ${cur === x.id ? 'selected' : ''} ${!(x.posting && x.status === 'Active') ? 'disabled' : ''}>${esc(x.code)} · ${esc(x.name)}${!x.posting ? ' (header, non-posting)' : x.status !== 'Active' ? ' (inactive)' : ''}</option>`).join(''); });
+          drawClinics(); hodHint();
+        }
+        function hodHint() { $('#hodSrc', el).textContent = st.hodSource === 'HR' ? 'Source: HR-designated HOD (default).' : 'Source: manual override of the HR value.'; }
+        $('#fHod', el).addEventListener('change', () => { st.hodSource = 'Override'; hodHint(); });
+        $('#hrHod', el).addEventListener('click', () => {
+          const brId = ($('#fBr', el) || {}).value; const e = db.employees.find(x => x.branchId === brId && /consultant|head|charge|manager|administrator/i.test(x.designation) && x.hrStatus === 'Active');
+          if (!e) { toast('HR has no designated HOD for this branch. Select one manually.', 'err'); return; }
+          $('#fHod', el).value = e.id; st.hodSource = 'HR'; hodHint(); toast('Fetched from HR: ' + e.name);
+        });
+        function drawClinics() {
+          $('#clChips', el).innerHTML = st.clinics.length ? st.clinics.map(id => `<span class="chip"><span class="mono">${esc(L.clinic(id).code)}</span> ${esc(L.clName(id))}<button type="button" data-rm="${id}" aria-label="Remove">${icon('x')}</button></span>`).join('') : '<span class="muted small">No clinic or specialty linked yet.</span>';
+          $('#clAdd', el).innerHTML = '<option value="">Select clinic or specialty</option>' + db.clinics.filter(c => !st.clinics.includes(c.id)).map(c => `<option value="${c.id}" ${c.status !== 'Active' ? 'disabled' : ''}>${esc(c.code)} · ${esc(c.name)}${c.status !== 'Active' ? ' (inactive)' : ''}</option>`).join('');
+          $$('[data-rm]', el).forEach(b => b.addEventListener('click', () => { st.clinics = st.clinics.filter(x => x !== b.dataset.rm); drawClinics(); }));
+        }
+        $('#clBtn', el).addEventListener('click', () => { const v = $('#clAdd', el).value; if (!v) return; if (st.clinics.includes(v)) { showErrors(el, { clAdd: 'Already linked (duplicate links are rejected).' }); return; } st.clinics.push(v); drawClinics(); });
+        const markReq = () => { const set = $$('[data-set]', el).filter(c => c.checked).map(c => c.dataset.set); $$('[data-reqm]', el).forEach(s => s.textContent = set.includes(s.dataset.reqm) || (s.dataset.reqm === 'IPD' && set.includes('Day Case')) ? '*' : ''); };
+        $$('[data-set]', el).forEach(c => c.addEventListener('change', markReq));
+        coSel.addEventListener('change', () => { st.clinics = []; drawBranch(); });   // ADM-08: clear incompatible children
+        drawBranch(); markReq();
+        $('#sv', el).addEventListener('click', () => {
+          const errs = {}; const brId = $('#fBr', el).value; const code = normCode($('#fCode', el).value); const name = $('#fName', el).value.trim(); const type = $('#fType', el).value;
+          const settings = $$('[data-set]', el).filter(c => c.checked).map(c => c.dataset.set);
+          if (!brId) errs.fBr = 'Select the branch.';
+          if (!code) errs.fCode = 'Department code is required.'; else if (!CODE_RE.test(code)) errs.fCode = 'Use up to 30 letters, digits, hyphens or underscores.';
+          else if (db.departments.some(x => x.id !== (d && d.id) && x.branchId === brId && normCode(x.code) === code)) errs.fCode = `Code ${code} already exists in this branch.`;
+          if (!name) errs.fName = 'Department name is required.';
+          if (!type) errs.fType = 'Select the department type.';
+          const acc = {};
+          ACC.forEach(a => { const v = $('#a_' + a[0], el).value; acc[a[0]] = v;
+            const needed = settings.includes(a[3]) || (a[3] === 'IPD' && settings.includes('Day Case'));
+            if (needed && (!v || v === 'NA')) errs['a_' + a[0]] = `${a[1]} is required because the department takes part in ${a[3]}.`;
+            if (v && v !== 'NA') { const x = L.account(v); if (!x || x.companyId !== $('#fCo', el).value || x.kind !== a[2] || !accOk(v)) errs['a_' + a[0]] = 'Choose an active posting ' + a[2].toLowerCase() + ' account of this company.'; }
+            if (!v && !needed) acc[a[0]] = 'NA'; });
+          if (!showErrors(el, errs)) return;
+          const rec = d || { id: uid('dp'), version: 0, status: 'Active' };
+          const before = JSON.parse(JSON.stringify(rec));
+          Object.assign(rec, { companyId: $('#fCo', el).value, branchId: brId, code, name, nameAr: $('#fNameAr', el).value.trim(), type, settings, hodEmpId: $('#fHod', el).value || null, hodSource: st.hodSource, clinicIds: st.clinics.slice(), acc,
+            flags: { a: $('#fA', el).checked, b: $('#fB', el).checked, c: $('#fC', el).value.trim() }, description: $('#fDesc', el).value.trim(), updatedBy: me().displayName, updatedAt: nowStamp(), version: (rec.version || 0) + 1 });
+          if (isNew) db.departments.push(rec);
+          const ch = [];
+          if (before.name !== rec.name) ch.push(['Name', before.name || '', rec.name]);
+          if (before.type !== rec.type) ch.push(['Type', before.type || '', rec.type]);
+          if (JSON.stringify(before.clinicIds) !== JSON.stringify(rec.clinicIds)) ch.push(['Clinic links', (before.clinicIds || []).map(L.clName).join(', '), rec.clinicIds.map(L.clName).join(', ')]);
+          ACC.forEach(a => { if ((before.acc || {})[a[0]] !== rec.acc[a[0]]) ch.push([a[1], ((L.account((before.acc || {})[a[0]]) || {}).code || (before.acc || {})[a[0]] || ''), (L.account(rec.acc[a[0]]) || {}).code || rec.acc[a[0]]]); });
+          save(); audit(isNew ? 'Department created' : 'Department edited', 'Department', { id: rec.id, label: rec.code + ' - ' + rec.name }, ch);
+          close(); toast(`Department ${rec.code} ${isNew ? 'created' : 'saved'} (version ${rec.version})`); tbl.redraw();
+        });
+      } });
+  }
+  const nb = $('#new'); if (nb) nb.addEventListener('click', () => edit(null));
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Appointments overview · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-appointments.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/appointments.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, esc, icon, $, $$, R, can, fmtDate } = UI;
+  if (!UI.page({ module: 'appointments', title: 'Appointments overview', subtitle: 'Today in the clinics and the call centre (SOW V4 Module 2).',
+    actions: `${can('appointments.book.cc', 'view') ? `<a class="btn" href="${R('appointments/calls.html')}">${icon('headset')} Call centre</a>` : ''}${can('appointments.book.slot', 'view') ? `<a class="btn primary" href="${R('appointments/book.html')}">${icon('calendar-plus')} Appointment Book</a>` : ''}` })) return;
+  const T = Appt.T;
+  const B = db.appointmentsBookings;
+  const today = B.filter(a => a.date === T);
+  const active = today.filter(Appt.ACTIVE);
+  const arrived = today.filter(a => /Arrived|Completed/.test(a.status));
+  const toCome = today.filter(a => /Booked|Confirmed/.test(a.status)).sort((a, b) => a.time.localeCompare(b.time));
+  const past30 = B.filter(a => a.date < T && a.date >= Kit.addDays(T, -30) && Appt.ACTIVE(a));
+  const ns30 = past30.filter(a => a.status === 'No-show').length;
+  const callsToday = db.appointmentsCalls.filter(c => c.at.slice(0, 10) === T);
+  const openFu = db.appointmentsCalls.filter(c => c.followUp && c.followUp.status === 'Open');
+  const pend = db.appointmentsOverrides.filter(o => o.status === 'Pending approval').map(o => ({ no: o.no, t: `${o.kind}: ${o.doctorId ? Kit.docName(o.doctorId) : o.resourceCode ? (Appt.resource(o.resourceCode) || {}).name : 'All doctors'}`, by: o.requestedBy, at: o.requestedAt }))
+    .concat(db.appointmentsChanges.filter(c => c.status === 'Pending approval').map(c => ({ no: c.no, t: c.summary, by: c.requestedBy, at: c.requestedAt })));
+  const hours = Array.from({ length: 13 }, (_, i) => 8 + i);
+  const next7 = Array.from({ length: 7 }, (_, i) => Kit.addDays(T, i));
+  const load7 = next7.map(d => { const booked = B.filter(a => a.date === d && Appt.ACTIVE(a)).length; const free = Appt.bookDoctors().reduce((s, doc) => s + Appt.freeSlots(doc.id, d).length, 0); return { d, booked, free, pct: booked + free ? Math.round(100 * booked / (booked + free)) : 0 }; });
+
+  $('#page').innerHTML = `
+    <div class="grid g4" style="margin-bottom:16px">
+      ${Kit.kpi('Appointments today', active.length, { icon: 'calendar-days', foot: today.filter(a => a.status === 'Cancelled').length + ' cancelled today', href: R('appointments/tracking.html') })}
+      ${Kit.kpi('Arrived or seen', arrived.length, { icon: 'user-round-check', foot: toCome.length + ' still to arrive', href: R('appointments/tracking.html?status=Arrived') })}
+      ${Kit.kpi('No-show rate', (past30.length ? Math.round(1000 * ns30 / past30.length) / 10 : 0) + '%', { icon: 'user-x', foot: ns30 + ' no-shows in the last 30 days', href: R('appointments/reports.html') })}
+      ${Kit.kpi('Calls today', callsToday.length, { icon: 'headset', foot: openFu.length + ' open follow-ups', href: R('appointments/calls.html') })}
+    </div>
+    <div class="grid g2" style="margin-bottom:16px">
+      <div class="card"><div class="card-head"><h3>${icon('chart-column')} Today by hour</h3><div class="actions"><span class="small muted">Booked, confirmed, arrived and completed</span></div></div><div class="card-pad">
+        ${Kit.barChart({ labels: hours.map(h => h + ':00'), values: hours.map(h => active.filter(a => +a.time.slice(0, 2) === h).length), color: '#0E9F6E', height: 220, title: 'Appointments by hour today' })}</div></div>
+      <div class="card"><div class="card-head"><h3>${icon('calendar-range')} Booking load, next 7 days</h3><div class="actions"><span class="small muted">Booked appointments against free slots</span></div></div>
+        <div class="table-wrap"><table class="tbl"><thead><tr><th>Day</th><th class="num">Booked</th><th class="num">Free slots</th><th style="width:40%">Filled</th></tr></thead><tbody>
+        ${load7.map(r => `<tr><td><b>${esc(Appt.DOW3[Appt.dow(r.d)])}</b> <span class="muted">${esc(fmtDate(r.d))}</span>${r.d === T ? ' <span class="badge b-info nodot">Today</span>' : ''}</td><td class="num">${r.booked}</td><td class="num">${r.free}</td><td>${r.booked + r.free ? `<div class="row" style="gap:10px"><div class="progress ${r.pct > 85 ? 'err' : r.pct > 60 ? 'warn' : 'ok'} grow"><i style="width:${Math.max(2, r.pct)}%"></i></div><span class="small num" style="width:40px">${r.pct}%</span></div>` : '<span class="small muted">No clinic</span>'}</td></tr>`).join('')}
+        </tbody></table></div></div>
+    </div>
+    <div class="grid g-side" style="margin-bottom:16px">
+      <div class="card"><div class="card-head"><h3>${icon('clock')} Next to arrive</h3><div class="actions"><a class="btn sm" href="${R('appointments/tracking.html')}">Tracking ${icon('arrow-right')}</a></div></div>
+        ${toCome.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>Time</th><th>Patient</th><th>Doctor</th><th>Status</th></tr></thead><tbody>${toCome.slice(0, 7).map(a => `<tr class="click" data-a="${a.id}"><td><b>${esc(a.time)}</b></td><td>${Kit.patientCell(Kit.pt(a.patientId))}</td><td>${esc(Kit.docName(a.doctorId))}<div class="small muted">${esc(Appt.typeName(a.type))}</div></td><td>${Appt.statusBadge(a.status)}</td></tr>`).join('')}</tbody></table></div>` : `<div class="empty">${icon('calendar-check')}<b>Everyone has arrived</b></div>`}</div>
+      <div class="card"><div class="card-head"><h3>${icon('chart-pie')} Today by status</h3></div><div class="card-pad">
+        ${Kit.donut([['Booked', today.filter(a => a.status === 'Booked').length, '#2F6BC5'], ['Confirmed', today.filter(a => a.status === 'Confirmed').length, '#7C4DDB'], ['Arrived', today.filter(a => a.status === 'Arrived').length, '#0E9F6E'], ['Completed', today.filter(a => a.status === 'Completed').length, '#8794A7'], ['No-show', today.filter(a => a.status === 'No-show').length, '#D23F6A'], ['Cancelled', today.filter(a => a.status === 'Cancelled').length, '#E0670E']], { centerLabel: 'Today' })}
+        <div class="section-t" style="margin:20px 0 10px">By visit type</div>${Kit.barList(Object.entries(Kit.groupBy(active, a => Appt.typeName(a.type))).map(([k, v]) => [k, v.length]).sort((a, b) => b[1] - a[1]))}</div></div>
+    </div>
+    <div class="grid g2">
+      <div class="card"><div class="card-head"><h3>${icon('badge-check')} Schedule changes waiting for approval</h3><div class="actions"><a class="btn sm" href="${R('appointments/calendar.html?tab=approvals')}">Approvals ${icon('arrow-right')}</a></div></div>
+          ${pend.length ? `<div class="list-rows pad">${pend.map(p => `<div><span class="tag mono">${esc(p.no)}</span><div class="grow" style="min-width:0"><b class="small">${esc(p.t)}</b><div class="xs muted">${esc(p.by)} · ${esc(fmtDate(p.at))}</div></div>${Kit.status('Pending approval', 'warn')}</div>`).join('')}</div>` : `<div class="empty">${icon('badge-check')}<b>Nothing waiting</b></div>`}</div>
+      <div class="card"><div class="card-head"><h3>${icon('list-todo')} Open call follow-ups</h3><div class="actions"><a class="btn sm" href="${R('appointments/calls.html')}">Call centre ${icon('arrow-right')}</a></div></div>
+          ${openFu.length ? `<div class="list-rows pad">${openFu.sort((a, b) => a.followUp.due.localeCompare(b.followUp.due)).slice(0, 5).map(c => `<div><div class="grow" style="min-width:0"><b class="small">${esc(c.followUp.task)}</b><div class="xs muted">${esc(c.callerName)} · ${esc(c.followUp.assignee)}</div></div>${Kit.status(c.followUp.due < T ? 'Overdue' : 'Due', null)}<span class="small muted">${esc(c.followUp.due === T ? 'Today' : fmtDate(c.followUp.due))}</span></div>`).join('')}</div>` : `<div class="empty">${icon('list-todo')}<b>No open follow-ups</b></div>`}</div>
+    </div>`;
+  $$('[data-a]').forEach(r => r.addEventListener('click', () => Appt.detailDrawer(Appt.appt(r.dataset.a), () => location.reload())));
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Home · Tibbi Orbit</title>
+<link rel="stylesheet" href="assets/styles.css">
+<script src="assets/icons.js"></script><script src="assets/data.js"></script><script src="assets/data-core.js"></script><script src="assets/ui.js"></script><script src="assets/kit.js"></script>
+<style>
+.hm-grid { display: grid; gap: 14px; }
+.hm-tile { min-height: 0; padding: 16px 16px 14px; gap: 12px; }
+.hm-tile .hm-t-body { display: flex; flex-direction: column; gap: 4px; padding-inline-end: 22px; min-width: 0; }
+.hm-tile .hm-desc { font-size: 12.5px; color: var(--sub); line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: 36px; }
+.hm-t-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: auto; padding-top: 10px; border-top: 1px solid var(--line); font-size: 11.5px; font-weight: 700; color: var(--mute); text-transform: uppercase; letter-spacing: .04em; }
+.hm-t-foot > span:first-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hm-t-foot .tag { text-transform: none; letter-spacing: 0; flex: none; }
+.hm-fill { display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 6px; padding: 16px 18px; border-radius: var(--r-card); border: 1.5px dashed var(--line-strong); background: transparent; color: var(--sub); font: inherit; text-align: start; cursor: pointer; transition: border-color .15s, background .15s; }
+.hm-fill:hover { border-color: var(--primary-light); background: var(--hover); }
+.hm-fill > .ico { width: 20px; height: 20px; color: var(--primary-light); }
+.hm-fill b { color: var(--ink); font-size: 14px; }
+.hm-fill span:not(.kbd) { font-size: 12.5px; line-height: 1.45; }
+.hm-list { overflow: hidden; }
+.hm-sec { display: flex; align-items: center; gap: 8px; padding: 8px 18px; background: var(--soft); border-bottom: 1px solid var(--line); font-size: 11.5px; font-weight: 800; color: var(--sub); text-transform: uppercase; letter-spacing: .06em; }
+.hm-sec:not(:first-child) { border-top: 1px solid var(--line); }
+.hm-row { display: grid; grid-template-columns: minmax(280px, 1.1fr) minmax(0, 1.8fr) 104px 32px; align-items: center; gap: 16px; padding: 7px 14px 7px 18px; border-bottom: 1px solid var(--line); transition: background .12s; }
+.hm-row:last-child { border-bottom: 0; }
+.hm-row:hover { background: var(--hover); }
+.hm-main { display: flex; align-items: center; gap: 12px; min-width: 0; color: var(--ink); }
+.hm-main .tile { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; color: var(--primary); flex: none; }
+.hm-main .tile .ico { width: 17px; height: 17px; }
+[data-theme="dark"] .hm-main .tile, [data-theme="dark"] .hm-fav .tile { color: #fff; }
+.hm-name { display: flex; flex-direction: column; min-width: 0; }
+.hm-name b { font-size: 13.5px; font-weight: 800; }
+.hm-name span { font-size: 12px; color: var(--sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hm-main:hover b { color: var(--primary-light); }
+.hm-links { display: flex; gap: 6px; align-items: center; min-width: 0; overflow: hidden; flex-wrap: wrap; height: 26px; }
+.hm-links .chip { white-space: nowrap; flex: none; }
+.hm-links .chip:hover { border-color: var(--primary-light); color: var(--primary-light); }
+.hm-links .chip .ico { color: var(--mute); }
+.hm-n { justify-self: end; display: inline-flex; align-items: center; gap: 2px; font-size: 12px; font-weight: 700; color: var(--sub); white-space: nowrap; }
+.hm-n .ico { width: 14px; height: 14px; }
+.hm-n:hover { color: var(--primary-light); }
+.hm-star { width: 32px; height: 32px; color: var(--mute); }
+.hm-star.on, .hm-fav-l .ico { color: #F59E0B; }
+.hm-star.on svg, .hm-fav-l svg { fill: #F59E0B; }
+#page .hm-main, #page .hm-fav, #page .hm-links .chip, #page a.mod { color: var(--ink); }
+#page .hm-n { color: var(--sub); }
+#page .hm-n:hover, #page .hm-links .chip:hover { color: var(--primary-light); }
+.hm-favs { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.hm-fav-l { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 800; color: var(--sub); text-transform: uppercase; letter-spacing: .06em; margin-inline-end: 4px; }
+.hm-fav-l .ico { width: 14px; height: 14px; }
+.hm-fav { display: inline-flex; align-items: center; gap: 8px; padding: 4px 6px 4px 4px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); box-shadow: var(--shadow); color: var(--ink); font-size: 13px; font-weight: 700; }
+.hm-fav:hover { border-color: var(--outline); }
+.hm-fav .tile { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; color: var(--primary); }
+.hm-fav .tile .ico { width: 14px; height: 14px; }
+.hm-unfav { border: 0; background: none; color: var(--mute); cursor: pointer; padding: 3px; border-radius: 6px; display: grid; }
+.hm-unfav:hover { background: var(--hover); color: var(--ink); }
+.hm-unfav .ico { width: 13px; height: 13px; }
+@media (max-width: 1100px) { .hm-row { grid-template-columns: minmax(0, 1fr) 104px 32px; } .hm-links { display: none; } }
+</style>
+</head>
+<body>
+<script>
+const { db, $, $$, icon, esc, session, me, permsFor, page, prefs, savePrefs, L, fmtDate, hasAnyAdmin } = UI;
+const s = session();
+if (page({ active: 'home.html', title: 'Home', body: '' })) {
+  const u = me();
+  const perms = permsFor(u.id, s.ctx);
+  // HOM-01: only active modules with at least one permitted screen.
+  const mods = db.modules.filter(m => m.subs.some(sb => sb.opts.some(o => (perms[o.id] || []).includes('view') || (perms[o.id] || []).length)));
+  const hr = new Date().getHours();
+  const greet = hr < 12 ? 'Good morning' : hr < 17 ? 'Good afternoon' : 'Good evening';
+  const co = L.company(s.ctx.companyId), br = L.branch(s.ctx.branchId);
+  const favs = (prefs.favs || []).filter(id => mods.some(m => m.id === id));   // revalidated on use
+  $('h1').closest('.page-head').remove();
+  const can = UI.can, R = UI.R, T = db.TODAY;
+  const dayTxt = new Date(T + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  const quick = [
+    ['reception.reg.patient', 'add', 'user-plus', 'Register patient', 'reception/patients.html?new=1'],
+    ['appointments.book.slot', 'add', 'calendar-plus', 'Book appointment', 'appointments/book.html'],
+    ['reception.visit.opd', 'add', 'clipboard-list', 'New OPD visit', 'reception/opd.html'],
+    ['emr.consult.note', 'view', 'stethoscope', 'My patients', 'emr/index.html'],
+    ['nursing.ward.mar', 'view', 'syringe', 'Medication round', 'nursing/mar.html'],
+    ['lab.work.result', 'view', 'microscope', 'Result entry', 'lab/results.html'],
+    ['pharmacy.disp.op', 'view', 'pill', 'Prescription queue', 'pharmacy/opd-queue.html'],
+    ['incident.rep.new', 'add', 'triangle-alert', 'Report incident', 'incident/new.html'],
+    ['finance.bill.invoice', 'view', 'receipt-text', 'Patient billing', 'finance/billing.html'],
+    ['admin.security.users', 'view', 'users', 'Users', 'users.html'],
+  ].filter(q => can(q[0], q[1])).slice(0, 6);
+  const enc = db.encounters || [], beds = db.beds || [], ord = db.orders || [];
+  const glance = [
+    can('reception.visit.opd', 'view') && ['OPD visits today', enc.filter(e => e.type === 'OPD' && e.start.startsWith(T)).length, 'clipboard-list', 'reception/opd.html', enc.filter(e => e.type === 'OPD' && e.start.startsWith(T) && /Waiting|Checked in/.test(e.status)).length + ' waiting now'],
+    can('reception.beds', 'view') && ['Bed occupancy', Math.round(100 * beds.filter(b => b.status === 'Occupied').length / Math.max(1, beds.length)) + '%', 'bed-double', 'reception/beds.html', beds.filter(b => b.status === 'Vacant').length + ' vacant of ' + beds.length + ' beds'],
+    can('reception.er', 'view') && ['In emergency', enc.filter(e => e.type === 'ER' && e.status !== 'Discharged').length, 'siren', 'reception/er.html', enc.filter(e => e.type === 'ER' && e.status !== 'Discharged' && e.triage <= 2).length + ' at triage level 1-2'],
+    can('lab.orders', 'view') && ['Lab orders pending', ord.filter(o => o.type === 'lab' && !/Verified|Cancelled|Rejected/.test(o.status)).length, 'flask-conical', 'lab/orders.html', ord.filter(o => o.type === 'lab' && o.priority !== 'Routine' && !/Verified|Cancelled|Rejected/.test(o.status)).length + ' urgent'],
+    can('pharmacy.disp.op', 'view') && ['Prescriptions to verify', ord.filter(o => o.type === 'med' && o.status === 'Pending verification').length, 'pill', 'pharmacy/opd-queue.html'],
+    can('emr.consult.note', 'view') && ['Inpatients', enc.filter(e => e.type === 'IPD' && e.status !== 'Discharged').length, 'bed', 'emr/inpatient.html'],
+    can('finance.bill.invoice', 'view') && ['Unpaid invoices', (db.invoices || []).filter(i => i.status === 'Unpaid').length, 'receipt-text', 'finance/billing.html'],
+    can('admin.security.users', 'view') && ['Active users', db.users.filter(x => x.status === 'Active').length, 'users', 'users.html'],
+  ].filter(Boolean).slice(0, 4);
+  const GROUPS = [['Front office', ['reception', 'appointments']], ['Clinical care', ['emr', 'nursing']], ['Diagnostics and pharmacy', ['lab', 'radiology', 'pharmacy']], ['Quality and safety', ['incident']], ['Business operations', ['insurance', 'material', 'finance', 'hr']], ['Administration', ['admin']]];
+  $('#page').innerHTML = `
+    <div class="hero">
+      <div class="row wrap" style="align-items:flex-start;gap:20px">
+        <div class="grow">
+          <div style="font-size:12.5px;font-weight:700;color:#9CD6FF;margin-bottom:4px">${esc(dayTxt)}</div>
+          <h1>${greet}, ${esc(u.displayName.split(' ').slice(0, 2).join(' '))}</h1>
+          <p>${esc(UI.rolesLabel(u.id, s.ctx))} · Tibbi Orbit Hospital Information System</p>
+          <div class="ctx-line">
+            <span>${icon('building-2')}${esc(co.name)}</span><span>${icon('hospital')}${esc(br.name)}</span><span>${icon('layers')}${esc(L.dName(s.ctx.deptId))}</span>
+            ${s.ctx.clinicId ? `<span>${icon('stethoscope')}${esc(L.clName(s.ctx.clinicId))}</span>` : ''}
+            <span>${icon('warehouse')}${s.ctx.warehouseId ? esc(L.wName(s.ctx.warehouseId)) : 'No warehouse'}</span>
+          </div>
+        </div>
+        ${quick.length ? `<div style="display:grid;grid-template-columns:repeat(${Math.min(3, quick.length)},minmax(0,1fr));gap:8px;min-width:min(480px,100%)">${quick.map(q => `<a href="${R(q[4])}" style="display:flex;align-items:center;gap:9px;padding:10px 12px;border-radius:10px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);color:#fff;font-weight:700;font-size:12.5px">${icon(q[2])}<span>${esc(q[3])}</span></a>`).join('')}</div>` : ''}
+      </div>
+    </div>
+    ${glance.length ? `<div class="grid g4" style="margin-top:16px">${glance.map(g => window.Kit ? Kit.kpi(g[0], g[1], { icon: g[2], href: R(g[3]), foot: g[4] || '' }) : '').join('')}</div>` : ''}
+    <div class="row wrap" style="margin:24px 0 12px;gap:12px">
+      <h2 style="font-size:17px;font-weight:800">Your modules</h2><span class="tag">${mods.length}</span>
+      <div class="grow"></div>
+      <div class="search" style="width:300px">${icon('search')}<input class="input" id="q" placeholder="Search modules and screens" aria-label="Search modules"></div>
+      <div class="btn-group" role="group" aria-label="Layout"><button class="btn sm ${prefs.layout !== 'list' ? 'on' : ''}" data-l="tiles" aria-pressed="${prefs.layout !== 'list'}">${icon('layout-grid')} Tiles</button><button class="btn sm ${prefs.layout === 'list' ? 'on' : ''}" data-l="list" aria-pressed="${prefs.layout === 'list'}">${icon('list')} List</button></div>
+    </div>
+    <div id="favWrap"></div>
+    <div id="mods"></div>
+    <div class="grid g2" style="margin-top:22px">
+      <div class="card"><div class="card-head"><h3>${icon('clock')} Recent screens</h3></div><div class="card-pad list-rows" id="recent"></div></div>
+      <div class="card"><div class="card-head"><h3>${icon('shield-check')} Your access here</h3></div><div class="card-pad">
+        <dl class="kv"><dt>Roles</dt><dd>${esc(UI.rolesLabel(u.id, s.ctx))}</dd><dt>Signed in</dt><dd>${fmtDate(s.at)}</dd><dt>Idle sign-out</dt><dd>${esc(UI.effectiveRule('idle_timeout', s.ctx.branchId).value)} minutes (${esc(UI.effectiveRule('idle_timeout', s.ctx.branchId).source)} rule)</dd><dt>Contexts</dt><dd>${UI.contextsFor(u.id).length} available · <button class="link-btn" id="sw">Switch</button></dd></dl></div></div>
+    </div>`;
+  $('#sw').addEventListener('click', () => $('#ctxBtn').click());
+  const recent = (prefs.recent || []);
+  $('#recent').innerHTML = recent.length ? recent.slice(0, 5).map(r => `<div>${icon('history', 'mute')}<a class="grow" href="${esc(R(r.href))}"><b>${esc(r.title)}</b></a><span class="small muted">${fmtDate(r.at)}</span></div>`).join('') : `<div class="empty" style="padding:18px 0;border:0">${icon('history')}<b>No recent screens yet</b><span>The screens you open appear here for quick return.</span></div>`;
+
+  function href(m) { return UI.R(m.home || ('module.html?m=' + m.id)); }
+  const groupOf = (m) => (GROUPS.find(g => g[1].includes(m.id)) || ['Other'])[0];
+  const screensOf = (m) => m.subs.reduce((a, sb) => a.concat(sb.opts.filter(o => (perms[o.id] || []).length && o.page && o.nav !== false)), []);
+  const isFav = (m) => (prefs.favs || []).includes(m.id);
+  const star = (m, cls) => `<button class="${cls} ${isFav(m) ? 'on' : ''}" data-fav="${m.id}" aria-label="${isFav(m) ? 'Remove from' : 'Add to'} favourites" title="${isFav(m) ? 'Remove from' : 'Add to'} favourites">${icon('star')}</button>`;
+  const plural = (n) => n + ' screen' + (n === 1 ? '' : 's');
+  function tile(m) {
+    const n = screensOf(m).length;
+    return `<a class="mod hm-tile" href="${href(m)}">${star(m, 'fav')}<span class="tile ${m.tile}">${icon(m.icon)}</span><div class="hm-t-body"><b>${esc(m.name)}</b><span class="hm-desc">${esc(m.desc)}</span></div><div class="hm-t-foot"><span title="${esc(groupOf(m))}">${esc(groupOf(m))}</span><span class="tag">${plural(n)}</span></div></a>`;
+  }
+  function listRow(m) {
+    const sc = screensOf(m);
+    return `<div class="hm-row" role="listitem"><a class="hm-main" href="${href(m)}"><span class="tile ${m.tile}">${icon(m.icon)}</span><span class="hm-name"><b>${esc(m.name)}</b><span>${esc(m.desc)}</span></span></a>
+      <span class="hm-links">${sc.slice(0, 6).map(o => `<a class="chip" href="${R(o.page)}">${icon(o.icon || m.icon)}${esc(o.name)}</a>`).join('')}</span>
+      <a class="hm-n" href="${href(m)}" title="Open ${esc(m.name)}">${plural(sc.length)}${icon('chevron-right')}</a>${star(m, 'icon-btn hm-star')}</div>`;
+  }
+  // Tiles: pick the column count that leaves the fewest empty cells, and fill any gap with a search tile.
+  function tileGrid(list) {
+    const w = $('#mods').clientWidth || 1200, maxC = Math.max(2, Math.floor((w + 14) / (236 + 14)));
+    const gapOf = (c) => (c - list.length % c) % c;
+    let cols = maxC;
+    if (maxC > 3 && gapOf(maxC - 1) <= gapOf(maxC) - 2) cols = maxC - 1;   // avoid a nearly empty last row
+    let best = gapOf(cols);
+    if (list.length < cols) { cols = Math.max(list.length, 2); best = 0; }
+    const fill = best ? `<button class="hm-fill" id="hmFind" style="grid-column:span ${best}">${icon('search')}<b>Looking for a screen?</b><span>Search every screen you can open, or a patient by name, MRN or Civil ID.</span><span class="kbd">⌘K</span></button>` : '';
+    return `<div class="hm-grid" style="grid-template-columns:repeat(${cols},minmax(0,1fr))">${list.map(tile).join('')}${fill}</div>`;
+  }
+  function listView(list, grouped) {
+    const sec = (title, ms) => `<div class="hm-sec"><span>${esc(title)}</span><span class="tag">${ms.length}</span></div>${ms.map(listRow).join('')}`;
+    const body = grouped ? GROUPS.map(([g, ids]) => { const ms = list.filter(m => ids.includes(m.id)); return ms.length ? sec(g, ms) : ''; }).join('') : list.map(listRow).join('');
+    return `<div class="card hm-list" role="list">${body}</div>`;
+  }
+  function draw() {
+    const q = $('#q').value.trim().toLowerCase();       // HOM-03 case-insensitive
+    const list = mods.filter(m => (m.name + ' ' + m.desc + ' ' + m.subs.map(sb => sb.opts.map(o => o.name).join(' ')).join(' ')).toLowerCase().includes(q));
+    const favList = mods.filter(isFav);
+    $('#favWrap').innerHTML = !q && favList.length ? `<div class="hm-favs"><span class="hm-fav-l">${icon('star')} Favourites</span>${favList.map(m => `<a class="hm-fav" href="${href(m)}"><span class="tile ${m.tile}">${icon(m.icon)}</span>${esc(m.name)}<button class="hm-unfav" data-fav="${m.id}" aria-label="Remove ${esc(m.name)} from favourites" title="Remove from favourites">${icon('x')}</button></a>`).join('')}</div>` : '';
+    if (!mods.length) {   // HOM-07
+      $('#mods').innerHTML = `<div class="card empty">${icon('lock')}<b>No modules are available in this context</b><span>Your assignment exists but has no usable permissions. Contact your access administrator.</span></div>`;
+    } else if (!list.length) {
+      $('#mods').innerHTML = `<div class="card empty">${icon('search')}<b>No module matches "${esc(q)}"</b><button class="btn sm" id="clr" style="margin-top:10px">Clear search</button></div>`;
+      $('#clr').addEventListener('click', () => { $('#q').value = ''; draw(); });
+    } else if (prefs.layout === 'list') $('#mods').innerHTML = listView(list, !q && list.length >= 5);
+    else $('#mods').innerHTML = tileGrid(list);
+    $$('[data-fav]').forEach(b => b.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); const id = b.dataset.fav; prefs.favs = (prefs.favs || []).includes(id) ? prefs.favs.filter(x => x !== id) : (prefs.favs || []).concat(id); savePrefs(); draw(); }));
+    const f = $('#hmFind'); if (f) f.addEventListener('click', () => UI.openPalette());
+  }
+  let rz; window.addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => { if (prefs.layout !== 'list') draw(); }, 120); });
+  $('#q').addEventListener('input', draw);
+  $$('[data-l]').forEach(b => b.addEventListener('click', () => { prefs.layout = b.dataset.l; savePrefs(); $$('[data-l]').forEach(x => { x.classList.toggle('on', x === b); x.setAttribute('aria-pressed', x === b); }); draw(); }));
+  draw();
+}
+</script>
+</body>
+</html>

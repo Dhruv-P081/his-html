@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pharmacy masters · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-pharmacy.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/pharmacy.js"></script>
+<style>.tbl .mono { white-space: nowrap; }</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, $ } = UI;
+  if (!UI.page({ opt: 'pharmacy.masters', title: 'Pharmacy masters', subtitle: 'Drug and item catalogue, generic-brand mapping, categories and schedules, dosage forms, routes, frequencies, manufacturers and substitution rules.' })) return;
+  const names = (k) => (db[k] || []).map(x => x.name);
+  const codes = () => db.items.filter(i => i.type === 'Drug').map(i => [i.code, `${i.code} · ${i.name}${i.brand ? ' (' + i.brand + ')' : ''}`]);
+  $('#page').innerHTML = `<div id="m"></div><div style="margin-top:14px">${Kit.phase2('Compounding Formula, Insurance Formulary and chronic refill masters are in the SOW V4 2nd phase scope.')}</div>`;
+  Kit.masters($('#m'), { opt: 'pharmacy.masters', defs: [
+    { id: 'items', title: 'Drug / Item Master', icon: 'pill', key: 'items', note: 'Shared with Material Management (SOW Module 10). Pharmacy uses the Drug rows.',
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Name', req: true, full: true }, { key: 'type', label: 'Type', type: 'select', options: ['Drug', 'Consumable', 'Reagent', 'General'], req: true }, { key: 'generic', label: 'Generic name' }, { key: 'brand', label: 'Brand' },
+        { key: 'form', label: 'Dosage form', type: 'select', options: names('pharmacyForms') }, { key: 'strength', label: 'Strength' }, { key: 'route', label: 'Route', type: 'select', options: names('pharmacyRoutes') }, { key: 'category', label: 'Category', type: 'select', options: names('pharmacyCategories').concat(['Medical consumables', 'Laboratory reagents', 'General supplies']) },
+        { key: 'schedule', label: 'Controlled schedule', type: 'select', options: names('pharmacySchedules') }, { key: 'uom', label: 'Unit of measure', req: true }, { key: 'cost', label: 'Cost (KWD)', type: 'number', money: true }, { key: 'price', label: 'Selling price (KWD)', type: 'number', money: true, req: true },
+        { key: 'min', label: 'Minimum stock', type: 'number' }, { key: 'max', label: 'Maximum stock', type: 'number' }, { key: 'manufacturer', label: 'Manufacturer', type: 'select', options: names('pharmacyManufacturers').concat(['3M', 'BD', 'B. Braun', 'Medline', 'Sysmex', 'Roche', 'Local supplier']) }],
+      columns: ['code', 'name', 'price'] },
+    { id: 'gb', title: 'Generic-Brand Mapping', icon: 'git-compare-arrows', key: 'pharmacyGenericBrand', note: 'Each brand product mapped to its generic molecule, strength and form.',
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'generic', label: 'Generic name', req: true }, { key: 'brand', label: 'Brand name', req: true }, { key: 'strength', label: 'Strength', req: true }, { key: 'form', label: 'Dosage form', type: 'select', options: names('pharmacyForms'), req: true },
+        { key: 'itemCode', label: 'Item', type: 'select', options: codes(), req: true }, { key: 'manufacturer', label: 'Manufacturer', type: 'select', options: names('pharmacyManufacturers') }, { key: 'preferred', label: 'Preferred brand for this generic', type: 'check', full: true }],
+      columns: ['code', 'generic', 'brand', 'strength', 'itemCode'] },
+    { id: 'cat', title: 'Drug Category', icon: 'tags', key: 'pharmacyCategories', note: 'OTC allowed controls which items appear at the counter sale.',
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Name', req: true }, { key: 'otc', label: 'OTC allowed (counter sale without prescription)', type: 'check', full: true }, { key: 'controlled', label: 'Controlled category', type: 'check', full: true }],
+      columns: ['code', 'name', 'otc', 'controlled'] },
+    { id: 'sch', title: 'Controlled Schedule', icon: 'lock-keyhole', key: 'pharmacySchedules', note: 'Part of the Drug Category and Controlled Schedule master (SOW V4).',
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Name', req: true }, { key: 'maxDays', label: 'Maximum supply (days)', type: 'number', req: true }, { key: 'witness', label: 'Witness required for every movement', type: 'check', full: true }, { key: 'description', label: 'Description', type: 'textarea' }],
+      columns: ['code', 'name', 'maxDays', 'witness'] },
+    { id: 'frm', title: 'Dosage Form', icon: 'tablets', key: 'pharmacyForms', fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Name', req: true }] },
+    { id: 'rte', title: 'Route', icon: 'route', key: 'pharmacyRoutes', fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Name', req: true }] },
+    { id: 'frq', title: 'Frequency', icon: 'repeat', key: 'pharmacyFrequencies', fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Name', req: true }, { key: 'perDay', label: 'Doses per day', type: 'number', req: true }] },
+    { id: 'mfr', title: 'Manufacturer', icon: 'factory', key: 'pharmacyManufacturers', fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Name', req: true }, { key: 'country', label: 'Country', req: true }, { key: 'licence', label: 'MOH registration number' }] },
+    { id: 'sub', title: 'Substitution Mapping', icon: 'arrow-left-right', key: 'pharmacySubstitutions', note: 'Allowed substitutions offered to the pharmacist on the Review and dispense screen.',
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'fromCode', label: 'Prescribed item', type: 'select', options: codes(), req: true }, { key: 'toCode', label: 'Substitute item', type: 'select', options: codes(), req: true }, { key: 'type', label: 'Type', type: 'select', options: ['Generic equivalent', 'Brand equivalent', 'Therapeutic'], req: true },
+        { key: 'twoWay', label: 'Works both ways', type: 'check' }, { key: 'prescriberOk', label: 'Prescriber approval needed', type: 'check' }, { key: 'note', label: 'Note', type: 'textarea' }],
+      columns: ['code', 'fromCode', 'toCode', 'type'] },
+  ] });
+})();
+</script>
+</body>
+</html>

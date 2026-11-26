@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Choose where you work · Tibbi Orbit</title>
+<link rel="stylesheet" href="assets/styles.css">
+<script src="assets/icons.js"></script><script src="assets/data.js"></script><script src="assets/data-core.js"></script><script src="assets/ui.js"></script>
+</head>
+<body>
+<div class="auth">
+  <section class="auth-art">
+    <span class="ring" style="width:520px;height:520px;right:-160px;top:-160px"></span>
+    <div class="brand"><img src="assets/brand/app_icon.png" alt=""><div><b>Tibbi Orbit</b><span>Hospital Information System</span></div></div>
+    <div class="pitch"><h1>Choose where you work today.</h1><p>Your modules and permissions depend on the company, branch and department you select. You can switch later from the top bar.</p></div>
+  </section>
+  <section class="auth-form"><div class="auth-card" id="card"></div></section>
+</div>
+<script>
+const { $, icon, esc, session, setSession, me, contextPicker, contextsFor, ctxKey, tupleText, audit, L } = UI;
+const s = session();
+if (!s) location.replace('login.html');
+const u = me();
+const q = new URLSearchParams(location.search);
+const ctxs = contextsFor(u.id);
+if (!ctxs.length) { UI.clearSession(); location.replace('login.html?ended=1'); }
+// MAP-12: preselect the valid default; if it is not valid any more, prompt and flag it.
+const def = s.defaultCtx && ctxs.some(c => ctxKey(c) === ctxKey(s.defaultCtx)) ? s.defaultCtx : null;
+const defBroken = s.defaultCtx && !def;
+let picked = null;
+$('#card').innerHTML = `<div class="steps"><i class="on"></i><i class="on"></i><i class="on"></i></div>
+  <h2>Hello, ${esc(u.displayName.split(' ').slice(0, 2).join(' '))}</h2>
+  <p class="sub">${ctxs.length === 1 ? 'You can work in one context. Check it and continue.' : `You can work in ${ctxs.length} contexts. Choose one to continue.`}</p>
+  ${q.get('invalid') ? `<div class="banner warn" style="margin-bottom:14px">${icon('triangle-alert')}<span>Your previous context is no longer valid (access changed or a record was deactivated). Choose another one.</span></div>` : ''}
+  ${defBroken ? `<div class="banner warn" style="margin-bottom:14px">${icon('triangle-alert')}<span>Your default context is inactive, expired or revoked. It has been flagged for your administrator.</span></div>` : ''}
+  <div id="host"></div>
+  <div class="stack" style="margin-top:18px"><button class="btn primary" id="go" disabled>Continue</button><button class="btn ghost" id="out">${icon('log-out')} Sign out</button></div>`;
+$('#host').appendChild(contextPicker(u.id, def || {}, c => { picked = c; $('#go').disabled = !c; }));
+$('#go').addEventListener('click', () => {
+  s.ctx = picked; setSession(s);
+  audit('Context selected', 'Session', { id: u.id, label: u.login }, [['Context', '', tupleText(picked, true)]]);
+  const nx = q.get('next');
+  location.href = nx && /^[a-z0-9_\-\/]+\.html(\?[^#]*)?$/i.test(nx) ? nx : 'home.html';   // same-site pages only
+});
+$('#out').addEventListener('click', () => { UI.clearSession(); location.href = 'login.html?out=1'; });
+</script>
+</body>
+</html>

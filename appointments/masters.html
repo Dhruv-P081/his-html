@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Appointment Masters · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-appointments.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, $ } = UI;
+  if (!UI.page({ opt: 'appointments.masters', title: 'Appointment Masters', subtitle: 'Resources, shifts, slots, appointment types, cancellation reasons and message templates (SOW V4 Module 2).' })) return;
+  const clinics = db.clinics.filter(c => c.status === 'Active').map(c => [c.id, c.name]);
+  const branches = db.branches.filter(b => b.status === 'Active' && b.companyId === 'co_01').map(b => [b.id, b.name]);
+  $('#page').innerHTML = `<div style="margin-bottom:14px">${Kit.phase2('Rooms / Stations, Patient Category / Class, Holiday / Exception Calendar and Appointment Status masters are SOW V4 2nd phase scope. Leave and holiday overrides are handled in Calendar Management.')}</div><div id="m"></div>`;
+  Kit.masters($('#m'), { opt: 'appointments.masters', defs: [
+    { id: 'res', title: 'Resources (technician, machine)', icon: 'wrench', key: 'appointmentsResources', columns: ['code', 'name', 'kind', 'service'],
+      note: 'Technicians and machines that can be booked with a procedure or home visit.',
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Name', req: true }, { key: 'kind', label: 'Resource type', type: 'select', options: ['Technician', 'Machine'], req: true },
+        { key: 'clinicId', label: 'Clinic', type: 'select', options: clinics, req: true }, { key: 'branchId', label: 'Branch', type: 'select', options: branches, req: true }, { key: 'service', label: 'Service provided', req: true }] },
+    { id: 'shf', title: 'Shifts', icon: 'clock', key: 'appointmentsShifts', columns: ['code', 'name', 'start', 'end'],
+      note: 'Working periods used for doctor sessions and resource calendars.',
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Name', req: true }, { key: 'start', label: 'Start time', type: 'time', req: true }, { key: 'end', label: 'End time', type: 'time', req: true }, { key: 'note', label: 'Note', full: true }] },
+    { id: 'slt', title: 'Slots', icon: 'layout-grid', key: 'appointmentsSlots', columns: ['code', 'name', 'duration', 'bookAhead'],
+      note: 'Slot length and booking rules per clinic. The Appointment Book builds the calendar from these.',
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Name', req: true }, { key: 'clinicId', label: 'Clinic', type: 'select', options: clinics, req: true },
+        { key: 'duration', label: 'Slot length (minutes)', type: 'number', req: true }, { key: 'capacity', label: 'Patients per slot', type: 'number', req: true, default: 1 }, { key: 'bookAhead', label: 'Book ahead (days)', type: 'number', req: true, default: 30 }] },
+    { id: 'typ', title: 'Appointment types', icon: 'tags', key: 'appointmentsTypes', columns: ['code', 'name', 'duration', 'labelStatus'],
+      note: 'Con, Pro, Fol, Tele and Hom. Labels are to be confirmed with Tibbi (SOW V4).',
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Name', req: true }, { key: 'duration', label: 'Default length (minutes)', type: 'number', req: true },
+        { key: 'labelStatus', label: 'Label status', type: 'select', options: ['To be confirmed', 'Confirmed'], req: true }, { key: 'needsResource', label: 'Needs a technician or machine', type: 'check', full: true }, { key: 'note', label: 'Description', type: 'textarea' }] },
+    { id: 'cxr', title: 'Cancellation reasons', icon: 'calendar-x', key: 'appointmentsCancelReasons', columns: ['code', 'name', 'initiatedBy', 'noteRequired'],
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Reason', req: true }, { key: 'initiatedBy', label: 'Initiated by', type: 'select', options: ['Patient', 'Hospital'], req: true }, { key: 'noteRequired', label: 'Note required', type: 'check' }] },
+    { id: 'tpl', title: 'Communication templates', icon: 'message-square', key: 'appointmentsTemplates', columns: ['code', 'name', 'event', 'channel'],
+      note: 'Placeholders: {patient} {doctor} {clinic} {branch} {date} {time} {ref} {type}. SMS and email delivery depends on the agreed gateway scope.',
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Name', req: true }, { key: 'event', label: 'Event', type: 'select', options: ['Confirmation', 'Reminder', 'Reschedule', 'Cancellation'], req: true },
+        { key: 'channel', label: 'Channel', type: 'select', options: ['SMS', 'Email'], req: true }, { key: 'language', label: 'Language', type: 'select', options: ['English', 'Arabic'], req: true },
+        { key: 'sendWhen', label: 'Send when', type: 'select', options: ['On booking', '24 hours before', '48 hours before', 'On reschedule', 'On cancellation'], req: true }, { key: 'body', label: 'Message text', type: 'textarea', req: true, full: true }] },
+  ] });
+})();
+</script>
+</body>
+</html>

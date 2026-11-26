@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Incident Register · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-incident.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/incident.js"></script>
+<style>.tbl .btn.xs.icon { width: 28px; }</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, esc, icon, $, $$, R, can, fmtDate } = UI;
+  if (!UI.page({ opt: 'incident.register', title: 'Incident Register', subtitle: 'Search, review and categorize incidents, and assign investigators.', wide: true,
+    actions: `${can('incident.register', 'print') ? `<button class="btn" id="prt">${icon('printer')} Print list</button>` : ''}${can('incident.rep.new', 'view') ? `<a class="btn primary" href="${R('incident/new.html')}">${icon('file-plus')} Report an incident</a>` : ''}` })) return;
+  const T = Inc.T;
+  const member = Inc.isMember(), assignOk = Inc.canAssign();
+  const st = { tab: UI.param('tab') || 'all' };
+  const C = () => db.incidentCases;
+  const tabDefs = () => [
+    { id: 'all', label: 'All', count: C().length },
+    { id: 'review', label: 'Awaiting review', count: C().filter(c => !c.reviewed).length, icon: 'inbox' },
+    { id: 'Open', label: 'Open', count: C().filter(c => c.status === 'Open').length },
+    { id: 'In Progress', label: 'In Progress', count: C().filter(c => c.status === 'In Progress').length },
+    { id: 'Hold', label: 'Hold', count: C().filter(c => c.status === 'Hold').length },
+    { id: 'Closed', label: 'Closed', count: C().filter(c => c.status === 'Closed').length },
+    { id: 'mine', label: 'My assignments', count: Inc.myCases().length, icon: 'user-round-check' },
+  ];
+  $('#page').innerHTML = `${member ? '' : `<div class="banner warn" style="margin-bottom:12px">${icon('lock')}<span>You are not a member of the Incident Management Team. You can view the register, but only team members can categorize, assign or change status.</span></div>`}
+    <div id="tabs" style="margin-bottom:12px"></div><div id="tbl"></div>`;
+  const rowsOf = () => C().filter(c => st.tab === 'all' || (st.tab === 'review' ? !c.reviewed : st.tab === 'mine' ? Inc.myCases().includes(c) : c.status === st.tab));
+  const depts = Array.from(new Set(C().map(c => c.deptId))).map(id => [id, UI.L.dName(id)]);
+  const t = UI.table($('#tbl'), {
+    columns: [
+      { label: 'Reference', sort: (c) => c.no, render: (c) => `<span class="mono b">${esc(c.no)}</span>${!c.reviewed ? '<div><span class="badge b-warn nodot">New</span></div>' : ''}` },
+      { label: 'Reported', sort: (c) => c.reportedAt, render: (c) => `${esc(Kit.when(c.reportedAt))}<div class="xs muted">${c.anonymous ? icon('eye-off') + ' Anonymous' : esc(c.reporterName)}</div>` },
+      { label: 'Incident and location', sort: (c) => Inc.catName(c.categoryCode), render: (c) => `<b class="small">${esc(Inc.typeName(c.typeCode))}</b><div class="xs muted">${esc(Inc.catName(c.categoryCode))}</div><div class="xs muted">${icon('map-pin')} ${esc(c.location)} · ${esc(UI.L.dName(c.deptId))}</div>` },
+      { label: 'Severity', sort: (c) => Inc.SEVERITIES.indexOf(c.severity), render: (c) => Inc.sevBadge(c.severity) },
+      { label: 'Investigators', render: (c) => c.assigned.length ? `<span class="small">${c.assigned.map(m => esc(Inc.memberName(m))).join(', ')}</span>` : '<span class="badge b-warn nodot">Unassigned</span>' },
+      { label: 'Age', cls: 'num', sort: (c) => Inc.ageDays(c), render: (c) => { const d = Inc.ageDays(c); return `<span class="num ${c.status !== 'Closed' && d > 14 ? 'b' : ''}" style="${c.status !== 'Closed' && d > 14 ? 'color:var(--error)' : ''}">${d} d</span>`; } },
+      { label: 'Status', sort: (c) => Inc.STATUSES.indexOf(c.status), render: (c) => Inc.statusBadge(c.status) },
+      { label: '', cls: 'actions', render: (c) => { const no = 'disabled title="Needs IMT assign rights and Edit permission"'; return `<div class="row" style="gap:6px;justify-content:flex-end">${!c.reviewed ? `<button class="btn xs icon" data-cg="${c.id}" aria-label="Categorize ${esc(c.no)}" ${assignOk ? 'title="Categorize"' : no}>${icon('tags')}</button>` : ''}${c.status !== 'Closed' ? `<button class="btn xs icon" data-as="${c.id}" aria-label="Assign ${esc(c.no)}" ${assignOk ? 'title="Assign investigators"' : no}>${icon('user-plus')}</button>` : ''}<a class="btn xs icon" href="${R('incident/case.html?id=' + c.id)}" title="Open case" aria-label="Open ${esc(c.no)}">${icon('chevron-right')}</a></div>`; } },
+    ],
+    rows: rowsOf,
+    search: (c) => [c.no, Inc.catName(c.categoryCode), Inc.typeName(c.typeCode), c.location, c.description, c.anonymous ? 'anonymous' : c.reporterName, c.people.map(p => p.name).join(' ')].join(' '),
+    searchPlaceholder: 'Search reference, type, location, description or people',
+    filters: [
+      { label: 'Category', options: db.incidentCategories.map(x => [x.code, x.name]), test: (c, v) => c.categoryCode === v },
+      { label: 'Severity', options: Inc.SEVERITIES.map(x => [x, x]), test: (c, v) => c.severity === v },
+      { label: 'Department', options: depts, test: (c, v) => c.deptId === v },
+      { label: 'Investigator', options: db.incidentTeam.map(m => [m.code, m.name]).concat([['none', 'Unassigned']]), test: (c, v) => v === 'none' ? !c.assigned.length : c.assigned.includes(v) },
+      { label: 'Ageing', options: Inc.BUCKETS.map(x => [x, x]), test: (c, v) => Inc.bucket(Inc.ageDays(c)) === v },
+      { label: 'Reporter', options: [['anon', 'Anonymous'], ['named', 'Named']], test: (c, v) => v === 'anon' ? c.anonymous : !c.anonymous },
+    ],
+    pageSize: 12, onRow: (c) => { location.href = R('incident/case.html?id=' + c.id); }, empty: 'No incidents for these filters', emptyIcon: 'folder-search',
+    afterDraw: (tb) => {
+      const f = (id) => C().find(c => c.id === id);
+      $$('[data-cg]', tb).forEach(b => b.addEventListener('click', () => Inc.categorize(f(b.dataset.cg), refresh)));
+      $$('[data-as]', tb).forEach(b => b.addEventListener('click', () => Inc.assign(f(b.dataset.as), refresh)));
+    },
+  });
+  function drawTabs() { Kit.tabs($('#tabs'), tabDefs(), st.tab, (id) => { st.tab = id; t.redraw(); }); }
+  function refresh() { drawTabs(); t.redraw(); }
+  drawTabs();
+  const pb = $('#prt');
+  pb && pb.addEventListener('click', () => {
+    const rs = rowsOf();
+    Kit.printDoc({ title: 'Incident register', sub: 'Incident Management · ' + (tabDefs().find(x => x.id === st.tab) || {}).label,
+      html: `<table><thead><tr><th>Reference</th><th>Reported</th><th>Type</th><th>Location</th><th>Severity</th><th>Status</th><th>Age</th></tr></thead><tbody>${rs.map(c => `<tr><td>${esc(c.no)}</td><td>${esc(fmtDate(c.reportedAt))}</td><td>${esc(Inc.typeName(c.typeCode))}</td><td>${esc(c.location)}</td><td>${esc(c.severity)}</td><td>${esc(c.status)}</td><td>${Inc.ageDays(c)} d</td></tr>`).join('')}</tbody></table>` });
+    UI.audit('Incident register printed', 'Report', { id: 'incident.register', label: 'Incident register' }, []);
+  });
+})();
+</script>
+</body>
+</html>

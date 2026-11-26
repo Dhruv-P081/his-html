@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Access Mapping · Tibbi Orbit</title>
+<link rel="stylesheet" href="assets/styles.css">
+<script src="assets/icons.js"></script><script src="assets/data.js"></script><script src="assets/data-core.js"></script><script src="assets/ui.js"></script><script src="assets/mapping.js"></script>
+<style>.am-why { display: inline-block; max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
+.am-def { color: #F59E0B; display: inline-grid; } .am-def svg { fill: #F59E0B; width: 15px; height: 15px; }</style>
+</head>
+<body>
+<script>
+const { db, save, $, $$, icon, esc, page, can, table, drawer, badge, L, toast, audit, me, nowStamp, uid, fmtDate, confirm, today, assignmentUsable, tupleText, ctxKey } = UI;
+const OPT = 'admin.security.mapping';
+const canAdd = can(OPT, 'add'), canCancel = can(OPT, 'cancel');
+const sel = new Set();
+function stateOf(a) { if (a.status !== 'Active') return ['Revoked', 'Revoked']; const s = assignmentUsable(a); if (s.ok) return ['Active', a.to && a.to <= '2026-12-31' ? 'Active · ends ' + fmtDate(a.to) : 'Active']; if (a.from > today()) return ['Future', s.why]; return ['Inactive', s.why]; }
+if (page({ active: 'access-mapping.html', opt: OPT, title: 'Access Mapping', crumbs: [['Home', 'home.html'], ['Administration', 'admin.html'], ['Access Mapping']],
+  subtitle: 'Who may work where, with which role. The default answer is deny: access exists only through an explicit, valid assignment.',
+  actions: `<button class="btn" id="eff">${icon('eye')} Effective permissions</button>${canAdd ? `<button class="btn" id="copy">${icon('copy')} Copy from user</button><button class="btn primary" id="new">${icon('plus')} New assignment</button>` : ''}`,
+  body: `<div class="grid g4" style="margin-bottom:16px" id="stats"></div><div id="bulkBar"></div><div id="list"></div>` })) {
+  function stats() {
+    const c = k => db.assignments.filter(a => stateOf(a)[0] === k).length;
+    $('#stats').innerHTML = [['Active', 'ok', 'circle-check', 't-mint'], ['Future', 'info', 'calendar-days', 't-sky'], ['Inactive', 'warn', 'clock', 't-peach'], ['Revoked', 'neutral', 'ban', 't-lilac']].map(x => `<div class="card stat"><span class="tile ${x[3]}">${icon(x[2])}</span><div><b>${c(x[0])}</b><span>${x[0]} assignments</span></div></div>`).join('');
+    $('#bulkBar').innerHTML = sel.size ? `<div class="banner info" style="margin-bottom:12px;align-items:center">${icon('check')}<span class="grow">${sel.size} selected</span>${canCancel ? `<button class="btn sm danger" id="bulkRevoke">${icon('ban')} Revoke selected</button>` : ''}<button class="btn sm" id="bulkClear">Clear</button></div>` : '';
+    const br = $('#bulkRevoke'); if (br) br.addEventListener('click', bulkRevoke);
+    const bc = $('#bulkClear'); if (bc) bc.addEventListener('click', () => { sel.clear(); tbl.redraw(); stats(); });
+  }
+  const tbl = table($('#list'), {
+    searchPlaceholder: 'Search user, role or department', search: a => L.uName(a.userId) + ' ' + L.user(a.userId).login + ' ' + L.rName(a.roleId) + ' ' + L.dName(a.deptId),
+    filters: [
+      { label: 'Company', options: db.companies.map(c => [c.id, c.code]), test: (a, v) => a.companyId === v },
+      { label: 'Branch', options: db.branches.map(b => [b.id, b.name]), test: (a, v) => a.branchId === v },
+      { label: 'Department', options: db.departments.map(d => [d.id, d.name + ' (' + L.branch(d.branchId).code + ')']), test: (a, v) => a.deptId === v },
+      { label: 'Role', options: db.roles.map(r => [r.id, r.code]), test: (a, v) => a.roleId === v },
+      { label: 'State', options: ['Active', 'Future', 'Inactive', 'Revoked'].map(s => [s, s]), test: (a, v) => stateOf(a)[0] === v }],
+    rows: () => db.assignments, pageSize: 12,
+    columns: [
+      { label: '', render: a => a.status === 'Active' && canCancel ? `<input type="checkbox" class="tri" data-sel="${a.id}" ${sel.has(a.id) ? 'checked' : ''} aria-label="Select">` : '' },
+      { label: 'User', render: a => `<div class="row"><span class="avatar" style="width:30px;height:30px;font-size:11px">${UI.initials(L.uName(a.userId))}</span><div class="cell-main"><a href="user.html?id=${a.userId}&tab=access"><b>${esc(L.uName(a.userId))}</b></a><span class="mono">${esc(L.user(a.userId).login)}</span></div></div>`, sort: a => L.uName(a.userId) },
+      { label: 'Company · branch', render: a => `<b>${esc(L.company(a.companyId).code)}</b> · ${esc(L.bName(a.branchId))}`, sort: a => L.bName(a.branchId) },
+      { label: 'Department · clinic', render: a => `${esc(L.dName(a.deptId))}${a.clinicId ? `<br><span class="small muted">${esc(L.clName(a.clinicId))}</span>` : ''}` },
+      { label: 'Warehouse', render: a => a.warehouseId ? esc(L.wName(a.warehouseId)) : '<span class="muted">None</span>' },
+      { label: 'Role', render: a => `<b>${esc(L.rName(a.roleId))}</b>${L.role(a.roleId).privileged ? ' <span class="tag">Privileged</span>' : ''}`, sort: a => L.rName(a.roleId) },
+      { label: 'Validity', render: a => `<span class="small" style="white-space:nowrap">${fmtDate(a.from)}</span><br><span class="small muted" style="white-space:nowrap">to ${a.to ? fmtDate(a.to) : 'open'}</span>`, sort: a => a.from },
+      { label: 'State', render: a => { const s = stateOf(a); return `<span class="row" style="gap:6px;flex-wrap:wrap">${badge(s[0], s[1])}${a.isDefault ? `<span class="am-def" title="Default context" aria-label="Default context">${icon('star')}</span>` : ''}</span>`; } },
+      { label: 'Granted by', render: a => `<span class="small">${esc(a.grantor)}<br><span class="muted am-why" title="${esc(a.reason)}">${esc(a.reason)}</span></span>` },
+      { label: '', cls: 'actions', render: a => `<button class="btn sm ghost" data-eff="${a.id}" title="Effective permissions">${icon('eye')}</button>${a.status === 'Active' && canAdd ? `<button class="btn sm ghost" data-ed="${a.id}" title="Edit validity">${icon('pencil')}</button>` : ''}${a.status === 'Active' && canCancel ? `<button class="btn sm ghost" data-rv="${a.id}" title="Revoke">${icon('ban')}</button>` : ''}` },
+    ],
+    afterDraw: tb => {
+      const find = id => db.assignments.find(a => a.id === id);
+      $$('[data-sel]', tb).forEach(c => c.addEventListener('change', () => { c.checked ? sel.add(c.dataset.sel) : sel.delete(c.dataset.sel); stats(); }));
+      $$('[data-eff]', tb).forEach(b => b.addEventListener('click', () => { const a = find(b.dataset.eff); Mapping.effective(a.userId, a); }));
+      $$('[data-ed]', tb).forEach(b => b.addEventListener('click', () => Mapping.assignmentDrawer(find(b.dataset.ed), null, refresh)));
+      $$('[data-rv]', tb).forEach(b => b.addEventListener('click', () => Mapping.revoke(find(b.dataset.rv), refresh)));
+    },
+  });
+  function refresh() { tbl.redraw(); stats(); }
+  stats();
+
+  /* MAP-09: bulk changes need a preview, confirmation and reason; atomic. */
+  function bulkRevoke() {
+    const list = Array.from(sel).map(id => db.assignments.find(a => a.id === id));
+    confirm({ title: `Revoke ${list.length} assignments?`, wide: true, body: 'All rows are revoked together. If any row fails validation, nothing is changed.',
+      impact: list.map(a => `${esc(L.uName(a.userId))}: ${esc(tupleText(a, true))} · ${esc(L.rName(a.roleId))}`), reason: true, confirm: `Revoke ${list.length}`,
+      onConfirm: (reason) => { const bad = list.filter(a => a.status !== 'Active'); if (bad.length) { toast('Nothing changed: some rows are no longer active.', 'err'); return; }
+        list.forEach(a => { a.status = 'Inactive'; a.revokedAt = nowStamp(); a.revokedBy = me().displayName; a.revokeReason = reason; audit('Assignment revoked', 'Access mapping', { id: a.id, label: `${L.user(a.userId).login} / ${tupleText(a, true)}` }, [['Status', 'Active', 'Revoked']], { reason }); });
+        save(); sel.clear(); toast(`${list.length} assignments revoked`); refresh(); } });
+  }
+  function copyFrom() {
+    drawer({ title: 'Copy assignments from another user', sub: 'Preview every row first. Privileged grants are excluded and every row is revalidated before one atomic save.', wide: true,
+      body: `<div class="form-grid"><div class="field"><label>Copy from<span class="req">*</span></label><select class="input" id="cS"><option value="">Select source user</option>${db.users.filter(u => db.assignments.some(a => a.userId === u.id && a.status === 'Active')).map(u => `<option value="${u.id}">${esc(u.displayName)}</option>`).join('')}</select></div>
+        <div class="field"><label>Copy to<span class="req">*</span></label><select class="input" id="cT"><option value="">Select target user</option>${db.users.filter(u => u.status !== 'Inactive').map(u => `<option value="${u.id}">${esc(u.displayName)}${u.status !== 'Active' ? ' (' + u.status + ')' : ''}</option>`).join('')}</select></div>
+        <div class="field">${UI.field({ id: 'cFrom', label: 'Effective from', type: 'date', value: today(), req: true })}</div><div class="field">${UI.field({ id: 'cReason', label: 'Reason', req: true })}</div></div><div id="cPrev" style="margin-top:14px"></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="cGo" disabled>Copy valid rows</button>`,
+      onMount: (el, close) => {
+        let rows = [];
+        const prev = () => {
+          const s = $('#cS', el).value, t = $('#cT', el).value; rows = [];
+          if (s && t) db.assignments.filter(a => a.userId === s && a.status === 'Active').forEach(a => {
+            const r = L.role(a.roleId); let why = '';
+            if (s === t) why = 'Same user';
+            else if (r.privileged) why = 'Privileged grant excluded';
+            else if (!assignmentUsable(Object.assign({}, a, { userId: s })).ok && a.from <= today()) why = assignmentUsable(a).why;
+            else if (db.assignments.some(x => x.userId === t && x.status === 'Active' && x.roleId === a.roleId && ctxKey(x) === ctxKey(a))) why = 'Target already has this role here';
+            rows.push({ a, why });
+          });
+          const ok = rows.filter(r => !r.why);
+          $('#cPrev', el).innerHTML = rows.length ? `<div class="card"><table class="tbl"><thead><tr><th>Context</th><th>Role</th><th>Result</th></tr></thead><tbody>${rows.map(r => `<tr><td>${esc(tupleText(r.a, true))}</td><td>${esc(L.rName(r.a.roleId))}</td><td>${r.why ? badge('Failure', r.why) : badge('Active', 'Will be copied')}</td></tr>`).join('')}</tbody></table></div><div class="small muted" style="margin-top:8px">${ok.length} of ${rows.length} rows can be copied. Excluded rows are not copied.</div>` : (s && t ? '<div class="muted">The source has no active assignments.</div>' : '');
+          $('#cGo', el).disabled = !ok.length || !$('#cReason', el).value.trim();
+        };
+        ['cS', 'cT', 'cReason'].forEach(id => $('#' + id, el).addEventListener(id === 'cReason' ? 'input' : 'change', prev));
+        $('#cGo', el).addEventListener('click', () => { const t = $('#cT', el).value; const reason = $('#cReason', el).value.trim(); const from = $('#cFrom', el).value; const ok = rows.filter(r => !r.why);
+          ok.forEach(({ a }) => { const n = Object.assign({}, a, { id: uid('as'), userId: t, from, to: '', isDefault: false, grantor: me().displayName, reason: 'Copied from ' + L.user(a.userId).login + ': ' + reason, at: nowStamp() }); db.assignments.push(n); audit('Assignment granted', 'Access mapping', { id: n.id, label: `${L.user(t).login} / ${tupleText(n, true)}` }, [['Copied from', '', L.user(a.userId).login]], { reason }); });
+          save(); close(); toast(`${ok.length} assignments copied`); refresh(); });
+      } });
+  }
+  function effPick() {
+    let picked = null; let uidSel = '';
+    drawer({ title: 'Effective permissions', sub: 'See exactly what a user can do in one context, and which role gives each right.',
+      body: `<div class="field"><label>User</label><select class="input" id="eU"><option value="">Select user</option>${db.users.map(u => `<option value="${u.id}">${esc(u.displayName)}</option>`).join('')}</select></div><div id="eCtx" style="margin-top:14px"><div class="empty" style="padding:28px 0">${icon('user-search')}<b>Choose a user</b><span>Then pick one of their contexts to see every screen and action they can use there.</span></div></div>`,
+      foot: `<button class="btn" data-close>Close</button><button class="btn primary" id="eGo" disabled>Show permissions</button>`,
+      onMount: (el, close) => {
+        $('#eU', el).addEventListener('change', () => { uidSel = $('#eU', el).value; const host = $('#eCtx', el); host.innerHTML = '';
+          const ctxs = db.assignments.filter(a => a.userId === uidSel);
+          host.innerHTML = ctxs.length ? `<div class="field"><label>Context</label><select class="input" id="eC">${Array.from(new Map(ctxs.map(a => [ctxKey(a), a])).values()).map(a => `<option value="${a.id}">${esc(tupleText(a))}</option>`).join('')}</select></div>` : '<div class="muted">This user has no assignments.</div>';
+          $('#eGo', el).disabled = !ctxs.length; });
+        $('#eGo', el).addEventListener('click', () => { const a = db.assignments.find(x => x.id === $('#eC', el).value); close(); Mapping.effective(uidSel, a); });
+      } });
+  }
+  $('#eff').addEventListener('click', effPick);
+  const n = $('#new'); if (n) n.addEventListener('click', () => Mapping.assignmentDrawer(null, null, refresh));
+  const c = $('#copy'); if (c) c.addEventListener('click', copyFrom);
+}
+</script>
+</body>
+</html>

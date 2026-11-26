@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cost center profitability · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<style>#donut>.row{flex-direction:column;align-items:stretch;gap:20px}#donut>.row>svg{align-self:center}</style>
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-finance.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/finance.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, esc, icon, $, $$, R, audit, drawer } = UI;
+  const OPT = 'finance.costcenter';
+  if (!UI.page({ opt: OPT, title: 'Cost center profitability', subtitle: 'Revenue, direct costs and contribution margin by department and cost center, from posted journals.',
+    actions: Fin.btn({ cls: 'primary', attrs: 'id="prt"', icon: 'printer', label: 'Print', gate: Fin.gate(OPT, 'print') }) })) return;
+  const T = Fin.T, ps = Fin.periodOpts();
+  $('#page').innerHTML = `<div class="card card-pad" style="margin-bottom:14px"><div class="row wrap" style="gap:12px;align-items:flex-end">${Fin.sel('fBr', 'Branch', Fin.brOpts(), '', 'All branches')}${Fin.sel('fFrom', 'From period', ps, '2026-01', false)}${Fin.sel('fTo', 'To period', ps, '2026-10', false)}${Fin.sel('fType', 'Cost center type', [['Revenue', 'Revenue centers'], ['Support', 'Support centers']], '', 'All types')}</div></div>
+    <div class="grid g4" id="kp" style="margin-bottom:14px"></div>
+    <div class="grid g-side" style="margin-bottom:14px"><div class="card"><div class="card-head"><h3>${icon('chart-column')} Contribution margin by cost center</h3><div class="actions"><span class="small muted">KWD thousands</span></div></div><div class="card-pad" id="chart"></div></div>
+      <div class="card"><div class="card-head"><h3>${icon('chart-pie')} Revenue share</h3></div><div class="card-pad" id="donut"></div></div></div>
+    <div class="card" id="tblCard"><div class="card-head"><h3>${icon('table')} Profitability statement</h3><div class="actions"><span class="small muted" id="lbl"></span></div></div><div id="tbl"></div></div>`;
+  ['fBr', 'fFrom', 'fTo', 'fType'].forEach(i => $('#' + i).addEventListener('change', draw));
+  let rows = [];
+  const span = () => ({ branchId: $('#fBr').value, from: Fin.pStart($('#fFrom').value), to: Fin.pEnd($('#fTo').value) < T ? Fin.pEnd($('#fTo').value) : T });
+  function compute() {
+    const x = span(), m = {};
+    db.financeCostCenters.forEach(c => { m[c.id] = { c, rev: 0, direct: 0, over: 0, byAcc: {} }; });
+    Fin.posted(x).forEach(l => {
+      if (!l.ccId || !m[l.ccId]) return; const a = Fin.A(l.accountId); if (!a) return;
+      const r = m[l.ccId];
+      if (a.type === 'Revenue') { const v = l.credit - l.debit; r.rev += v; r.byAcc[a.id] = (r.byAcc[a.id] || 0) + v; }
+      if (a.type === 'Expense') { const v = l.debit - l.credit; if (a.group === 'Direct costs') r.direct += v; else r.over += v; r.byAcc[a.id] = (r.byAcc[a.id] || 0) - v; }
+    });
+    return Object.values(m).filter(r => (!x.branchId || r.c.branchId === x.branchId) && (!$('#fType').value || r.c.type === $('#fType').value) && (r.rev || r.direct || r.over)).map(r => Object.assign(r, { margin: r.rev - r.direct, net: r.rev - r.direct - r.over, pct: r.rev ? (r.rev - r.direct) / r.rev : 0 }));
+  }
+  function draw() {
+    if ($('#fFrom').value > $('#fTo').value) $('#fFrom').value = $('#fTo').value;
+    rows = compute();
+    const rev = Kit.sumBy(rows, r => r.rev), dir = Kit.sumBy(rows, r => r.direct), ov = Kit.sumBy(rows, r => r.over);
+    const revRows = rows.filter(r => r.c.type === 'Revenue').sort((a, b) => b.margin - a.margin);
+    const best = revRows[0], worst = revRows.slice().sort((a, b) => a.pct - b.pct)[0];
+    $('#kp').innerHTML = Kit.kpi('Revenue', Fin.amt(rev).replace(/\.\d+$/, ''), { unit: 'KWD', icon: 'trending-up', foot: rows.filter(r => r.rev).length + ' revenue centers' })
+      + Kit.kpi('Contribution margin', Fin.amt(rev - dir).replace(/\.\d+$/, ''), { unit: 'KWD', icon: 'chart-column', foot: (rev ? Math.round(100 * (rev - dir) / rev) : 0) + '% of revenue after direct costs' })
+      + Kit.kpi('Highest margin', best ? esc(best.c.name) : '-', { icon: 'trophy', foot: best ? Fin.amt(best.margin).replace(/\.\d+$/, '') + ' KWD' : '' })
+      + Kit.kpi('Lowest margin %', worst ? esc(worst.c.name) : '-', { icon: 'triangle-alert', foot: worst ? Math.round(100 * worst.pct) + '% margin' : '' });
+    $('#chart').innerHTML = revRows.length ? Kit.barChart({ labels: revRows.map(r => r.c.code.replace('CC-', '')), values: revRows.map(r => Math.max(0, Math.round(r.margin / 1000))), colors: revRows.map(r => r.pct >= 0.5 ? '#0E9F6E' : r.pct >= 0.3 ? '#2F6BC5' : '#E0670E'), height: 220, title: 'Contribution margin by cost center' }) + `<div class="legend" style="margin-top:6px"><span><i style="background:#0E9F6E"></i>Margin 50% or more</span><span><i style="background:#2F6BC5"></i>30 to 50%</span><span><i style="background:#E0670E"></i>Under 30%</span></div>` : `<div class="empty">${icon('chart-column')}<b>No postings for these filters</b></div>`;
+    const top = revRows.slice().sort((a, b) => b.rev - a.rev);
+    const rest = top.slice(5);
+    $('#donut').innerHTML = top.length ? Kit.donut(top.slice(0, 5).map((r, i) => [r.c.name, Math.round(r.rev), Kit.PALETTE[i]]).concat(rest.length ? [['Other centers', Math.round(Kit.sumBy(rest, r => r.rev)), '#8794A7']] : []), { center: rev >= 1e6 ? (rev / 1e6).toFixed(2) + 'M' : Math.round(rev / 1000) + 'k', centerLabel: 'KWD', fmt: (v) => Kit.num(v), size: 168 }) : '';
+    $('#lbl').textContent = `${$('#fBr').value ? Fin.brName($('#fBr').value) : 'All branches'} · ${Fin.pName($('#fFrom').value)} to ${Fin.pName($('#fTo').value)}`;
+    UI.table($('#tbl'), {
+      columns: [
+        { label: 'Cost center', sort: r => r.c.code, render: r => `<div class="cell-main"><b>${esc(r.c.name)}</b><span class="mono">${esc(r.c.code)}</span> · <span>${esc(Fin.brShort(r.c.branchId))} · ${esc(r.c.type)}</span></div>` },
+        { label: 'Revenue', cls: 'num', sort: r => r.rev, render: r => Fin.amt(r.rev) },
+        { label: 'Direct costs', cls: 'num', sort: r => r.direct, render: r => Fin.amt(r.direct) },
+        { label: 'Contribution', cls: 'num', sort: r => r.margin, render: r => `<b style="${r.margin < 0 ? 'color:var(--error)' : ''}">${Fin.amt(r.margin)}</b>` },
+        { label: 'Margin %', cls: 'num', sort: r => r.pct, render: r => r.rev ? `<div class="row" style="gap:8px;justify-content:flex-end"><div class="progress ${r.pct >= 0.5 ? 'ok' : r.pct >= 0.3 ? '' : 'warn'}" style="width:70px"><i style="width:${Math.max(2, Math.min(100, Math.round(r.pct * 100)))}%"></i></div><span>${Math.round(r.pct * 100)}%</span></div>` : '<span class="muted">-</span>' },
+        { label: 'Overheads', cls: 'num', sort: r => r.over, render: r => r.over ? Fin.amt(r.over) : '<span class="muted">-</span>' },
+        { label: 'Share of revenue', cls: 'num', render: r => rev ? Math.round(1000 * r.rev / rev) / 10 + '%' : '' },
+      ],
+      rows: () => rows.slice().sort((a, b) => b.rev - a.rev || b.over - a.over), search: r => r.c.name + ' ' + r.c.code, searchPlaceholder: 'Cost center', pageSize: 20,
+      toolbar: `<span class="small muted">Total revenue ${Fin.amt(rev)} · direct ${Fin.amt(dir)} · overheads ${Fin.amt(ov)} · net ${Fin.amt(rev - dir - ov)}</span>`,
+      onRow: r => detail(r),
+    });
+  }
+  function detail(r) {
+    const months = db.financePeriods.filter(p => p.code >= $('#fFrom').value && p.code <= $('#fTo').value && p.state !== 'Future');
+    const series = months.map(p => { let rv = 0, dc = 0; Fin.posted({ from: p.from, to: p.to }).forEach(l => { if (l.ccId !== r.c.id) return; const a = Fin.A(l.accountId); if (a.type === 'Revenue') rv += l.credit - l.debit; if (a.type === 'Expense' && a.group === 'Direct costs') dc += l.debit - l.credit; }); return { rv, dc }; });
+    drawer({ title: r.c.name, sub: esc(r.c.code + ' · ' + Fin.brName(r.c.branchId) + ' · ' + UI.L.dName(r.c.deptId)), wide: true,
+      body: `<div class="grid g4" style="margin-bottom:14px">${Kit.kpi('Revenue', Fin.amt(r.rev).replace(/\.\d+$/, ''), { unit: 'KWD' })}${Kit.kpi('Direct costs', Fin.amt(r.direct).replace(/\.\d+$/, ''), { unit: 'KWD' })}${Kit.kpi('Contribution', Fin.amt(r.margin).replace(/\.\d+$/, ''), { unit: 'KWD' })}${Kit.kpi('Margin', Math.round(r.pct * 100) + '%', {})}</div>
+        <div class="card" style="margin-bottom:14px"><div class="card-head"><h3>${icon('chart-line')} Monthly trend</h3><div class="actions"><span class="small muted">KWD thousands</span></div></div><div class="card-pad">${Kit.lineChart({ labels: months.map(p => p.name.slice(0, 3)), series: [{ name: 'Revenue', color: '#2F6BC5', values: series.map(s => Math.round(s.rv / 100) / 10) }, { name: 'Direct costs', color: '#E0670E', values: series.map(s => Math.round(s.dc / 100) / 10) }], min: 0, height: 200 })}</div></div>
+        <div class="card"><div class="card-head"><h3>${icon('list')} By account</h3></div><div class="table-wrap"><table class="tbl compact"><thead><tr><th>Account</th><th class="num">Amount</th></tr></thead><tbody>${Object.entries(r.byAcc).sort((a, b) => b[1] - a[1]).map(([id, v]) => `<tr><td><span class="mono small">${esc(Fin.A(id).code)}</span> ${esc(Fin.A(id).name)}</td><td class="num" style="${v < 0 ? 'color:var(--error)' : ''}">${Fin.amt(v)}</td></tr>`).join('')}</tbody><tfoot><tr><td>Net contribution after overheads</td><td class="num">${Fin.amt(r.net)}</td></tr></tfoot></table></div></div>` });
+  }
+  $('#prt') && $('#prt').addEventListener('click', () => {
+    Kit.printDoc({ title: 'Cost center profitability', sub: $('#lbl').textContent, html: `<h3 style="margin:0 0 8px">Cost center profitability</h3><p style="color:#555;margin:0 0 10px">${esc($('#lbl').textContent)} · KWD</p>` + Fin.sheetTable(['Cost center', 'Revenue', 'Direct costs', 'Contribution', 'Margin %', 'Overheads'], rows.slice().sort((a, b) => b.rev - a.rev).map(r => [r.c.code + ' ' + r.c.name, r.rev, r.direct, r.margin, r.rev ? Math.round(r.pct * 100) + '%' : '', r.over]), ['Total', Kit.sumBy(rows, r => r.rev), Kit.sumBy(rows, r => r.direct), Kit.sumBy(rows, r => r.margin), '', Kit.sumBy(rows, r => r.over)]) });
+    audit('Report printed', 'Cost center profitability', { id: 'cc', label: $('#lbl').textContent }, []);
+  });
+  draw();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Role editor · Tibbi Orbit</title>
+<link rel="stylesheet" href="assets/styles.css">
+<script src="assets/icons.js"></script><script src="assets/data.js"></script><script src="assets/data-core.js"></script><script src="assets/ui.js"></script>
+</head>
+<body>
+<script>
+const { db, save, $, $$, icon, esc, page, can, badge, L, toast, audit, me, nowStamp, confirm, session, permsFor, historyDrawer } = UI;
+const OPT = 'admin.security.roles';
+const role = L.role(UI.param('id'));
+if (!role) location.replace('roles.html');
+const readOnly = !can(OPT, 'edit') || role.protected;
+const KEYS = db.ACTION_KEYS;
+// ROL-03 grant authority: Admin Access on Role Master grants everything; otherwise only what the editor holds in this context.
+const mine = permsFor(session().userId, session().ctx);
+const fullAuthority = can(OPT, 'admin');
+const mayGrant = (opt, act) => fullAuthority || (mine[opt] || []).includes(act);
+const work = JSON.parse(JSON.stringify(role.perms || {}));
+const open = new Set(db.modules.map(m => m.id).slice(0, 0));
+if (page({ active: 'roles.html', opt: OPT, title: role.name, crumbs: [['Home', 'home.html'], ['Administration', 'admin.html'], ['Roles', 'roles.html'], [role.code]],
+  subtitle: `<span class="mono">${esc(role.code)}</span> · ${role.scope} role${role.companyId ? ' · ' + esc(L.cName(role.companyId)) : ''} · version ${role.version} ${badge(role.status)} ${role.protected ? '<span class="tag">Protected: restricted editing</span>' : ''}`,
+  actions: `<button class="btn ghost" id="hist">${icon('history')} History</button>${readOnly ? '' : `<button class="btn" id="reset">${icon('undo-2')} Discard changes</button><button class="btn primary" id="save" disabled>${icon('check')} Save permissions</button>`}`,
+  body: `<div class="grid g4" style="margin-bottom:16px">
+    <div class="card stat"><span class="tile t-sky">${icon('users')}</span><div><b id="sUsers"></b><span>Users affected on save</span></div></div>
+    <div class="card stat"><span class="tile t-mint">${icon('layout-grid')}</span><div><b id="sScreens"></b><span>Screens covered</span></div></div>
+    <div class="card stat"><span class="tile t-lilac">${icon('check')}</span><div><b id="sActs"></b><span>Action flags</span></div></div>
+    <div class="card stat"><span class="tile t-rose">${icon('triangle-alert')}</span><div><b id="sConf"></b><span>Dependency conflicts</span></div></div></div>
+  <div id="conflicts"></div>
+  ${readOnly ? `<div class="banner info" style="margin-bottom:14px">${icon('lock')}<span>${role.protected ? 'This is a system-protected role. Editing is restricted.' : 'You can view this role but not change it.'}</span></div>` : ''}
+  <div class="card"><div class="filters"><div class="search grow" style="max-width:320px">${icon('search')}<input class="input" id="q" placeholder="Search module or screen"></div>
+    <button class="btn sm" id="expand">${icon('chevron-down')} Expand all</button><button class="btn sm" id="collapse">${icon('chevron-right')} Collapse all</button>
+    <div class="grow"></div><div class="legend"><span>☑ Cover = include · ☐ Uncover = exclude · ▣ partly covered</span><span class="na">—</span> not supported</div></div>
+    <div class="table-wrap"><div class="tree" id="tree"></div></div></div>
+  <div class="small muted" style="margin-top:10px">Add, Edit, Cancel, Print, Verify, Approve and Admin Access need View. Verify and Approve are enforced at the service layer. Admin Access grants only the documented admin functions of that screen within the assignment scope. New catalog screens start uncovered.</div>` })) {
+
+  const users = new Set(db.assignments.filter(a => a.roleId === role.id && a.status === 'Active').map(a => a.userId));
+  $('#sUsers').textContent = users.size;
+  const optsOf = node => node.opts ? node.opts : node.subs ? node.subs.flatMap(optsOf) : [];
+  function state(node) {   // 'all' | 'some' | 'none'
+    const o = node.opts || node.subs ? optsOf(node) : [node];
+    const n = o.filter(x => (work[x.id] || []).length).length;
+    return n === 0 ? 'none' : n === o.length ? 'all' : 'some';
+  }
+  function conflicts() { return Object.entries(work).filter(([o, a]) => a.length && !a.includes('view')).map(([o]) => o); }
+  function dirty() { return JSON.stringify(work) !== JSON.stringify(role.perms); }
+  function stats() {
+    $('#sScreens').textContent = Object.values(work).filter(a => a.length).length;
+    $('#sActs').textContent = Object.values(work).reduce((s, a) => s + a.length, 0);
+    const c = conflicts(); $('#sConf').textContent = c.length;
+    $('#conflicts').innerHTML = c.length ? `<div class="banner err" style="margin-bottom:14px">${icon('circle-alert')}<div class="grow"><b>Fix before saving:</b> ${c.map(o => esc(UI.optionById(o).name)).join(', ')} ${c.length > 1 ? 'have' : 'has'} actions without View. Every action needs View.</div><button class="btn sm" id="fixAll">Add View</button></div>` : '';
+    const f = $('#fixAll'); if (f) f.addEventListener('click', () => { c.forEach(o => work[o].unshift('view')); draw(); });
+    const sv = $('#save'); if (sv) sv.disabled = !dirty() || c.length > 0;
+  }
+  function cellHtml(o, k) {
+    if (!o.acts.includes(k)) return `<div class="tree-cell"><span class="na" title="Not supported on this screen">—</span></div>`;
+    const on = (work[o.id] || []).includes(k); const allowed = mayGrant(o.id, k);
+    return `<div class="tree-cell"><input type="checkbox" class="tri" data-o="${o.id}" data-k="${k}" ${on ? 'checked' : ''} ${readOnly || (!allowed && !on) ? 'disabled' : ''} title="${!allowed ? 'Beyond your grant authority' : db.ACTIONS[k]}" aria-label="${esc(o.name)}: ${db.ACTIONS[k]}"></div>`;
+  }
+  function nodeRow(node, lvl, kind) {
+    const s = state(node); const id = node.id; const hasKids = kind !== 'opt';
+    const box = `<input type="checkbox" class="tri" data-cover="${id}" data-kind="${kind}" ${s === 'all' ? 'checked' : ''} ${readOnly ? 'disabled' : ''} aria-label="Cover ${esc(node.name)}">`;
+    return `<div class="tree-row" data-row="${id}"><div class="tree-name" style="--lvl:${lvl}"><button class="tg ${hasKids ? '' : 'leaf'}" data-tg="${id}" aria-label="Expand">${icon(open.has(id) ? 'chevron-down' : (document.dir === 'rtl' ? 'chevron-left' : 'chevron-right'))}</button>${box}
+      ${kind === 'mod' ? `<span class="tile ${node.tile}" style="width:28px;height:28px;border-radius:9px;display:grid;place-items:center;color:var(--primary)">${icon(node.icon)}</span><b class="lvl0">${esc(node.name)}</b>` : kind === 'sub' ? `<b>${esc(node.name)}</b>` : `<span>${esc(node.name)}${node.warehouse ? ' <span class="tag">warehouse</span>' : ''}</span>`}
+      ${hasKids ? `<span class="small muted">${optsOf(node).filter(o => (work[o.id] || []).length).length}/${optsOf(node).length}</span>` : ''}</div>
+      ${kind === 'opt' ? KEYS.map(k => cellHtml(node, k)).join('') : KEYS.map(() => '<div></div>').join('')}</div>`;
+  }
+  function draw() {
+    const q = $('#q').value.trim().toLowerCase();
+    const head = `<div class="tree-row head"><div>Module · submodule · screen</div>${KEYS.map(k => `<div>${esc(db.ACTIONS[k])}</div>`).join('')}</div>`;
+    let html = head;
+    db.modules.forEach(m => {
+      const match = !q || m.name.toLowerCase().includes(q) || optsOf(m).some(o => o.name.toLowerCase().includes(q));
+      if (!match) return;
+      html += nodeRow(m, 0, 'mod');
+      if (!open.has(m.id) && !q) return;
+      m.subs.forEach(s => {
+        const sm = !q || m.name.toLowerCase().includes(q) || s.opts.some(o => o.name.toLowerCase().includes(q)); if (!sm) return;
+        html += nodeRow(s, 1, 'sub');
+        if (!open.has(s.id) && !q) return;
+        s.opts.filter(o => !q || o.name.toLowerCase().includes(q) || m.name.toLowerCase().includes(q)).forEach(o => html += nodeRow(o, 2, 'opt'));
+      });
+    });
+    $('#tree').innerHTML = html;
+    $$('[data-cover]').forEach(cb => { const n = findNode(cb.dataset.cover); cb.indeterminate = state(n) === 'some'; });
+    $$('[data-tg]').forEach(b => b.addEventListener('click', () => { const id = b.dataset.tg; open.has(id) ? open.delete(id) : open.add(id); draw(); }));
+    $$('[data-o]').forEach(cb => cb.addEventListener('change', () => {
+      const o = cb.dataset.o, k = cb.dataset.k; const a = new Set(work[o] || []);
+      cb.checked ? a.add(k) : a.delete(k);
+      if (cb.checked && k !== 'view' && !a.has('view')) { a.add('view'); toast('View added: every action needs View.'); }
+      if (!cb.checked && k === 'view' && a.size) { toast('View removed. The other actions on this screen now conflict.', 'err'); }
+      work[o] = KEYS.filter(x => a.has(x)); if (!work[o].length) delete work[o];
+      draw();
+    }));
+    $$('[data-cover]').forEach(cb => cb.addEventListener('change', (e) => {
+      const node = findNode(cb.dataset.cover); const s = state(node); const opts = optsOf(node.opts || node.subs ? node : { opts: [node] });
+      const list = node.acts ? [node] : opts;
+      if (s !== 'none') {   // Uncover: removes all descendant access (ROL-07)
+        const n = list.filter(o => (work[o.id] || []).length).length;
+        const go = () => { list.forEach(o => delete work[o.id]); draw(); };
+        if (n > 1) { cb.checked = s === 'all'; confirm({ title: `Uncover ${node.name}?`, body: `This removes all access below it.`, impact: [`${n} screens lose all their action flags`], confirm: 'Uncover', onConfirm: go }); } else go();
+        return;
+      }
+      cb.checked = false;   // Cover: never silently grant everything; preview first (ROL-07, ROL-10)
+      if (node.acts) { if (mayGrant(node.id, 'view')) { work[node.id] = ['view']; draw(); } else toast('Beyond your grant authority.', 'err'); return; }
+      bulk(node, list);
+    }));
+    stats();
+  }
+  function findNode(id) { for (const m of db.modules) { if (m.id === id) return m; for (const s of m.subs) { if (s.id === id) return s; for (const o of s.opts) if (o.id === id) return o; } } }
+  function bulk(node, list) {
+    confirm({ title: `Cover ${node.name}`, tone: 'primary', icon: 'list-tree', wide: true, confirm: 'Apply to selected screens',
+      body: 'Choose which actions to grant. Only supported actions within your grant authority are applied. Nothing is granted silently.',
+      extra: `<div class="chips" style="margin:14px 0">${KEYS.map(k => `<label class="chip"><input type="checkbox" data-bk="${k}" ${k === 'view' ? 'checked' : ''}> ${db.ACTIONS[k]}</label>`).join('')}</div><div id="bprev" class="impact"></div>`,
+      onMount: (el) => { const upd = () => { const ks = $$('[data-bk]', el).filter(c => c.checked).map(c => c.dataset.bk); if (ks.some(k => k !== 'view') && !ks.includes('view')) { $('[data-bk=view]', el).checked = true; ks.push('view'); }
+        const rows = list.map(o => [o, ks.filter(k => o.acts.includes(k) && mayGrant(o.id, k))]); el._rows = rows;
+        $('#bprev', el).innerHTML = `<b>Preview: ${rows.filter(r => r[1].length).length} of ${list.length} screens</b><ul>${rows.map(r => `<li>${esc(r[0].name)}: ${r[1].length ? r[1].map(k => db.ACTIONS[k]).join(', ') : '<span class="muted">nothing (not supported or beyond authority)</span>'}</li>`).join('')}</ul>`; };
+        $$('[data-bk]', el).forEach(c => c.addEventListener('change', upd)); upd(); window._bulkEl = el; },
+      onConfirm: () => { window._bulkEl._rows.forEach(([o, ks]) => { if (ks.length) work[o.id] = KEYS.filter(k => new Set((work[o.id] || []).concat(ks)).has(k)); }); open.add(node.id); if (node.subs) node.subs.forEach(s => open.add(s.id)); draw(); } });
+  }
+  $('#q').addEventListener('input', draw);
+  $('#expand').addEventListener('click', () => { db.modules.forEach(m => { open.add(m.id); m.subs.forEach(s => open.add(s.id)); }); draw(); });
+  $('#collapse').addEventListener('click', () => { open.clear(); draw(); });
+  $('#hist').addEventListener('click', () => historyDrawer(role.id, role.code));
+  const rs = $('#reset'); if (rs) rs.addEventListener('click', () => { Object.keys(work).forEach(k => delete work[k]); Object.assign(work, JSON.parse(JSON.stringify(role.perms))); draw(); });
+  const sv = $('#save'); if (sv) sv.addEventListener('click', () => {
+    const changes = []; const all = new Set(Object.keys(work).concat(Object.keys(role.perms)));
+    all.forEach(o => { const a = (role.perms[o] || []).join(', '), b = (work[o] || []).join(', '); if (a !== b) changes.push([UI.optionById(o).name, a, b]); });
+    confirm({ title: 'Save role permissions?', tone: 'primary', icon: 'shield-check', wide: true, confirm: 'Save and apply',
+      body: `New permissions and revocations apply to the next protected request of every affected user, including active sessions.`,
+      extra: `<div class="impact"><b>${users.size} users, ${db.assignments.filter(a => a.roleId === role.id && a.status === 'Active').length} assignments affected</b></div><div class="diff" style="margin-top:12px"><div class="h">Screen</div><div class="h">Before</div><div class="h">After</div>${changes.map(c => `<div>${esc(c[0])}</div><div class="old">${esc(c[1] || 'none')}</div><div class="new">${esc(c[2] || 'none')}</div>`).join('')}</div>`,
+      reason: true,
+      onConfirm: (reason) => { role.perms = JSON.parse(JSON.stringify(work)); role.version++; role.updatedAt = nowStamp(); role.updatedBy = me().displayName; save();
+        audit('Role permissions changed', 'Role', { id: role.id, label: role.code }, changes.map(c => [c[0], c[1], c[2] || 'none']), { reason }); toast(`Saved. ${changes.length} screens changed.`); draw(); } });
+  });
+  open.add(db.modules.find(m => Object.keys(work).some(o => o.startsWith(m.id + '.'))) ? db.modules.find(m => Object.keys(work).some(o => o.startsWith(m.id + '.'))).id : 'admin');
+  draw();
+}
+</script>
+</body>
+</html>

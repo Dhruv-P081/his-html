@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Attendance · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-hr.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/hr.js"></script>
+<style>.nw{white-space:nowrap} textarea.csv{font-family:ui-monospace,Menlo,monospace;font-size:12px;min-height:170px}</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, field, showErrors, drawer, confirm } = UI;
+  const OPT = 'hr.attendance';
+  if (!UI.page({ opt: OPT, title: 'Attendance', subtitle: 'Manual entry or file import from biometric devices. Exceptions and regularization.',
+    actions: `${HR.btn(OPT, 'add', 'Manual entry', 'id="man"', '', 'pencil-line')}${HR.btn(OPT, 'add', 'Import device file', 'id="imp"', 'primary', 'upload')}` })) return;
+  const T = db.TODAY;
+  const st = (a) => HR.attStatus(a);
+  const tone = (s) => HR.ATT_TONE[s] || 'neutral';
+  const badge = (a) => { const s = st(a); return `<span class="badge b-${tone(s)} nw">${esc(s)}${s === 'Late' ? ' ' + HR.lateMins(a) + ' min' : ''}</span>`; };
+  const hours = (a) => { if (!a.in || !(a.out || (a.reg && a.reg.out))) return ''; let m = HR.toMin(a.out || a.reg.out) - HR.toMin(a.in); if (m < 0) m += 1440; return (m / 60).toFixed(1); };
+  const empQ = UI.param('emp');
+  let tab = UI.param('tab') || 'reg';
+  $('#page').innerHTML = `<div id="tabs" style="margin-bottom:14px"></div><div id="body"></div>
+    <div style="margin-top:14px">${Kit.phase2('Real-time integration with biometric devices is in the SOW V4 2nd phase. Phase 1 imports device export files (CSV) or takes manual entries.')}</div>`;
+  const excList = () => db.hrAttendance.filter(a => a.date < T || st(a) === 'Late').filter(a => ['Late', 'Absent', 'Missing punch', 'Regularized'].includes(st(a)) && (a.reg ? a.reg.type !== 'Manual correction' : true));
+  const openExc = () => excList().filter(a => st(a) !== 'Regularized').length;
+  const drawTabs = () => Kit.tabs($('#tabs'), [{ id: 'reg', label: 'Daily register', icon: 'list' }, { id: 'exc', label: 'Exceptions', icon: 'triangle-alert', count: openExc() }, { id: 'import', label: 'Import from device', icon: 'upload' }, { id: 'log', label: 'Import log', icon: 'history', count: db.hrAttImports.length }], tab, (t) => { tab = t; show(); });
+  function show() { ({ reg, exc, import: imp, log })[tab](); }
+
+  /* ---------- Daily register ---------- */
+  let regFrom = empQ ? '2026-11-01' : T, regTo = T;
+  function reg() {
+    const b = $('#body');
+    b.innerHTML = `<div class="card card-pad" style="margin-bottom:12px"><div class="form-grid c4" style="align-items:end">
+        ${field({ id: 'r_from', label: 'From', type: 'date', value: regFrom })}${field({ id: 'r_to', label: 'To', type: 'date', value: regTo })}
+        ${field({ id: 'r_emp', label: 'Employee', type: 'select', options: HR.empOpts(), value: empQ || '', placeholder: 'All employees' })}
+        <div class="field"><label>&nbsp;</label><div class="row"><button class="btn sm" id="r_today">Today</button><button class="btn sm" id="r_yday">Yesterday</button></div></div></div></div>
+      <div class="grid g5" id="r_k" style="margin-bottom:12px"></div><div id="r_t"></div>`;
+    const recs = () => db.hrAttendance.filter(a => a.date >= regFrom && a.date <= regTo && (!$('#r_emp').value || a.empId === $('#r_emp').value));
+    const kp = () => { const l = recs(); $('#r_k').innerHTML = [['Present', ['Present', 'On duty', 'Regularized'], 'circle-check'], ['Late', ['Late'], 'clock-alert'], ['Absent', ['Absent', 'Not punched'], 'user-x'], ['Missing punch', ['Missing punch'], 'fingerprint'], ['On leave', ['Leave'], 'plane']].map(([l2, s, ic]) => Kit.kpi(l2, l.filter(a => s.includes(st(a))).length, { icon: ic })).join(''); };
+    const t = UI.table($('#r_t'), {
+      rows: () => recs().sort((a, c) => c.date.localeCompare(a.date) || HR.name(a.empId).localeCompare(HR.name(c.empId))),
+      search: (a) => [HR.name(a.empId), (HR.get(a.empId) || {}).empNo, a.source].join(' '), searchPlaceholder: 'Employee or employee no.',
+      filters: [{ label: 'Department', options: HR.deptsInUse(), test: (a, x) => HR.prof(a.empId).deptId === x }, { label: 'Status', options: ['Present', 'On duty', 'Late', 'Absent', 'Not punched', 'Missing punch', 'Leave', 'Regularized'].map(x => [x, x]), test: (a, x) => st(a) === x }, { label: 'Source', options: [['Device', 'Device import'], ['Manual', 'Manual'], ['Leave', 'Leave']], test: (a, x) => a.source === x }],
+      columns: [
+        { label: 'Date', sort: (a) => a.date, render: (a) => `<span class="nw">${esc(Kit.day(a.date))}</span><div class="xs muted">${HR.DAYS[HR.dow(a.date)]}</div>` },
+        { label: 'Employee', sort: (a) => HR.name(a.empId), render: (a) => HR.empCell(HR.get(a.empId), HR.dept(HR.prof(a.empId).deptId)) },
+        { label: 'Shift', render: (a) => { const s = HR.shift(a.shift); return `${HR.shiftChip(a.shift)} <span class="small muted nw">${s && s.start ? esc(s.start + '-' + s.end) : ''}</span>`; } },
+        { label: 'In', sort: (a) => a.in, render: (a) => a.in ? `<span class="mono">${esc(a.in)}</span>` : '<span class="muted">-</span>' },
+        { label: 'Out', sort: (a) => a.out, render: (a) => a.out ? `<span class="mono">${esc(a.out)}</span>` : a.reg && a.reg.out ? `<span class="mono">${esc(a.reg.out)}</span> <span class="tag">reg.</span>` : '<span class="muted">-</span>' },
+        { label: 'Hours', cls: 'num', render: (a) => hours(a) ? hours(a) : '<span class="muted">-</span>' },
+        { label: 'Source', render: (a) => `<span class="tag">${icon(a.source === 'Device' ? 'fingerprint' : a.source === 'Leave' ? 'plane' : 'pencil')} ${esc(a.source === 'Device' ? 'Device' : a.source)}</span>${a.leave ? ` <span class="small muted">${esc(a.leave)}</span>` : ''}` },
+        { label: 'Status', sort: (a) => st(a), render: badge },
+        { label: '', cls: 'actions', render: (a) => a.source === 'Leave' ? '' : `<button class="btn xs" data-ed="${a.id}" ${can(OPT, 'edit') ? '' : 'disabled title="Needs Edit permission"'}>${icon('pencil')} Edit</button>` },
+      ],
+      afterDraw: (tb) => $$('[data-ed]', tb).forEach(bt => bt.addEventListener('click', () => manual(db.hrAttendance.find(x => x.id === bt.dataset.ed)))),
+      empty: 'No attendance records for these dates', pageSize: 15,
+    });
+    const go = () => { regFrom = $('#r_from').value || T; regTo = $('#r_to').value || regFrom; kp(); t.redraw(); };
+    ['r_from', 'r_to', 'r_emp'].forEach(i => $('#' + i).addEventListener('change', go));
+    $('#r_today').addEventListener('click', () => { $('#r_from').value = T; $('#r_to').value = T; go(); });
+    $('#r_yday').addEventListener('click', () => { const y = Kit.addDays(T, -1); $('#r_from').value = y; $('#r_to').value = y; go(); });
+    kp();
+  }
+
+  /* ---------- Exceptions ---------- */
+  let excView = 'open';
+  function exc() {
+    const b = $('#body');
+    b.innerHTML = `<div class="row" style="margin-bottom:12px"><div id="e_seg"></div><span class="grow"></span><span class="small muted">Late arrivals over the grace period, absences without leave and missing in or out punches. Regularize with a reason; unregularized absence is deducted in payroll.</span></div><div id="e_t"></div>`;
+    Kit.seg($('#e_seg'), [['open', 'Open'], ['done', 'Regularized'], ['all', 'All']], excView, (v) => { excView = v; t.redraw(); });
+    const t = UI.table($('#e_t'), {
+      rows: () => excList().filter(a => excView === 'all' || (excView === 'open' ? st(a) !== 'Regularized' : st(a) === 'Regularized')).filter(a => !empQ || a.empId === empQ).sort((a, c) => c.date.localeCompare(a.date)),
+      search: (a) => [HR.name(a.empId), (HR.get(a.empId) || {}).empNo].join(' '), searchPlaceholder: 'Employee',
+      filters: [{ label: 'Exception', options: ['Late', 'Absent', 'Missing punch'].map(x => [x, x]), test: (a, x) => (a.reg ? a.reg.type : st(a)) === x }, { label: 'Department', options: HR.deptsInUse(), test: (a, x) => HR.prof(a.empId).deptId === x }],
+      columns: [
+        { label: 'Date', sort: (a) => a.date, render: (a) => `<span class="nw">${esc(Kit.day(a.date))}</span><div class="xs muted">${HR.DAYS[HR.dow(a.date)]}</div>` },
+        { label: 'Employee', sort: (a) => HR.name(a.empId), render: (a) => HR.empCell(HR.get(a.empId), HR.dept(HR.prof(a.empId).deptId)) },
+        { label: 'Exception', render: (a) => { const ty = a.reg ? a.reg.type : st(a); return `<span class="badge b-${tone(ty)} nw">${esc(ty)}</span>`; } },
+        { label: 'Detail', render: (a) => { const s = HR.shift(a.shift); const ty = a.reg ? a.reg.type : st(a); return `<span class="small">${ty === 'Late' ? `In ${esc(a.in)}, shift starts ${esc(s ? s.start : '')} (${HR.lateMins(a)} min)` : ty === 'Missing punch' ? (a.in ? `In ${esc(a.in)}, no out punch` : `Out ${esc(a.out)}, no in punch`) : `No punch on a ${esc(s ? s.name.toLowerCase() : '')} shift`}</span>`; } },
+        { label: 'Payroll impact', render: (a) => st(a) === 'Absent' ? `<span class="small" style="color:var(--error)">Deduct ${Kit.money(HR.daily(HR.get(a.empId)))}</span>` : '<span class="small muted">None</span>' },
+        { label: 'Regularization', render: (a) => a.reg ? `<span class="small"><b>${esc(a.reg.by)}</b> · ${esc(Kit.when(a.reg.at))}<br><span class="muted">${esc(a.reg.reason)}</span></span>` : Kit.status('Open', 'warn') },
+        { label: '', cls: 'actions', render: (a) => a.reg ? '' : `<button class="btn xs primary" data-rg="${a.id}" ${can(OPT, 'edit') ? '' : 'disabled title="Needs Edit permission"'}>${icon('check-check')} Regularize</button>` },
+      ],
+      afterDraw: (tb) => $$('[data-rg]', tb).forEach(bt => bt.addEventListener('click', () => regularize(db.hrAttendance.find(x => x.id === bt.dataset.rg), () => { drawTabs(); t.redraw(); }))),
+      empty: 'No exceptions', emptyIcon: 'circle-check', pageSize: 12,
+    });
+  }
+  function regularize(a, done) {
+    const v = HR.get(a.empId), ty = st(a), s = HR.shift(a.shift) || {};
+    const absentOpts = [['Official duty', 'Official duty outside the hospital'], ['Training', 'Approved training'], ['Device fault', 'Device fault, present on duty']];
+    drawer({ title: 'Regularize ' + ty.toLowerCase(), sub: esc(v.name) + ' · ' + esc(Kit.day(a.date)),
+      body: `<div class="err-summary hidden"></div><dl class="kv tight" style="margin-bottom:14px"><dt>Shift</dt><dd>${HR.shiftChip(a.shift)} ${esc(s.start || '')}-${esc(s.end || '')}</dd><dt>Punches</dt><dd>In ${esc(a.in || '-')} · Out ${esc(a.out || '-')}</dd><dt>Exception</dt><dd>${badge(a)}</dd></dl>
+        <div class="form-grid">
+        ${ty === 'Missing punch' ? (a.in ? field({ id: 'g_out', label: 'Out time', type: 'time', req: true, value: s.end || '' }) : field({ id: 'g_in', label: 'In time', type: 'time', req: true, value: s.start || '' })) : ''}
+        ${ty === 'Absent' ? field({ id: 'g_kind', label: 'Regularize as', type: 'select', options: absentOpts, req: true, full: true, hint: 'To convert the day to leave, raise a leave request in Leave and Overtime.' }) : ''}
+        ${field({ id: 'g_reason', label: 'Reason', type: 'textarea', req: true, full: true })}
+        ${field({ id: 'g_by', label: 'Confirmed by (supervisor)', type: 'select', options: HR.empOpts(x => x.id !== a.empId && /ADM-4|NUR-3|MED-C|AH-3|ADM-3/.test(x.grade)), req: true, full: true })}</div>`,
+      foot: `<button class="btn" data-close>Cancel</button><span class="grow"></span><button class="btn primary" id="gSave" disabled>${icon('check-check')} Regularize</button>`,
+      onMount: (el, close) => {
+        const sv = $('#gSave', el);
+        const ids = ['g_reason', 'g_by'].concat($('#g_out', el) ? ['g_out'] : []).concat($('#g_in', el) ? ['g_in'] : []).concat($('#g_kind', el) ? ['g_kind'] : []);
+        const chk = () => { sv.disabled = ids.some(i => !$('#' + i, el).value.trim()) || $('#g_reason', el).value.trim().length < 5; };
+        $$('input,select,textarea', el).forEach(i => { i.addEventListener('input', chk); i.addEventListener('change', chk); });
+        sv.addEventListener('click', () => {
+          const errs = {};
+          if ($('#g_out', el) && a.in && $('#g_out', el).value === a.in) errs.g_out = 'Out time cannot equal the in time.';
+          if (!showErrors(el, errs)) return;
+          a.reg = { type: ty, reason: $('#g_reason', el).value.trim() + ($('#g_kind', el) ? ' (' + $('#g_kind', el).value + ')' : ''), by: UI.me().displayName, confirmedBy: HR.name($('#g_by', el).value), at: UI.nowStamp() };
+          if ($('#g_out', el)) a.reg.out = $('#g_out', el).value;
+          if ($('#g_in', el)) a.reg.in = $('#g_in', el).value;
+          save(); audit('Regularized attendance', 'Attendance', { id: a.id, label: v.name + ' ' + a.date }, [['Status', ty, 'Regularized']], { reason: a.reg.reason });
+          close(); toast('Regularized'); done();
+        });
+      } });
+  }
+
+  /* ---------- Manual entry ---------- */
+  function manual(a) {
+    const isNew = !a;
+    drawer({ title: isNew ? 'Manual attendance entry' : 'Correct attendance', sub: isNew ? 'For staff without a device punch.' : esc(HR.name(a.empId)) + ' · ' + esc(Kit.day(a.date)),
+      body: `<div class="err-summary hidden"></div>${!isNew && a.source === 'Device' ? `<div class="banner warn" style="margin-bottom:12px">${icon('fingerprint')}<span>This record came from a device import. A correction needs a reason and is kept in the audit trail.</span></div>` : ''}
+        <div class="form-grid">${field({ id: 'm_emp', label: 'Employee', type: 'select', options: HR.empOpts(), value: a ? a.empId : empQ || '', req: true, full: true, disabled: !isNew })}
+        ${field({ id: 'm_date', label: 'Date', type: 'date', value: a ? a.date : T, req: true, disabled: !isNew, attrs: `max="${T}"` })}
+        ${field({ id: 'm_shift', label: 'Shift', type: 'select', options: db.hrShifts.filter(s => s.type === 'Work').map(s => [s.code, s.code + ' · ' + s.name + ' ' + s.start + '-' + s.end]), value: a ? a.shift : '', req: true })}
+        ${field({ id: 'm_in', label: 'In time', type: 'time', value: a ? a.in : '' })}${field({ id: 'm_out', label: 'Out time', type: 'time', value: a ? a.out : '' })}
+        ${field({ id: 'm_reason', label: 'Reason', type: 'textarea', req: true, full: true, placeholder: 'For example: forgot ID card, device at Hawalli offline' })}</div>`,
+      foot: `<button class="btn" data-close>Cancel</button><span class="grow"></span><button class="btn primary" id="mSave" disabled>${icon('check')} ${isNew ? 'Add entry' : 'Save correction'}</button>`,
+      onMount: (el, close) => {
+        const sv = $('#mSave', el);
+        const chk = () => { sv.disabled = !($('#m_emp', el).value && $('#m_date', el).value && $('#m_shift', el).value && $('#m_reason', el).value.trim().length >= 3); };
+        $('#m_emp', el).addEventListener('change', () => { const v = HR.get($('#m_emp', el).value); if (v && !$('#m_shift', el).value) $('#m_shift', el).value = v.shift; chk(); });
+        $$('input,select,textarea', el).forEach(i => { i.addEventListener('input', chk); i.addEventListener('change', chk); });
+        sv.addEventListener('click', () => {
+          const g = (i) => $('#' + i, el).value, errs = {};
+          if (g('m_date') > T) errs.m_date = 'Date cannot be in the future.';
+          if (!g('m_in') && !g('m_out')) errs.m_in = 'Enter the in time, the out time or both.';
+          if (isNew && db.hrAttendance.some(x => x.empId === g('m_emp') && x.date === g('m_date'))) errs.m_date = 'A record exists for this employee and date. Edit it from the register.';
+          if (!showErrors(el, errs)) return;
+          if (isNew) {
+            const rec = { id: UI.uid('hat'), empId: g('m_emp'), date: g('m_date'), shift: g('m_shift'), in: g('m_in'), out: g('m_out'), source: 'Manual', note: g('m_reason').trim() };
+            db.hrAttendance.push(rec); save(); audit('Added manual attendance', 'Attendance', { id: rec.id, label: HR.name(rec.empId) + ' ' + rec.date }, [['In', '', rec.in], ['Out', '', rec.out]], { reason: rec.note });
+          } else {
+            const ch = [['In', a.in, g('m_in')], ['Out', a.out, g('m_out')], ['Shift', a.shift, g('m_shift')]].filter(c => c[1] !== c[2]);
+            Object.assign(a, { in: g('m_in'), out: g('m_out'), shift: g('m_shift'), note: g('m_reason').trim(), source: a.source === 'Device' ? 'Device' : 'Manual', corrected: { by: UI.me().displayName, at: UI.nowStamp() } });
+            save(); audit('Corrected attendance', 'Attendance', { id: a.id, label: HR.name(a.empId) + ' ' + a.date }, ch, { reason: g('m_reason').trim() });
+          }
+          close(); toast(isNew ? 'Entry added' : 'Correction saved'); drawTabs(); show();
+        });
+      } });
+  }
+
+  /* ---------- Import ---------- */
+  const SAMPLE = () => { const y = Kit.addDays(T, -1); const ids = HR.active().filter(v => v.deptId === 'dp_05' || v.deptId === 'dp_06').slice(0, 6); return ['employee_no,date,time,direction,device_id'].concat(ids.flatMap((v, i) => [`${v.empNo},${y},0${7 + (i % 2)}:${String(40 + i * 3).slice(-2)},IN,ZK-GATE-A`, `${v.empNo},${y},16:0${i},OUT,ZK-GATE-A`])).concat([`E-9999,${y},07:55,IN,ZK-GATE-A`, `E-1001,${y},25:10,OUT,ZK-GATE-A`]).join('\n'); };
+  let parsed = [];
+  function imp() {
+    const b = $('#body');
+    b.innerHTML = `<div class="grid g-side-l">
+      <div class="card"><div class="card-head"><h3>${icon('file-up')} Device export file</h3></div><div class="card-pad">
+        <div class="form-grid">${field({ id: 'i_dev', label: 'Device', type: 'select', options: ['ZK Gate A (Salmiya main entrance)', 'ZK Gate B (staff entrance)', 'Suprema Hawalli clinic', 'Al Noor Farwaniya reader'].map(x => [x, x]), value: 'ZK Gate A (Salmiya main entrance)', req: true, full: true })}
+          <div class="field full"><label for="i_file">Upload CSV file</label><input class="input" type="file" id="i_file" accept=".csv,.txt"><div class="hint">Columns: employee_no, date (YYYY-MM-DD), time (HH:MM), direction (IN or OUT), device_id.</div></div>
+          <div class="field full"><label for="i_text">Or paste the file content</label><textarea class="input csv" id="i_text" placeholder="employee_no,date,time,direction,device_id"></textarea></div></div>
+        <div class="row" style="margin-top:12px"><button class="btn sm ghost" id="i_sample">${icon('file-text')} Load sample file</button><span class="grow"></span><button class="btn" id="i_prev" disabled>${icon('eye')} Preview</button></div>
+      </div></div>
+      <div class="card"><div class="card-head"><h3>${icon('table')} Preview</h3><div class="actions" id="i_sum"></div></div><div id="i_out"><div class="empty">${icon('file-search')}<b>No file loaded</b><span>Upload or paste a device file, then preview it before importing.</span></div></div>
+        <div class="card-foot row"><span class="small muted grow">Valid punches are grouped by employee and day: first IN becomes the in time, last OUT the out time. Existing manual entries are kept.</span>${HR.btn(OPT, 'add', 'Import valid rows', 'id="i_go" disabled', 'primary', 'download')}</div></div>
+    </div>`;
+    const txt = $('#i_text'), pv = $('#i_prev');
+    const chk = () => { pv.disabled = !txt.value.trim(); };
+    txt.addEventListener('input', chk);
+    $('#i_sample').addEventListener('click', () => { txt.value = SAMPLE(); chk(); });
+    $('#i_file').addEventListener('change', (e) => { const f = e.target.files[0]; if (!f) return; const rd = new FileReader(); rd.onload = () => { txt.value = String(rd.result || ''); chk(); }; rd.readAsText(f); });
+    pv.addEventListener('click', preview);
+  }
+  function preview() {
+    const lines = $('#i_text').value.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    const hasHead = /employee/i.test(lines[0] || '');
+    const seen = new Set();
+    parsed = lines.slice(hasHead ? 1 : 0).map((l, i) => {
+      const [no, date, time, dir, dev] = l.split(',').map(x => (x || '').trim());
+      const v = HR.all().find(x => x.empNo.toUpperCase() === String(no).toUpperCase());
+      let err = '';
+      if (!v) err = 'Unknown employee number';
+      else if (v.hrStatus === 'Separated') err = 'Employee is separated';
+      else if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || isNaN(new Date(date))) err = 'Invalid date';
+      else if (date > T) err = 'Date is in the future';
+      else if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) err = 'Invalid time';
+      else if (!/^(IN|OUT)$/i.test(dir)) err = 'Direction must be IN or OUT';
+      const key = [no, date, time, dir].join('|');
+      if (!err && seen.has(key)) err = 'Duplicate punch'; seen.add(key);
+      return { line: i + 1, no, date, time, dir: String(dir).toUpperCase(), dev, v, err };
+    });
+    const ok = parsed.filter(p => !p.err);
+    $('#i_sum').innerHTML = `<span class="badge b-ok">${ok.length} valid</span><span class="badge ${parsed.length - ok.length ? 'b-err' : 'b-neutral'}">${parsed.length - ok.length} rejected</span>`;
+    $('#i_out').innerHTML = `<div class="table-wrap" style="max-height:420px;overflow:auto"><table class="tbl compact"><thead><tr><th>#</th><th>Employee</th><th>Date</th><th>Time</th><th>Direction</th><th>Check</th></tr></thead><tbody>${parsed.map(p => `<tr><td class="muted">${p.line}</td><td>${p.v ? `<b>${esc(p.v.name)}</b> <span class="mono small muted">${esc(p.no)}</span>` : `<span class="mono">${esc(p.no)}</span>`}</td><td>${esc(p.date)}</td><td class="mono">${esc(p.time)}</td><td>${esc(p.dir)}</td><td>${p.err ? `<span class="badge b-err">${esc(p.err)}</span>` : '<span class="badge b-ok">OK</span>'}</td></tr>`).join('') || `<tr><td colspan="6"><div class="empty"><b>No rows found</b></div></td></tr>`}</tbody></table></div>`;
+    const go = $('#i_go'); if (go && can(OPT, 'add')) { go.disabled = !ok.length; go.onclick = () => doImport(ok); }
+  }
+  function doImport(ok) {
+    confirm({ title: `Import ${ok.length} punches?`, tone: 'primary', icon: 'download', confirm: 'Import', body: `Device: ${esc($('#i_dev').value)}. ${parsed.length - ok.length} rejected rows are skipped and listed in the import log.`,
+      onConfirm: () => {
+        const groups = Kit.groupBy(ok, p => p.v.id + '|' + p.date);
+        let created = 0, updated = 0;
+        Object.values(groups).forEach(g => {
+          const v = g[0].v, date = g[0].date;
+          const ins = g.filter(p => p.dir === 'IN').map(p => p.time).sort(), outs = g.filter(p => p.dir === 'OUT').map(p => p.time).sort();
+          let a = db.hrAttendance.find(x => x.empId === v.id && x.date === date);
+          if (a && a.source === 'Manual') return;
+          if (!a) { a = { id: UI.uid('hat'), empId: v.id, date, shift: v.shift, in: '', out: '', source: 'Device' }; db.hrAttendance.push(a); created++; } else updated++;
+          if (ins.length) a.in = ins[0]; if (outs.length) a.out = outs[outs.length - 1]; a.source = 'Device';
+        });
+        const log = { id: UI.uid('hai'), no: Kit.nextNo('IMP-', db.hrAttImports), device: $('#i_dev').value, file: ($('#i_file').files[0] || {}).name || 'pasted text', rows: parsed.length, imported: ok.length, rejected: parsed.length - ok.length, by: UI.me().displayName, at: UI.nowStamp(), period: Array.from(new Set(ok.map(p => p.date))).sort().join(', '), errors: parsed.filter(p => p.err).map(p => `Line ${p.line}: ${p.err}`) };
+        db.hrAttImports.unshift(log); save();
+        audit('Imported device attendance', 'Attendance', { id: log.id, label: log.no }, [['Rows', '', String(log.rows)], ['Imported', '', String(log.imported)], ['Rejected', '', String(log.rejected)]]);
+        toast(`Imported: ${created} new, ${updated} updated records`); tab = 'log'; drawTabs(); show();
+      } });
+  }
+  function log() {
+    UI.table($('#body'), {
+      rows: () => db.hrAttImports, search: (l) => [l.no, l.device, l.file, l.by].join(' '), searchPlaceholder: 'Import, device or file',
+      columns: [
+        { label: 'Import', sort: (l) => l.no, render: (l) => `<span class="mono">${esc(l.no)}</span>` },
+        { label: 'Device', render: (l) => `${esc(l.device)}<div class="small muted">${esc(l.file)}</div>` },
+        { label: 'Period', render: (l) => `<span class="small">${esc(l.period)}</span>` },
+        { label: 'Rows', cls: 'num', render: (l) => `<span class="num">${l.rows}</span>` },
+        { label: 'Imported', render: (l) => `<span class="badge b-ok">${l.imported}</span>` },
+        { label: 'Rejected', render: (l) => l.rejected ? `<span class="badge b-err" title="${esc((l.errors || []).join('\n'))}">${l.rejected}</span>` : '<span class="muted">0</span>' },
+        { label: 'By', sort: (l) => l.at, render: (l) => `${esc(l.by)}<div class="small muted">${esc(Kit.when(l.at))}</div>` },
+      ], empty: 'No imports yet',
+    });
+  }
+
+  const m = $('#man'); if (m) m.addEventListener('click', () => manual(null));
+  const i = $('#imp'); if (i) i.addEventListener('click', () => { tab = 'import'; drawTabs(); show(); });
+  drawTabs(); show();
+})();
+</script>
+</body>
+</html>

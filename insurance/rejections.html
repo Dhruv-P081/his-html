@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rejected claims · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-insurance.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/insurance.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, confirm, me, nowStamp, uid } = UI;
+  const I = Insurance, OPT = 'insurance.rejected';
+  const canAdd = can(OPT, 'add'), canEdit = can(OPT, 'edit');
+  if (!UI.page({ opt: OPT, title: 'Rejected claims', subtitle: 'Work the denied and short-paid claims: correct, re-validate and resubmit, or close as a final denial.' })) return;
+
+  const days = (s) => s ? Math.max(0, Math.round((new Date(db.TODAY) - new Date(s.slice(0, 10))) / 864e5)) : 0;
+  const rej = () => I.insured().filter(i => i.claimStatus === 'Rejected');
+  const lists = {
+    todo: () => rej().filter(i => !I.cd(i.id).corrected),
+    ready: () => rej().filter(i => I.cd(i.id).corrected),
+    short: () => I.insured().filter(i => i.claimStatus === 'Partially paid'),
+    resub: () => I.insured().filter(i => I.cd(i.id).resubmitCount > 0 && /Submitted|In batch|Paid|Partially paid/.test(i.claimStatus)),
+    closed: () => I.insured().filter(i => i.claimStatus === 'Final denial'),
+  };
+  let tab = 'todo';
+  const selected = new Set();
+  const amt = (l) => Kit.sumBy(l, i => i.payerAmount);
+  $('#page').innerHTML = `<div class="grid g4" id="kpis" style="margin-bottom:16px"></div><div id="tabs"></div><div id="list"></div>`;
+  const drawTop = () => {
+    const r = rej(), s = lists.short();
+    const byReason = Kit.groupBy(r, i => I.cd(i.id).rejectCode || 'Unknown');
+    const top = Object.entries(byReason).sort((a, b) => b[1].length - a[1].length)[0];
+    $('#kpis').innerHTML = Kit.kpi('Rejected claims', r.length, { icon: 'rotate-ccw', foot: Kit.money(amt(r)) + ' payer share' })
+      + Kit.kpi('Ready to resubmit', lists.ready().length, { icon: 'circle-check', foot: 'Corrected, waiting to resubmit' })
+      + Kit.kpi('Short-paid', Kit.money(Kit.sumBy(s, i => I.cd(i.id).shortAmount), false), { icon: 'triangle-alert', unit: 'KWD', foot: s.length + ' claims' })
+      + Kit.kpi('Top reason', top ? top[0] : '-', { icon: 'list', foot: top ? ((I.reason(top[0]) || {}).name || '') + ' (' + top[1].length + ')' : 'No rejections' });
+    Kit.tabs($('#tabs'), [{ id: 'todo', label: 'To correct', count: lists.todo().length }, { id: 'ready', label: 'Corrected', count: lists.ready().length }, { id: 'short', label: 'Short-paid', count: lists.short().length }, { id: 'resub', label: 'Resubmitted', count: lists.resub().length }, { id: 'closed', label: 'Final denial', count: lists.closed().length }], tab, (t) => { tab = t; selected.clear(); tb.redraw(); drawTool(); });
+  };
+  const tb = UI.table($('#list'), {
+    columns: [
+      { label: '', render: r => tab === 'ready' ? `<input type="checkbox" data-ck="${r.id}" ${selected.has(r.id) ? 'checked' : ''} aria-label="Select ${esc(r.no)}">` : '' },
+      { label: 'Claim', sort: r => r.no, render: r => `<span class="mono">${esc(r.no)}</span><div class="small muted">${esc(r.type)} · ${Kit.day(r.date)}</div>` },
+      { label: 'Patient', sort: r => Kit.ptName(r.patientId), render: r => Kit.patientCell(Kit.pt(r.patientId)) },
+      { label: 'Payer', sort: r => I.payerCode(r.payerId), render: r => `<b>${esc(I.payerCode(r.payerId))}</b><div class="xs muted mono">${esc(((I.batch(I.cd(r.id).batchId) || {}).no) || '')}</div>` },
+      { label: 'Reason', sort: r => I.cd(r.id).rejectCode, render: r => { const c = I.cd(r.id), rr = I.reason(c.rejectCode); return c.rejectCode ? `<span class="mono">${esc(c.rejectCode)}</span> <span class="small">${esc(rr ? rr.name : '')}</span><div class="xs muted">${esc(c.rejectNote && (!rr || c.rejectNote !== rr.name) ? c.rejectNote : rr ? rr.action : '')}</div>` : '<span class="muted">-</span>'; } },
+      { label: 'Amount', cls: 'num', sort: r => r.payerAmount, render: r => `<span class="num">${Kit.money(r.payerAmount, false)}</span>${r.claimStatus === 'Partially paid' ? `<div class="xs" style="color:var(--error);font-weight:700">Short ${Kit.money(I.cd(r.id).shortAmount, false)}</div>` : ''}` },
+      { label: 'Age', cls: 'num', sort: r => days(I.cd(r.id).rejectedAt), render: r => { const d = days(I.cd(r.id).rejectedAt); return I.cd(r.id).rejectedAt ? `<span class="${d > 30 ? 'badge b-err' : d > 14 ? 'badge b-warn' : 'small'}">${d} days</span>` : '<span class="muted">-</span>'; } },
+      { label: 'Validation', render: r => /Rejected/.test(r.claimStatus) ? I.vBadge(I.validate(r)) : I.status(r.claimStatus) },
+      { label: '', cls: 'actions', render: r => /Rejected|Partially paid/.test(r.claimStatus) ? `<button class="btn xs" data-fx="${r.id}" ${canEdit ? '' : 'disabled title="Needs Edit permission"'}>${icon('wrench')} Correct</button><button class="btn xs danger" data-cl="${r.id}" ${canEdit ? '' : 'disabled title="Needs Edit permission"'}>${icon('ban')} Close</button>` : `${I.cd(r.id).resubmitCount ? `<span class="tag">Resubmitted x${I.cd(r.id).resubmitCount}</span>` : ''}` },
+    ],
+    rows: () => lists[tab](), search: r => [r.no, Kit.ptName(r.patientId), (Kit.pt(r.patientId) || {}).mrn, I.payerName(r.payerId), I.cd(r.id).rejectCode].join(' '), searchPlaceholder: 'Search claim, patient, payer or reason code',
+    filters: [{ label: 'Payer', options: db.payers.map(p => [p.id, p.name]), test: (r, v) => r.payerId === v }, { label: 'Reason', options: db.insuranceRejectReasons.map(x => [x.code, x.code + ' ' + x.name]), test: (r, v) => I.cd(r.id).rejectCode === v }],
+    toolbar: `<span id="tool"></span>`,
+    afterDraw: (t) => {
+      $$('[data-ck]', t).forEach(c => c.addEventListener('change', () => { c.checked ? selected.add(c.dataset.ck) : selected.delete(c.dataset.ck); drawTool(); }));
+      $$('[data-fx]', t).forEach(b => b.addEventListener('click', () => correct(I.inv(b.dataset.fx))));
+      $$('[data-cl]', t).forEach(b => b.addEventListener('click', () => closeFinal(I.inv(b.dataset.cl))));
+    },
+    empty: 'No claims in this list', emptyIcon: 'circle-check',
+  });
+  function drawTool() {
+    const host = $('#tool'); if (!host) return;
+    host.innerHTML = tab === 'ready' ? `<span class="small muted" style="margin-inline-end:8px">${selected.size ? selected.size + ' selected' : 'Select corrected claims'}</span><button class="btn primary sm" id="resub" ${!canAdd ? 'disabled title="Needs Add permission"' : selected.size ? '' : 'disabled'}>${icon('send')} Resubmit selected</button>` : '';
+    const b = $('#resub'); if (b) b.addEventListener('click', resubmit);
+  }
+  const refresh = () => { drawTop(); tb.redraw(); drawTool(); };
+
+  function correct(i) {
+    const c = I.cd(i.id), rr = I.reason(c.rejectCode);
+    I.fixDrawer(i, refresh, { title: 'Correct claim', markCorrected: i.claimStatus === 'Rejected', saveLabel: i.claimStatus === 'Rejected' ? 'Save correction' : 'Save', auditAction: 'Corrected rejected claim',
+      extra: `<div class="section-t" style="margin-top:14px">Payer decision</div><div class="alert-cdss ${i.claimStatus === 'Partially paid' ? 'warn' : ''}">${icon(i.claimStatus === 'Partially paid' ? 'triangle-alert' : 'circle-x')}<div class="grow"><span class="req-ref">${esc(c.rejectCode || '-')}</span> ${esc(rr ? rr.name : 'Reason not recorded')}${c.rejectNote && (!rr || c.rejectNote !== rr.name) ? ' · ' + esc(c.rejectNote) : ''}${rr ? `<div class="xs" style="font-weight:600;margin-top:2px">Suggested action: ${esc(rr.action)}</div>` : ''}${c.rejectedAt ? `<div class="xs" style="font-weight:600;opacity:.8">Rejected ${esc(UI.fmtDate(c.rejectedAt))}</div>` : ''}</div></div>` });
+  }
+  function closeFinal(i) {
+    confirm({ title: 'Close as final denial?', body: `${esc(i.no)}: payer share ${Kit.money(i.payerAmount)} will not be claimed again. Finance decides the write-off or patient billing.`, confirm: 'Close claim', reason: true,
+      onConfirm: (reason) => { const b = i.claimStatus; i.claimStatus = 'Final denial'; I.cd(i.id).closedReason = reason; save(); audit('Closed claim as final denial', 'Claim', { id: i.id, label: i.no }, [['Claim status', b, 'Final denial']], { reason }); toast(i.no + ' closed'); refresh(); } });
+  }
+  function resubmit() {
+    const invs = [...selected].map(I.inv).filter(Boolean);
+    const bad = invs.filter(i => I.errs(I.validate(i)));
+    if (bad.length) { toast(`${bad.map(i => i.no).join(', ')} still ${bad.length > 1 ? 'have' : 'has'} validation errors. Correct first.`, 'err'); return; }
+    const groups = Kit.groupBy(invs, i => i.payerId);
+    confirm({ title: 'Resubmit corrected claims?', body: `${invs.length} claim(s) are resubmitted in ${Object.keys(groups).length} resubmission batch(es), one per payer.`, tone: 'primary', confirm: 'Resubmit',
+      impact: Object.entries(groups).map(([py, l]) => `${esc(I.payerName(py))}: ${l.length} claim(s), ${Kit.money(amt(l))}`),
+      onConfirm: () => {
+        const made = [];
+        Object.entries(groups).forEach(([py, l]) => {
+          const dates = l.map(i => i.date).sort();
+          const b = { id: uid('icb'), no: Kit.nextNo('CB-26-', db.insuranceBatches), payerId: py, type: 'Resubmission', from: dates[0], to: dates[dates.length - 1], invoiceIds: l.map(i => i.id), status: 'Submitted', format: 'CSV', createdBy: me().displayName, createdAt: nowStamp(), validatedAt: nowStamp(), exportedAt: nowStamp(), exportedBy: me().displayName, submittedAt: nowStamp(), submittedBy: me().displayName };
+          db.insuranceBatches.push(b); made.push(b.no);
+          l.forEach(i => { const c = I.cd(i.id); i.claimStatus = 'Submitted'; c.batchId = b.id; c.resubmitCount = (c.resubmitCount || 0) + 1; c.corrected = false; c.lastRejectCode = c.rejectCode; });
+          audit('Resubmitted rejected claims', 'Claim batch', { id: b.id, label: b.no }, l.map(i => [i.no, 'Rejected', 'Submitted']));
+        });
+        save(); selected.clear(); toast('Resubmitted in ' + made.join(', ')); tab = 'resub'; refresh();
+      } });
+  }
+  drawTop(); drawTool();
+})();
+</script>
+</body>
+</html>

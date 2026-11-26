@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Journal vouchers · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<style>.nw{white-space:nowrap}.jl td{vertical-align:top}.jl .input{min-width:0}.jl input.num{text-align:end}.diff-ok{color:var(--success)}.diff-bad{color:var(--error)}</style>
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-finance.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/finance.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, drawer, confirm, field, showErrors, uid, nowStamp } = UI;
+  const OPT = 'finance.journal';
+  if (!UI.page({ opt: OPT, title: 'Journal vouchers', subtitle: 'Manual and recurring journal entries with balanced debit and credit validation, attachments and maker-checker approval before posting.',
+    actions: Fin.btn({ attrs: 'id="genRec"', icon: 'repeat', label: 'Generate recurring', gate: Fin.gate(OPT, 'add') }) + Fin.btn({ cls: 'primary', attrs: 'id="newJv"', icon: 'plus', label: 'New journal', gate: Fin.gate(OPT, 'add') }) })) return;
+  const T = Fin.T, me = Fin.meName();
+  const JS = () => db.financeJournals;
+  let tab = UI.param('tab') || 'all';
+  $('#page').innerHTML = `<div class="grid g4" id="kp" style="margin-bottom:16px"></div><div id="tabs" style="margin-bottom:12px"></div><div id="body"></div>`;
+  const TABS = { all: () => true, Draft: j => j.status === 'Draft', 'Pending approval': j => j.status === 'Pending approval', Approved: j => j.status === 'Approved', Posted: j => j.status === 'Posted', closed: j => ['Rejected', 'Cancelled'].includes(j.status) };
+  function kpis() {
+    const p = Fin.periodOf(T);
+    const np = JS().filter(j => j.period === p && j.status === 'Posted');
+    $('#kp').innerHTML = Kit.kpi('Posted this month', np.length, { icon: 'book-check', foot: Fin.money(Kit.sumBy(np, Fin.jDr)) + ' debits' })
+      + Kit.kpi('Waiting for approval', JS().filter(TABS['Pending approval']).length, { icon: 'stamp', foot: JS().filter(j => j.status === 'Pending approval' && j.by === me).length + ' raised by you' })
+      + Kit.kpi('Approved, not posted', JS().filter(TABS.Approved).length, { icon: 'send', foot: 'Post to update the ledger' })
+      + Kit.kpi('Drafts', JS().filter(TABS.Draft).length, { icon: 'file-pen', foot: 'Recurring templates: ' + db.financeRecurring.filter(r => r.status === 'Active').length + ' active' });
+  }
+  function drawTabs() {
+    Kit.tabs($('#tabs'), [{ id: 'all', label: 'All', count: JS().length }, { id: 'Draft', label: 'Draft', count: JS().filter(TABS.Draft).length }, { id: 'Pending approval', label: 'Pending approval', count: JS().filter(TABS['Pending approval']).length },
+      { id: 'Approved', label: 'Approved', count: JS().filter(TABS.Approved).length }, { id: 'Posted', label: 'Posted', count: JS().filter(TABS.Posted).length }, { id: 'closed', label: 'Rejected or cancelled', count: JS().filter(TABS.closed).length },
+      { id: 'rec', label: 'Recurring templates', icon: 'repeat', count: db.financeRecurring.length }], tab, (x) => { tab = x; draw(); });
+  }
+  function refresh() { kpis(); drawTabs(); draw(); }
+  function draw() { if (tab === 'rec') recTable(); else jTable(); }
+
+  function jTable() {
+    UI.table($('#body'), {
+      columns: [
+        { label: 'Voucher', sort: j => j.date + j.no, render: j => `<div class="cell-main"><b class="mono nw">${esc(j.no)}</b><span>${esc(Kit.day(j.date))}</span></div>` },
+        { label: 'Narration', render: j => `<div style="max-width:440px">${esc(j.narration)}</div><div class="xs muted">${esc(j.source === j.type ? j.source : j.source + ' · ' + j.type)}${j.attachments && j.attachments.length ? ' · ' + icon('paperclip') + j.attachments.length : ''}${j.currency !== 'KWD' ? ' · ' + esc(j.currency) : ''}</div>` },
+        { label: 'Branch', render: j => `<span class="small">${esc(Fin.brShort(j.branchId))}</span>` },
+        { label: 'Debit = credit', cls: 'num', sort: j => Fin.jDr(j), render: j => `<b>${Fin.amt(Fin.jDr(j))}</b><div class="xs muted">${j.lines.length} lines</div>` },
+        { label: 'Created by', render: j => `<span class="small">${esc(j.by)}${j.by === me ? ' <span class="badge b-warn nodot">You</span>' : ''}</span>` },
+        { label: 'Status', sort: j => Fin.statusOrder.indexOf(j.status), render: j => Kit.status(j.status) },
+      ],
+      rows: () => JS().filter(TABS[tab]).slice().sort((a, b) => (b.date + b.at).localeCompare(a.date + a.at)),
+      search: j => [j.no, j.narration, j.ref, j.by].join(' '), searchPlaceholder: 'Voucher number, narration or reference',
+      filters: [{ label: 'Source', options: ['Manual', 'Recurring', 'Payroll', 'Billing', 'Pharmacy', 'MMIS', 'AP', 'AR', 'Cash and bank', 'Opening'].map(x => [x, x]), test: (j, v) => j.source === v },
+        { label: 'Branch', options: Fin.brOpts(), test: (j, v) => j.branchId === v },
+        { label: 'Period', options: Fin.periodOpts().reverse(), test: (j, v) => j.period === v }],
+      onRow: j => openJ(j), empty: 'No journals', pageSize: 12,
+    });
+  }
+
+  /* ---------- Journal detail ---------- */
+  function openJ(j) {
+    const d = drawer({ title: 'Journal ' + j.no, sub: esc(j.source + ' · ' + Fin.brName(j.branchId) + ' · ' + Fin.pName(j.period)), wide: true, body: '<div id="jB"></div>', foot: '<div id="jF" class="row grow wrap" style="gap:8px"></div>' });
+    const el = d.el;
+    const render = () => {
+      const lock = Fin.lockMsg(j.date), fx = j.currency !== 'KWD';
+      $('#jB', el).innerHTML = `${lock && j.status !== 'Posted' && !['Cancelled', 'Rejected'].includes(j.status) ? `<div class="banner err" style="margin-bottom:12px">${icon('lock')}<span><b>Locked period.</b> ${esc(lock)}</span></div>` : ''}
+        ${j.rejectReason && j.status === 'Rejected' ? `<div class="banner err" style="margin-bottom:12px">${icon('x')}<span>Rejected by ${esc(j.approvedBy)}: ${esc(j.rejectReason)}</span></div>` : ''}
+        ${j.cancelReason ? `<div class="banner err" style="margin-bottom:12px">${icon('ban')}<span>Cancelled: ${esc(j.cancelReason)}</span></div>` : ''}
+        <div class="grid g-side" style="margin-bottom:14px"><div class="card card-pad"><div class="row" style="margin-bottom:8px">${Kit.status(j.status)}<span class="tag">${esc(j.type)}</span>${j.batchId ? `<a class="tag" href="${R('finance/auto-posting.html?id=' + j.batchId)}">${icon('workflow')} ${esc(j.ref || 'Batch')}</a>` : ''}${j.templateId ? `<span class="tag">${icon('repeat')} ${esc((db.financeRecurring.find(r => r.id === j.templateId) || {}).code || '')}</span>` : ''}</div>
+          <div style="font-size:15px;font-weight:700">${esc(j.narration)}</div>
+          <dl class="kv tight" style="margin-top:10px"><dt>Date</dt><dd>${esc(Kit.day(j.date))} · ${esc(Fin.pName(j.period))}</dd><dt>Branch</dt><dd>${esc(Fin.brName(j.branchId))}</dd>${j.ref ? `<dt>Reference</dt><dd class="mono">${esc(j.ref)}</dd>` : ''}${fx ? `<dt>Currency</dt><dd>${esc(j.currency)} at ${j.rate} KWD (manual rate)</dd>` : ''}</dl></div>
+          <div class="card card-pad"><div class="section-t">Trail</div><div class="timeline">
+            <div class="tl-item ok"><b>Created</b><div class="meta">${esc(j.by)} · ${esc(Kit.when(j.at))}</div></div>
+            ${j.approvedBy ? `<div class="tl-item ${j.status === 'Rejected' ? '' : 'ok'}"><b>${j.status === 'Rejected' ? 'Rejected' : 'Approved'}</b><div class="meta">${esc(j.approvedBy)}${j.approvedAt ? ' · ' + esc(Kit.when(j.approvedAt)) : ''}</div></div>` : ''}
+            ${j.postedAt ? `<div class="tl-item ok"><b>Posted</b><div class="meta">${esc(Kit.when(j.postedAt))}</div></div>` : ''}</div></div></div>
+        <div class="card"><div class="table-wrap"><table class="tbl compact"><thead><tr><th>Account</th><th>Cost center</th><th>Memo</th>${fx ? `<th class="num">Debit ${esc(j.currency)}</th><th class="num">Credit ${esc(j.currency)}</th>` : ''}<th class="num">Debit KWD</th><th class="num">Credit KWD</th></tr></thead><tbody>
+          ${j.lines.map(l => `<tr><td><b class="mono">${esc((Fin.A(l.accountId) || {}).code || '')}</b> ${esc((Fin.A(l.accountId) || {}).name || 'Unknown account')}</td><td class="small">${esc(Fin.ccName(l.ccId))}</td><td class="small">${esc(l.memo || '')}</td>${fx ? `<td class="num">${l.fxDebit ? Kit.num(l.fxDebit, 2) : ''}</td><td class="num">${l.fxCredit ? Kit.num(l.fxCredit, 2) : ''}</td>` : ''}<td class="num">${+l.debit ? Fin.amt(l.debit) : ''}</td><td class="num">${+l.credit ? Fin.amt(l.credit) : ''}</td></tr>`).join('')}
+          </tbody><tfoot><tr><td colspan="${fx ? 5 : 3}">Total ${Math.abs(Fin.jDr(j) - Fin.jCr(j)) < 0.0005 ? `<span class="badge b-ok">Balanced</span>` : `<span class="badge b-err">Out of balance ${Fin.amt(Fin.jDr(j) - Fin.jCr(j))}</span>`}</td><td class="num">${Fin.amt(Fin.jDr(j))}</td><td class="num">${Fin.amt(Fin.jCr(j))}</td></tr></tfoot></table></div></div>
+        <div class="section-t" style="margin-top:16px">Attachments</div>
+        <div class="row wrap" style="gap:8px">${(j.attachments || []).map(a => `<span class="chip">${icon('paperclip')} ${esc(a.name)} <span class="muted xs">${esc(a.size)}</span></span>`).join('') || '<span class="muted small">No attachments</span>'}</div>
+        ${j.status === 'Pending approval' ? Fin.selfNote(j) : ''}`;
+      const s = j.status, man = j.type !== 'Auto' && j.type !== 'Opening';
+      const postG = lock ? { ok: false, why: lock } : Fin.gate(OPT, 'approve');
+      $('#jF', el).innerHTML = Fin.btn({ attrs: 'id="jPr"', icon: 'printer', label: 'Print', gate: Fin.gate(OPT, 'print') })
+        + (['Draft', 'Pending approval', 'Approved'].includes(s) && man ? Fin.btn({ cls: 'danger', attrs: 'id="jCx"', icon: 'ban', label: 'Cancel', gate: Fin.gate(OPT, 'cancel') }) : '')
+        + (s === 'Posted' ? Fin.btn({ attrs: 'id="jRev"', icon: 'undo-2', label: 'Reverse', gate: Fin.gate(OPT, 'add') }) : '')
+        + (['Draft', 'Rejected'].includes(s) ? Fin.btn({ attrs: 'id="jEd"', icon: 'pencil', label: 'Edit', gate: Fin.gate(OPT, 'edit') }) : '')
+        + '<span class="grow"></span>'
+        + (['Draft', 'Rejected'].includes(s) ? Fin.btn({ cls: 'primary', attrs: 'id="jSub"', icon: 'send', label: 'Submit for approval', gate: Fin.gate(OPT, 'edit') }) : '')
+        + (s === 'Pending approval' ? Fin.btn({ cls: 'danger', attrs: 'id="jRj"', icon: 'x', label: 'Reject', gate: Fin.gate(OPT, 'approve', j) }) + Fin.btn({ cls: 'success', attrs: 'id="jAp"', icon: 'check', label: 'Approve', gate: Fin.gate(OPT, 'approve', j) }) : '')
+        + (s === 'Approved' ? Fin.btn({ cls: 'primary', attrs: 'id="jPost"', icon: 'book-check', label: 'Post to ledger', gate: postG }) : '');
+      const on = (q, f) => { const b = $(q, el); if (b) b.addEventListener('click', f); };
+      on('#jPr', () => Fin.printJournal(j));
+      on('#jEd', () => { d.close(); editor({ j }); });
+      on('#jSub', () => { const b = j.status; j.status = 'Pending approval'; j.at = nowStamp(); j.rejectReason = ''; save(); audit('Journal submitted', 'Journal', { id: j.id, label: j.no }, [['Status', b, 'Pending approval']]); toast('Submitted for approval'); render(); refresh(); });
+      on('#jAp', () => { let postNow = lockMsgOk(); confirm({ title: 'Approve ' + j.no + '?', tone: 'primary', icon: 'stamp', body: `${esc(j.narration)}<br>${Fin.money(Fin.jDr(j))}, ${j.lines.length} lines.`, extra: `<label class="check" style="margin-top:12px"><input type="checkbox" id="apPost" ${lockMsgOk() ? 'checked' : 'disabled'}> Post to the ledger now</label>`, confirm: 'Approve', onMount: (m) => { const c = $('#apPost', m); if (c) c.addEventListener('change', () => { postNow = c.checked; }); }, onConfirm: () => {
+        Object.assign(j, { status: 'Approved', approvedBy: me, approvedAt: nowStamp() });
+        audit('Journal approved', 'Journal', { id: j.id, label: j.no }, [['Status', 'Pending approval', 'Approved']]);
+        if (postNow && !Fin.lockMsg(j.date)) { j.status = 'Posted'; j.postedAt = nowStamp(); audit('Journal posted', 'Journal', { id: j.id, label: j.no }, [['Status', 'Approved', 'Posted']]); }
+        save(); toast(j.status === 'Posted' ? 'Approved and posted' : 'Approved'); render(); refresh();
+      } }); });
+      function lockMsgOk() { return !Fin.lockMsg(j.date); }
+      on('#jRj', () => confirm({ title: 'Reject ' + j.no + '?', body: 'The preparer can correct and resubmit it.', reason: true, confirm: 'Reject', onConfirm: (reason) => { Object.assign(j, { status: 'Rejected', approvedBy: me, approvedAt: nowStamp(), rejectReason: reason }); save(); audit('Journal rejected', 'Journal', { id: j.id, label: j.no }, [['Status', 'Pending approval', 'Rejected']], { reason }); toast('Rejected'); render(); refresh(); } }));
+      on('#jPost', () => confirm({ title: 'Post ' + j.no + ' to the ledger?', tone: 'primary', icon: 'book-check', body: 'Posted journals cannot be edited. Corrections need a reversing journal.', confirm: 'Post', onConfirm: () => { j.status = 'Posted'; j.postedAt = nowStamp(); save(); audit('Journal posted', 'Journal', { id: j.id, label: j.no }, [['Status', 'Approved', 'Posted']]); toast('Posted'); render(); refresh(); } }));
+      on('#jCx', () => confirm({ title: 'Cancel ' + j.no + '?', body: 'The journal stays in the register as cancelled and is never posted.', reason: true, confirm: 'Cancel journal', onConfirm: (reason) => { const b = j.status; Object.assign(j, { status: 'Cancelled', cancelReason: reason }); save(); audit('Journal cancelled', 'Journal', { id: j.id, label: j.no }, [['Status', b, 'Cancelled']], { reason }); toast('Cancelled'); render(); refresh(); } }));
+      on('#jRev', () => confirm({ title: 'Reverse ' + j.no + '?', tone: 'primary', icon: 'undo-2', body: `A draft journal with debits and credits swapped is created, dated ${esc(Kit.day(Fin.lockMsg(j.date) ? T : j.date < T ? T : j.date))}. It needs approval before posting.`, reason: true, confirm: 'Create reversal', onConfirm: (reason) => {
+        const r = Fin.addJournal({ date: T, branchId: j.branchId, type: 'Manual', source: 'Manual', narration: 'Reversal of ' + j.no + ': ' + reason, lines: j.lines.map(l => Object.assign({}, l, { debit: l.credit, credit: l.debit, fxDebit: l.fxCredit, fxCredit: l.fxDebit })), currency: j.currency, rate: j.rate, ref: j.no, status: 'Draft' });
+        save(); audit('Reversal created', 'Journal', { id: r.id, label: r.no }, [['Reverses', '', j.no]], { reason }); toast(r.no + ' created as draft'); d.close(); refresh(); openJ(r);
+      } }));
+    };
+    render();
+  }
+
+  /* ---------- Editor (journal or recurring template) ---------- */
+  function editor(o) {
+    const tpl = !!o.tpl, j = o.j, t = o.t;
+    const src = tpl ? (t || { code: '', name: '', branchId: Fin.ctxBranch(), frequency: 'Monthly', day: 28, lines: [] }) : (j || { date: T, branchId: Fin.ctxBranch(), narration: '', ref: '', currency: 'KWD', rate: 1, lines: [], attachments: [] });
+    let lines = tpl ? src.lines.map(l => ({ accountId: Fin.AC(l[0]).id, ccId: l[1], d: l[2] || '', c: l[3] || '', memo: '' }))
+      : src.lines.map(l => ({ accountId: l.accountId, ccId: l.ccId || '', d: src.currency !== 'KWD' ? (l.fxDebit || '') : (+l.debit || ''), c: src.currency !== 'KWD' ? (l.fxCredit || '') : (+l.credit || ''), memo: l.memo || '' }));
+    while (lines.length < 2) lines.push({ accountId: '', ccId: '', d: '', c: '', memo: '' });
+    let atts = (src.attachments || []).slice();
+    const curOpts = db.financeCurrencies.filter(c => c.status === 'Active').map(c => [c.code, c.code + ' · ' + c.name]);
+    drawer({ title: tpl ? (t ? 'Edit recurring template' : 'New recurring template') : (j ? 'Edit journal ' + j.no : 'New journal voucher'), sub: tpl ? 'Lines are copied into a journal each period when you generate.' : 'Debits must equal credits. Income and expense lines need a cost center.', wide: true,
+      body: `<div class="err-summary hidden"></div><div id="eLock"></div><div class="form-grid c4">
+        ${tpl ? field({ id: 'eCode', label: 'Code', value: src.code, req: true }) + field({ id: 'eName', label: 'Name', value: src.name, req: true }) + field({ id: 'eFreq', label: 'Frequency', type: 'select', options: [['Monthly', 'Monthly'], ['Quarterly', 'Quarterly']], value: src.frequency, placeholder: false }) + field({ id: 'eDay', label: 'Day of month', type: 'number', value: src.day, attrs: 'min="1" max="28"' })
+          : field({ id: 'eDate', label: 'Voucher date', type: 'date', value: src.date, req: true }) + field({ id: 'eCur', label: 'Currency', type: 'select', options: curOpts, value: src.currency, placeholder: false }) + field({ id: 'eRate', label: 'Rate (KWD per unit)', type: 'number', value: src.rate, attrs: 'step="0.00001" min="0"', hint: 'From the currency master, editable' }) + field({ id: 'eRef', label: 'Reference', value: src.ref })}
+        ${field({ id: 'eBr', label: 'Branch', type: 'select', options: Fin.brOpts(), value: src.branchId, req: true, placeholder: false })}
+        ${tpl ? '' : field({ id: 'eNar', label: 'Narration', value: src.narration, req: true, full: false }).replace('class="field"', 'class="field" style="grid-column:span 3"')}
+      </div>
+      <div class="card" style="margin-top:14px"><div class="table-wrap"><table class="tbl compact jl"><thead><tr><th style="width:30%">Account</th><th style="width:22%">Cost center</th><th>Memo</th><th class="num" style="width:13%" id="hD">Debit</th><th class="num" style="width:13%" id="hC">Credit</th><th></th></tr></thead><tbody id="eRows"></tbody>
+        <tfoot><tr><td colspan="3"><button class="btn sm" id="eAdd">${icon('plus')} Add line</button> <span id="eDiff" class="small b" style="margin-inline-start:10px"></span></td><td class="num" id="eTd"></td><td class="num" id="eTc"></td><td></td></tr></tfoot></table></div></div>
+      ${tpl ? '' : `<div class="section-t" style="margin-top:16px">Attachments</div><div class="row wrap" style="gap:8px" id="eAtt"></div><label class="btn sm" style="margin-top:8px">${icon('paperclip')} Attach files<input type="file" id="eFile" multiple hidden></label>`}`,
+      foot: `<button class="btn" data-close>Cancel</button><span class="grow"></span>${tpl ? '' : '<button class="btn" id="eDraft" disabled>Save draft</button>'}<button class="btn primary" id="eSave" disabled>${tpl ? 'Save template' : 'Save and submit'}</button>`,
+      onMount: (el, close) => {
+        const br = () => $('#eBr', el).value;
+        const cur = () => tpl ? 'KWD' : $('#eCur', el).value;
+        const drawRows = () => {
+          const ao = Fin.acctOpts(br()), co = Fin.ccOpts(br());
+          $('#eRows', el).innerHTML = lines.map((l, i) => `<tr data-i="${i}"><td><select class="input sm" data-k="accountId" aria-label="Account line ${i + 1}"><option value="">Select account</option>${ao.map(([v, t]) => `<option value="${v}" ${v === l.accountId ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></td>
+            <td><select class="input sm" data-k="ccId" aria-label="Cost center line ${i + 1}"><option value="">${Fin.isPL(l.accountId) ? 'Select (required)' : 'None'}</option>${co.map(([v, t]) => `<option value="${v}" ${v === l.ccId ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></td>
+            <td><input class="input sm" data-k="memo" value="${esc(l.memo)}" aria-label="Memo line ${i + 1}"></td>
+            <td><input class="input sm num" data-k="d" type="number" step="0.001" min="0" value="${l.d}" aria-label="Debit line ${i + 1}"></td>
+            <td><input class="input sm num" data-k="c" type="number" step="0.001" min="0" value="${l.c}" aria-label="Credit line ${i + 1}"></td>
+            <td><button class="btn xs ghost" data-del="${i}" ${lines.length <= 2 ? 'disabled' : ''} aria-label="Remove line">${icon('trash-2')}</button></td></tr>`).join('');
+          $$('#eRows [data-k]', el).forEach(inp => inp.addEventListener('input', () => {
+            const i = +inp.closest('tr').dataset.i, k = inp.dataset.k; lines[i][k] = inp.value;
+            if (k === 'd' && inp.value) { lines[i].c = ''; inp.closest('tr').querySelector('[data-k=c]').value = ''; }
+            if (k === 'c' && inp.value) { lines[i].d = ''; inp.closest('tr').querySelector('[data-k=d]').value = ''; }
+            if (k === 'accountId') { drawRows(); }
+            check();
+          }));
+          $$('[data-del]', el).forEach(b => b.addEventListener('click', () => { lines.splice(+b.dataset.del, 1); drawRows(); check(); }));
+        };
+        const drawAtt = () => { const h = $('#eAtt', el); if (h) { h.innerHTML = atts.map((a, i) => `<span class="chip">${icon('paperclip')} ${esc(a.name)} <span class="xs muted">${esc(a.size)}</span><button data-ra="${i}" aria-label="Remove attachment">${icon('x')}</button></span>`).join('') || '<span class="muted small">No files attached</span>'; $$('[data-ra]', h).forEach(b => b.addEventListener('click', () => { atts.splice(+b.dataset.ra, 1); drawAtt(); })); } };
+        let valid = false;
+        const check = () => {
+          const errs = {};
+          const used = lines.filter(l => l.accountId || +l.d || +l.c || l.memo);
+          const td = Kit.sumBy(used, l => +l.d), tc = Kit.sumBy(used, l => +l.c), diff = Fin.r3(td - tc);
+          $('#hD', el).textContent = 'Debit ' + cur(); $('#hC', el).textContent = 'Credit ' + cur();
+          $('#eTd', el).textContent = Kit.num(td, 3); $('#eTc', el).textContent = Kit.num(tc, 3);
+          const lineErr = used.find(l => !l.accountId) ? 'Every line needs an account.' : used.find(l => !(+l.d > 0) && !(+l.c > 0)) ? 'Every line needs a debit or a credit amount.' : used.find(l => Fin.isPL(l.accountId) && !l.ccId) ? 'Income and expense lines need a cost center.' : '';
+          const balOk = used.length >= 2 && Math.abs(diff) < 0.0005 && td > 0;
+          $('#eDiff', el).className = 'small b ' + (balOk ? 'diff-ok' : 'diff-bad');
+          $('#eDiff', el).innerHTML = balOk ? `${icon('circle-check')} Balanced` : used.length < 2 ? 'At least two lines' : `${icon('circle-alert')} Difference ${Kit.num(diff, 3)} ${esc(cur())}`;
+          let lock = '';
+          if (!tpl) {
+            lock = Fin.lockMsg($('#eDate', el).value);
+            $('#eLock', el).innerHTML = lock ? `<div class="banner err" style="margin-bottom:12px">${icon('lock')}<span><b>Locked period warning.</b> ${esc(lock)} Choose a date in an open period.</span></div>` : '';
+            if (lock) errs.eDate = 'The period of this date is not open.';
+            if (!$('#eNar', el).value.trim()) errs.eNar = 'Narration is required.';
+            if (cur() !== 'KWD' && !(+$('#eRate', el).value > 0)) errs.eRate = 'Enter the exchange rate.';
+          } else {
+            if (!$('#eCode', el).value.trim()) errs.eCode = 'Code is required.';
+            if (!$('#eName', el).value.trim()) errs.eName = 'Name is required.';
+          }
+          $$('.input.bad', el).forEach(x => x.classList.remove('bad'));
+          valid = balOk && !lineErr && !Object.keys(errs).length;
+          const sum = $('.err-summary', el); const msgs = Object.values(errs).concat(lineErr ? [lineErr] : []);
+          if (sum.dataset.shown) { sum.classList.toggle('hidden', !msgs.length); sum.innerHTML = msgs.length ? `Please fix ${msgs.length} item${msgs.length > 1 ? 's' : ''}:<ul>${msgs.map(m => `<li>${esc(m)}</li>`).join('')}</ul>` : ''; }
+          $('#eSave', el).disabled = !valid; const dr = $('#eDraft', el); if (dr) dr.disabled = !(used.length && !lineErr.startsWith('Every line needs an') && $('#eNar', el).value.trim() && !lock);
+          return { used, errs, lineErr };
+        };
+        drawRows(); drawAtt(); check();
+        $('.err-summary', el).dataset.shown = j || t ? '1' : '';
+        $$('.form-grid input, .form-grid select', el).forEach(i => { i.addEventListener('input', () => { $('.err-summary', el).dataset.shown = '1'; check(); }); i.addEventListener('change', check); });
+        $('#eBr', el).addEventListener('change', () => { lines.forEach(l => { if (l.ccId && (Fin.CC(l.ccId) || {}).branchId !== br()) l.ccId = ''; }); drawRows(); check(); });
+        if (!tpl) $('#eCur', el).addEventListener('change', () => { const c = db.financeCurrencies.find(x => x.code === cur()); $('#eRate', el).value = c ? c.rate : 1; $('#eRate', el).disabled = cur() === 'KWD'; check(); });
+        if (!tpl) $('#eRate', el).disabled = cur() === 'KWD';
+        $('#eAdd', el).addEventListener('click', () => { lines.push({ accountId: '', ccId: '', d: '', c: '', memo: '' }); drawRows(); check(); });
+        const f = $('#eFile', el); if (f) f.addEventListener('change', () => { atts = atts.concat(Fin.fileNames(f)); f.value = ''; drawAtt(); });
+        const store = (status) => {
+          const r = check(); $('.err-summary', el).dataset.shown = '1';
+          if (tpl) {
+            const rec = t || { id: uid('rc'), lastPeriod: '', status: 'Active', by: me };
+            Object.assign(rec, { code: UI.normCode($('#eCode', el).value), name: $('#eName', el).value.trim(), branchId: br(), frequency: $('#eFreq', el).value, day: Math.min(28, Math.max(1, +$('#eDay', el).value || 28)), lines: r.used.map(l => [Fin.A(l.accountId).code, l.ccId, Fin.r3(+l.d || 0), Fin.r3(+l.c || 0)]) });
+            if (!t) db.financeRecurring.push(rec);
+            save(); audit(t ? 'Recurring template updated' : 'Recurring template created', 'Recurring template', { id: rec.id, label: rec.code }, []); close(); toast('Template saved'); refresh(); return;
+          }
+          const rate = cur() === 'KWD' ? 1 : +$('#eRate', el).value;
+          const jl = r.used.map(l => { const x = { accountId: l.accountId, debit: Fin.r3((+l.d || 0) * rate), credit: Fin.r3((+l.c || 0) * rate) }; if (l.ccId) x.ccId = l.ccId; if (l.memo) x.memo = l.memo; if (rate !== 1) { x.fxDebit = +l.d || 0; x.fxCredit = +l.c || 0; } return x; });
+          if (rate !== 1) { const dd = Fin.r3(jl.reduce((s, x) => s + x.debit - x.credit, 0)); if (dd) { const big = jl.filter(x => x[dd > 0 ? 'credit' : 'debit'] > 0)[0]; big[dd > 0 ? 'credit' : 'debit'] = Fin.r3(big[dd > 0 ? 'credit' : 'debit'] + Math.abs(dd)); } }
+          const vals = { date: $('#eDate', el).value, period: Fin.periodOf($('#eDate', el).value), branchId: br(), narration: $('#eNar', el).value.trim(), ref: $('#eRef', el).value.trim(), currency: cur(), rate, lines: jl, attachments: atts, status, rejectReason: '' };
+          let rec;
+          if (j) { rec = j; Object.assign(j, vals, { at: nowStamp() }); audit('Journal edited', 'Journal', { id: j.id, label: j.no }, [['Total', '', Fin.amt(Fin.jDr(j))], ['Status', '', status]]); }
+          else { rec = Fin.addJournal(Object.assign({ type: 'Manual', source: 'Manual' }, vals)); audit('Journal created', 'Journal', { id: rec.id, label: rec.no }, [['Total', '', Fin.amt(Fin.jDr(rec))], ['Status', '', status]]); }
+          save(); close(); toast(rec.no + (status === 'Draft' ? ' saved as draft' : ' submitted for approval')); refresh(); openJ(rec);
+        };
+        $('#eSave', el).addEventListener('click', () => store('Pending approval'));
+        const dr = $('#eDraft', el); if (dr) dr.addEventListener('click', () => store('Draft'));
+      } });
+  }
+
+  /* ---------- Recurring templates ---------- */
+  const amtOf = (t) => Kit.sumBy(t.lines, l => l[2] || 0);
+  const genFor = (t, p) => JS().some(j => j.templateId === t.id && j.period === p && j.status !== 'Cancelled');
+  function recTable() {
+    UI.table($('#body'), {
+      columns: [
+        { label: 'Template', sort: t => t.code, render: t => `<div class="cell-main"><b>${esc(t.name)}</b><span class="mono">${esc(t.code)}</span></div>` },
+        { label: 'Branch', render: t => esc(Fin.brShort(t.branchId)) },
+        { label: 'Frequency', render: t => `${esc(t.frequency)}<div class="xs muted">Day ${t.day}</div>` },
+        { label: 'Lines', render: t => `<span class="small">${t.lines.map(l => `${l[2] ? 'Dr' : 'Cr'} ${esc(l[0])}`).join(', ')}</span>` },
+        { label: 'Amount', cls: 'num', sort: amtOf, render: t => `<b>${Fin.amt(amtOf(t))}</b>` },
+        { label: 'Last generated', sort: t => t.lastPeriod, render: t => t.lastPeriod ? esc(Fin.pName(t.lastPeriod)) : '<span class="muted">Never</span>' },
+        { label: 'Status', render: t => Kit.status(t.status) },
+        { label: '', cls: 'actions', render: t => Fin.btn({ cls: 'xs', attrs: `data-ed="${t.id}"`, icon: 'pencil', label: 'Edit', gate: Fin.gate(OPT, 'edit') }) },
+      ],
+      rows: () => db.financeRecurring, search: t => t.code + ' ' + t.name, searchPlaceholder: 'Template',
+      filters: [{ label: 'Status', options: [['Active', 'Active'], ['Inactive', 'Inactive']], test: (t, v) => t.status === v }],
+      toolbar: Fin.btn({ cls: 'sm', attrs: 'id="newTpl"', icon: 'plus', label: 'New template', gate: Fin.gate(OPT, 'add') }) + Fin.btn({ cls: 'sm primary', attrs: 'id="genTpl"', icon: 'repeat', label: 'Generate for period', gate: Fin.gate(OPT, 'add') }),
+      afterDraw: (tb) => $$('[data-ed]', tb).forEach(b => b.addEventListener('click', () => editor({ tpl: true, t: db.financeRecurring.find(x => x.id === b.dataset.ed) }))),
+    });
+    $('#newTpl') && $('#newTpl').addEventListener('click', () => editor({ tpl: true }));
+    $('#genTpl') && $('#genTpl').addEventListener('click', generate);
+  }
+  function generate() {
+    const opens = Fin.openPeriods();
+    drawer({ title: 'Generate recurring vouchers', sub: 'Creates one journal per template for the period, sent for approval.',
+      body: `<div class="form-grid">${field({ id: 'gP', label: 'Period', type: 'select', options: opens.map(p => [p.code, p.name]), value: Fin.periodOf(T), placeholder: false, full: true })}</div><div id="gList" style="margin-top:14px"></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="gGo" disabled>Generate</button>`,
+      onMount: (el, close) => {
+        const draw = () => {
+          const p = $('#gP', el).value, m = +p.slice(5);
+          const list = db.financeRecurring.filter(t => t.status === 'Active');
+          $('#gList', el).innerHTML = `<div class="card list-rows pad">${list.map(t => { const done = genFor(t, p), due = t.frequency === 'Monthly' || m % 3 === 0; return `<label class="${done || !due ? '' : 'click'}" style="cursor:${done || !due ? 'default' : 'pointer'}"><input type="checkbox" value="${t.id}" ${done || !due ? 'disabled' : 'checked'}><div class="grow"><b>${esc(t.name)}</b><div class="xs muted">${esc(t.code)} · ${esc(Fin.brShort(t.branchId))} · ${esc(t.frequency)}</div></div><b class="num">${Fin.amt(amtOf(t))}</b>${done ? '<span class="badge b-ok">Generated</span>' : !due ? '<span class="badge b-neutral">Not due</span>' : ''}</label>`; }).join('')}</div>`;
+          const upd = () => { $('#gGo', el).disabled = !$$('#gList input:checked', el).length; };
+          $$('#gList input', el).forEach(i => i.addEventListener('change', upd)); upd();
+        };
+        $('#gP', el).addEventListener('change', draw); draw();
+        $('#gGo', el).addEventListener('click', () => {
+          const p = $('#gP', el).value, ids = $$('#gList input:checked', el).map(i => i.value), out = [];
+          ids.forEach(id => { const t = db.financeRecurring.find(x => x.id === id); const date = `${p}-${Fin.pad(Math.min(t.day, +Fin.pEnd(p).slice(8)))}`;
+            const j = Fin.addJournal({ date, branchId: t.branchId, type: 'Recurring', source: 'Recurring', templateId: t.id, narration: `${t.name}, ${Fin.pName(p)}`, lines: t.lines.map(l => Fin.L(l[0], l[2] || 0, l[3] || 0, l[1], 'Recurring')), status: 'Pending approval' });
+            t.lastPeriod = p > (t.lastPeriod || '') ? p : t.lastPeriod; out.push(j.no); });
+          save(); audit('Recurring vouchers generated', 'Journal', { id: p, label: Fin.pName(p) }, [['Vouchers', '', out.join(', ')]]);
+          close(); toast(out.length + ' recurring vouchers created for approval'); tab = 'Pending approval'; refresh();
+        });
+      } });
+  }
+
+  $('#newJv') && $('#newJv').addEventListener('click', () => editor({}));
+  $('#genRec') && $('#genRec').addEventListener('click', generate);
+  kpis(); drawTabs(); draw();
+  const q = UI.param('id'); if (q) { const j = Fin.J(q); if (j) openJ(j); }
+})();
+</script>
+</body>
+</html>

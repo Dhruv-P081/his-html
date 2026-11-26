@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rounds and discharge · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-emr.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/emr.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, me, nowStamp, field } = UI;
+  const OPT = 'emr.inpatient';
+  const dr = EMR.actingDoctor();
+  const pick = EMR.doctorPicker();
+  if (!UI.page({ opt: OPT, title: 'Rounds and discharge', subtitle: 'Progress notes, admission orders, medicine reconciliation, discharge and medical reports for admitted patients.', wide: true,
+    actions: `<div class="row">${pick.html}</div>` })) return;
+  pick.wire();
+  const canAdd = can(OPT, 'add'), canEdit = can(OPT, 'edit'), canSign = can(OPT, 'verify'), canPrint = can(OPT, 'print');
+  const live = () => db.encounters.filter(e => e.type === 'IPD' && e.status !== 'Discharged');
+  let scope = live().some(e => e.doctorId === dr.id) ? 'mine' : 'all', q = '';
+  let cur = Kit.enc(UI.param('enc')) || null, tab = UI.param('tab') || 'rounds';
+  if (cur && cur.doctorId !== dr.id) scope = 'all';
+  $('#page').innerHTML = `<div class="split"><div class="card list-pane"><div class="card-head" style="flex-wrap:wrap"><div id="scope"></div><div class="search" style="width:100%">${icon('search')}<input class="input" id="q" placeholder="Patient, MRN or bed" aria-label="Search inpatients"></div></div><div id="list"></div></div><div id="detail"></div></div>`;
+  Kit.seg($('#scope'), [['mine', 'My patients'], ['all', 'All wards']], scope, (v) => { scope = v; drawList(); });
+  $('#q').addEventListener('input', (e) => { q = e.target.value.toLowerCase(); drawList(); });
+  const los = (e) => Math.max(0, Math.round((new Date(db.TODAY) - new Date(e.start.slice(0, 10))) / 864e5)) + 1;
+  function drawList() {
+    const list = live().filter(e => (scope === 'all' || e.doctorId === dr.id) && (!q || [Kit.ptName(e.patientId), (Kit.pt(e.patientId) || {}).mrn, (Kit.bed(e.bedId) || {}).no].join(' ').toLowerCase().includes(q)))
+      .sort((a, b) => String(a.bedId).localeCompare(String(b.bedId)));
+    if (!cur && list[0]) cur = list[0];
+    $('#list').innerHTML = list.length ? list.map(e => { const p = Kit.pt(e.patientId), b = Kit.bed(e.bedId) || {}; const dc = db.emrDischarges.find(x => x.encounterId === e.id);
+      const crit = db.orders.some(o => o.encounterId === e.id && EMR.isCritical(o) && !EMR.ackOf(o.id));
+      return `<div class="qitem ${cur && cur.id === e.id ? 'on' : ''}" data-e="${e.id}"><span class="token">${esc(b.no || '')}</span><div class="grow cell-main" style="min-width:0"><b>${esc(p.name)}</b><span>${esc(e.reason)} · day ${los(e)}</span><div class="row wrap" style="gap:4px;margin-top:4px">${crit ? '<span class="badge b-err">Critical</span>' : ''}${dc ? Kit.status(dc.status === 'Signed' ? 'Discharge ordered' : 'Discharge draft', dc.status === 'Signed' ? 'violet' : 'neutral') : (p.allergies || []).length ? '<span class="badge allergy">Allergy</span>' : ''}</div></div></div>`; }).join('')
+      : `<div class="empty">${icon('bed')}<b>No admitted patients</b><span>Switch to All wards.</span></div>`;
+    $$('[data-e]').forEach(n => n.addEventListener('click', () => { cur = Kit.enc(n.dataset.e); drawList(); drawDetail(); }));
+  }
+  function drawDetail() {
+    const host = $('#detail');
+    if (!cur) { host.innerHTML = `<div class="card"><div class="empty">${icon('bed')}<b>Select a patient</b></div></div>`; return; }
+    const p = Kit.pt(cur.patientId);
+    host.innerHTML = `${Kit.patientBanner(p, cur, `<span class="tag">Day ${los(cur)}</span>`)}
+      <div class="row wrap" style="margin:-4px 0 12px"><span class="small muted grow">Admitted ${UI.fmtDate(cur.start)} · ${esc(cur.admissionType || '')} · <span class="mono">${esc(cur.diagnosis)}</span> ${esc(cur.reason)} · expected discharge ${Kit.day(cur.expectedDischarge)}</span>
+        <a class="btn sm" href="${R('emr/summary.html?pt=' + p.id)}">${icon('file-heart')} Summary</a><a class="btn sm primary" href="${R('emr/console.html?enc=' + cur.id)}">${icon('stethoscope')} Console</a></div>
+      <div class="card"><div id="tabs" style="padding:0 10px"></div><div id="tb" class="card-pad"></div></div>`;
+    const cnt = { rounds: db.emrProgressNotes.filter(n => n.encounterId === cur.id).length, orders: db.orders.filter(o => o.encounterId === cur.id && EMR.isOpen(o)).length, reports: db.emrMedReports.filter(r => r.encounterId === cur.id).length };
+    Kit.tabs($('#tabs'), [{ id: 'rounds', label: 'Progress notes', icon: 'notebook-pen', count: cnt.rounds }, { id: 'orders', label: 'Admission orders', icon: 'list-plus', count: cnt.orders }, { id: 'recon', label: 'Medicine reconciliation', icon: 'pill' }, { id: 'dc', label: 'Discharge', icon: 'door-open' }, { id: 'reports', label: 'Medical reports', icon: 'file-text', count: cnt.reports }], tab, (t) => { tab = t; drawTab(); });
+    drawTab();
+  }
+  function drawTab() { ({ rounds: tRounds, orders: tOrders, recon: tRecon, dc: tDc, reports: tReports })[tab]($('#tb'), Kit.pt(cur.patientId)); }
+
+  /* Progress notes */
+  function tRounds(tb, p) {
+    const notes = db.emrProgressNotes.filter(n => n.encounterId === cur.id).sort((a, b) => b.at.localeCompare(a.at));
+    const v = EMR.vitalsOf(p.id).slice(-1)[0];
+    tb.innerHTML = `<div class="grid g2" style="align-items:start"><div>
+        <div class="row" style="margin-bottom:8px"><b class="grow">${icon('notebook-pen')} New progress note</b><select class="input sm" id="pnTpl" style="width:auto" aria-label="Insert template"><option value="">Insert template</option>${db.emrNoteTemplates.filter(t => t.type === 'Progress').map(t => `<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select></div>
+        <div class="soap">${[['s', 'S · Subjective'], ['o', 'O · Objective'], ['a', 'A · Assessment'], ['p', 'P · Plan']].map(([k, l]) => `<div><div class="s-l">${l}</div><textarea class="input" id="pn_${k}" aria-label="${l}" style="min-height:64px">${k === 'o' && v ? esc(`BP ${v.sbp}/${v.dbp}, HR ${v.hr}, T ${v.temp}, SpO2 ${v.spo2}%. `) : ''}</textarea></div>`).join('')}</div>
+        <div class="row" style="margin-top:10px"><span class="small muted grow" id="pnHint">Assessment and plan are required.</span><button class="btn" id="pnDraft" disabled>Save draft</button><button class="btn primary" id="pnSign" disabled>${icon('file-signature')} Sign note</button></div></div>
+      <div><div class="section-t" style="margin:0 0 10px">Round notes</div>${notes.length ? `<div class="timeline">${notes.map(n => `<div class="tl-item ${n.status === 'Signed' ? 'ok' : 'warn'}"><b>${UI.fmtDate(n.at)}</b> ${Kit.status(n.status === 'Signed' ? 'Signed' : 'Draft', n.status === 'Signed' ? 'ok' : 'warn')} <span class="xs mute">${esc(Kit.docName(n.doctorId))}</span>
+        <div class="note-box" style="margin-top:6px"><b>S</b> ${esc(n.s)}<br><b>O</b> ${esc(n.o)}<br><b>A</b> ${esc(n.a)}<br><b>P</b> ${esc(n.p)}</div>${n.status !== 'Signed' ? `<button class="btn xs" style="margin-top:6px" data-sg="${n.id}" ${canSign ? '' : 'disabled title="Needs Verify permission"'}>${icon('file-signature')} Sign</button>` : `<div class="xs mute">Signed by ${esc(n.signedBy)}</div>`}</div>`).join('')}</div>` : `<div class="empty">${icon('notebook-pen')}<b>No progress notes yet</b></div>`}</div></div>`;
+    const ok = () => { const v2 = $('#pn_a').value.trim() && $('#pn_p').value.trim(); $('#pnDraft').disabled = !canAdd || !v2; $('#pnSign').disabled = !canAdd || !canSign || !v2; };
+    $$('#tb textarea').forEach(t => t.addEventListener('input', ok));
+    $('#pnTpl').addEventListener('change', (e) => { const t = db.emrNoteTemplates.find(x => x.id === e.target.value); if (t) $('#pn_s').value = (($('#pn_s').value || '') + ' ' + t.body).trim(); e.target.value = ''; });
+    const add = (status) => { const n = { id: UI.uid('pn'), encounterId: cur.id, patientId: p.id, doctorId: dr.id, at: nowStamp(), type: 'Daily round', s: $('#pn_s').value.trim(), o: $('#pn_o').value.trim(), a: $('#pn_a').value.trim(), p: $('#pn_p').value.trim(), status, signedBy: status === 'Signed' ? me().displayName : '' };
+      db.emrProgressNotes.push(n); save(); audit(status === 'Signed' ? 'Progress note signed' : 'Progress note saved', 'Progress note', { id: n.id, label: p.name + ' · ' + cur.no }, [['Status', '', status]]); toast(status === 'Signed' ? 'Progress note signed' : 'Draft saved'); drawDetail(); };
+    $('#pnDraft').addEventListener('click', () => add('Draft'));
+    $('#pnSign').addEventListener('click', () => add('Signed'));
+    $$('[data-sg]').forEach(b => b.addEventListener('click', () => { const n = db.emrProgressNotes.find(x => x.id === b.dataset.sg); n.status = 'Signed'; n.signedBy = me().displayName; save(); audit('Progress note signed', 'Progress note', { id: n.id, label: p.name }, [['Status', 'Draft', 'Signed']]); toast('Note signed'); drawTab(); }));
+  }
+
+  /* Admission orders */
+  function tOrders(tb, p) {
+    const list = db.orders.filter(o => o.encounterId === cur.id).sort((a, b) => String(b.orderedAt).localeCompare(String(a.orderedAt)));
+    tb.innerHTML = `<div class="row" style="margin-bottom:10px"><span class="small muted grow">Orders written at admission and during the stay. Nursing, Lab, Radiology and Pharmacy work them from their own worklists.</span><a class="btn sm" href="${R('emr/orders.html?pt=' + p.id)}">${icon('list')} Tracking</a><button class="btn sm primary" id="oAdd" ${can('emr.consult.orders', 'add') ? '' : 'disabled title="Needs Add permission on Orders"'}>${icon('plus')} Add orders</button></div>
+      <div class="card">${EMR.ordersTable(list)}</div><div style="margin-top:12px">${Kit.phase2('Order sets and care pathways for admission are SOW V4 2nd phase. Orders are added one by one now.')}</div>`;
+    $('#oAdd').addEventListener('click', () => UI.drawer({ title: 'Admission orders', sub: esc(p.name) + ' · ' + esc(cur.no), wide: true, body: `<div id="cpH"></div>`, onMount: (el, close) => EMR.cpoe($('#cpH', el), cur, { kinds: ['lab', 'rad', 'med', 'diet', 'care'], onDone: () => { close(); drawDetail(); } }) }));
+  }
+
+  /* Medicine reconciliation */
+  function tRecon(tb, p) {
+    const home = db.emrHomeMeds.filter(h => h.patientId === p.id && h.status !== 'Inactive');
+    const rec = db.emrRecon.find(r => r.encounterId === cur.id) || { encounterId: cur.id, items: {}, status: 'Not started' };
+    const inpt = db.orders.filter(o => o.encounterId === cur.id && o.type === 'med' && o.status !== 'Cancelled');
+    tb.innerHTML = `<div class="banner info" style="margin-bottom:12px">${icon('info')}<span>Compare the medicines the patient takes at home with the inpatient orders. Decide for each: continue, hold, stop or change. ${rec.status === 'Completed' ? `Last reconciled by ${esc(rec.by)} on ${UI.fmtDate(rec.at)}.` : ''}</span></div>
+      <div class="grid g2" style="align-items:start">
+        <div class="card"><div class="card-head"><h3>${icon('house')} Home medicines</h3><div class="actions">${Kit.status(rec.status === 'Completed' ? 'Completed' : 'Pending', rec.status === 'Completed' ? 'ok' : 'warn')}<button class="btn xs" id="hmAdd" ${canEdit ? '' : 'disabled'}>${icon('plus')} Add</button></div></div>
+          ${home.length ? `<div class="list-rows pad">${home.map(h => { const match = inpt.find(o => o.itemId === h.itemId); const it = rec.items[h.id] || {}; return `<div style="flex-wrap:wrap"><div class="grow cell-main" style="min-width:180px"><b style="font-size:13px">${esc(h.name)}</b><span>${esc(h.dose)} · ${esc(h.frequency)} · source: ${esc(h.source)}</span>${match ? `<div class="xs" style="color:var(--success);font-weight:700">${icon('link')} Ordered in hospital: ${esc(match.dose)} ${esc(match.frequency)}</div>` : '<div class="xs mute">Not ordered in hospital</div>'}</div>
+            <select class="input sm" data-dec="${h.id}" style="width:130px" aria-label="Decision for ${esc(h.name)}"><option value="">Decision</option>${['Continue', 'Hold', 'Stop', 'Change'].map(x => `<option ${it.decision === x ? 'selected' : ''}>${x}</option>`).join('')}</select>
+            <input class="input sm" data-cm="${h.id}" style="flex:1 1 100%" placeholder="Comment (required for stop or change)" value="${esc(it.note || '')}" aria-label="Comment"></div>`; }).join('')}</div>` : `<div class="empty">${icon('house')}<b>No home medicines recorded</b></div>`}
+          <div class="card-foot"><span class="small muted grow" id="rcHint"></span><button class="btn primary" id="rcSave" disabled>${icon('check')} Complete reconciliation</button></div></div>
+        <div class="card"><div class="card-head"><h3>${icon('pill')} Inpatient medication orders</h3><div class="actions"><button class="btn xs" id="rcOrd" ${can('emr.consult.orders', 'add') ? '' : 'disabled'}>${icon('plus')} Order</button></div></div>${inpt.length ? `<div class="list-rows pad">${inpt.map(o => `<div><div class="grow cell-main"><b style="font-size:13px">${esc(o.name)}</b><span>${esc(o.dose)} · ${esc(o.route)} · ${esc(o.frequency)}</span></div>${Kit.status(o.status)}</div>`).join('')}</div>` : `<div class="empty">${icon('pill')}<b>No inpatient medicines</b></div>`}</div></div>`;
+    const ok = () => { const errs = []; home.forEach(h => { const d = $(`[data-dec="${h.id}"]`).value, c = $(`[data-cm="${h.id}"]`).value.trim(); if (!d) errs.push('decision for ' + h.name); else if (/Stop|Change/.test(d) && c.length < 3) errs.push('comment for ' + h.name); });
+      $('#rcSave').disabled = !canEdit || !home.length || errs.length > 0; $('#rcHint').textContent = errs.length ? 'Missing: ' + errs.slice(0, 2).join(', ') + (errs.length > 2 ? ' and ' + (errs.length - 2) + ' more' : '') : home.length ? 'Ready.' : ''; };
+    $$('[data-dec],[data-cm]').forEach(i => i.addEventListener(i.tagName === 'SELECT' ? 'change' : 'input', ok)); ok();
+    $('#rcSave').addEventListener('click', () => {
+      const items = {}; home.forEach(h => { items[h.id] = { decision: $(`[data-dec="${h.id}"]`).value, note: $(`[data-cm="${h.id}"]`).value.trim(), name: h.name }; });
+      const r = db.emrRecon.find(x => x.encounterId === cur.id); const data = { encounterId: cur.id, patientId: p.id, items, status: 'Completed', by: me().displayName, at: nowStamp() };
+      if (r) Object.assign(r, data); else db.emrRecon.push(data); save();
+      audit('Medicine reconciliation completed', 'Medicine reconciliation', { id: cur.id, label: p.name + ' · ' + cur.no }, Object.values(items).map(i => [i.name, '', i.decision]));
+      toast('Reconciliation completed'); drawTab();
+    });
+    $('#rcOrd').addEventListener('click', () => { tab = 'orders'; drawDetail(); $('#oAdd') && $('#oAdd').click(); });
+    $('#hmAdd').addEventListener('click', () => UI.drawer({ title: 'Add home medicine', sub: esc(p.name), body: `<div class="form-grid">${field({ id: 'hItem', label: 'Medicine', type: 'select', req: true, full: true, options: db.items.filter(i => i.type === 'Drug').map(i => [i.id, i.name]) })}${field({ id: 'hDose', label: 'Dose', req: true })}${field({ id: 'hFreq', label: 'Frequency', type: 'select', req: true, options: EMR.FREQS.map(f => [f, f]) })}${field({ id: 'hSrc', label: 'Source', type: 'select', options: [['Patient', 'Patient'], ['Family', 'Family'], ['Previous prescription', 'Previous prescription'], ['Pharmacy record', 'Pharmacy record']], value: 'Patient', placeholder: false })}</div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="hGo" disabled>Add</button>`,
+      onMount: (el, close) => { const ok2 = () => { $('#hGo', el).disabled = !($('#hItem', el).value && $('#hDose', el).value.trim() && $('#hFreq', el).value); }; ['input', 'change'].forEach(ev => el.addEventListener(ev, ok2));
+        $('#hGo', el).addEventListener('click', () => { const it = Kit.item($('#hItem', el).value); db.emrHomeMeds.push({ id: UI.uid('hm'), patientId: p.id, itemId: it.id, name: it.name, dose: $('#hDose', el).value.trim(), frequency: $('#hFreq', el).value, source: $('#hSrc', el).value, status: 'Active' });
+          const r = db.emrRecon.find(x => x.encounterId === cur.id); if (r) r.status = 'Pending'; save(); close(); toast('Home medicine added'); drawTab(); }); } }));
+  }
+
+  /* Discharge order and summary */
+  function tDc(tb, p) {
+    let dc = db.emrDischarges.find(x => x.encounterId === cur.id);
+    const signed = dc && dc.status === 'Signed';
+    const rec = db.emrRecon.find(r => r.encounterId === cur.id);
+    const dmeds = (rec ? Object.values(rec.items).filter(i => /Continue|Change/.test(i.decision)).map(i => i.name + (i.decision === 'Change' ? ' (changed: ' + i.note + ')' : '')) : [])
+      .concat(db.orders.filter(o => o.encounterId === cur.id && o.type === 'med' && o.rxNo && o.status !== 'Cancelled').map(o => o.name + ' ' + o.dose + ' ' + o.frequency + ' (new)'));
+    const v = dc || { plannedDate: cur.expectedDischarge || db.TODAY, disposition: 'Home', condition: 'Stable', course: '', procedures: '', instructions: '', followUpDays: 14 };
+    tb.innerHTML = `${signed ? `<div class="banner ok" style="margin-bottom:12px">${icon('badge-check')}<span>Discharge order signed by ${esc(dc.signedBy)} on ${UI.fmtDate(dc.signedAt)}. Reception completes the ADT discharge and bed release after billing clearance (${esc(cur.clearance || 'pending')}).</span></div>` : `<div class="banner info" style="margin-bottom:12px">${icon('info')}<span>Write the discharge order and summary. When signed, nursing, pharmacy and billing see the planned discharge.</span></div>`}
+      ${!rec ? `<div class="alert-cdss warn" style="margin-bottom:12px">${icon('pill')}<div class="grow">Medicine reconciliation is not completed. Discharge medicines may be incomplete.</div><button class="btn xs" id="goRec">Reconcile</button></div>` : ''}
+      <div class="err-summary hidden"></div>
+      <div class="form-grid c4">
+        ${field({ id: 'dDate', label: 'Discharge date', type: 'date', req: true, value: v.plannedDate })}
+        ${field({ id: 'dDisp', label: 'Disposition', type: 'select', req: true, value: v.disposition, options: ['Home', 'Home with home care', 'Transfer to another hospital', 'Left against medical advice', 'Rehabilitation facility'].map(x => [x, x]) })}
+        ${field({ id: 'dCond', label: 'Condition at discharge', type: 'select', req: true, value: v.condition, options: ['Improved', 'Stable', 'Unchanged', 'Deteriorated'].map(x => [x, x]) })}
+        ${field({ id: 'dFu', label: 'Follow-up in clinic (days)', type: 'number', value: v.followUpDays })}
+        <div class="field span2"><label>Discharge diagnosis</label><input class="input" readonly value="${esc(cur.diagnosis + ' ' + ((db.icd10.find(x => x.code === cur.diagnosis) || {}).name || cur.reason))}"></div>
+        ${field({ id: 'dProc', label: 'Procedures', value: v.procedures, placeholder: 'None', full: false }).replace('class="field"', 'class="field span2"')}
+        ${field({ id: 'dCourse', label: 'Hospital course', type: 'textarea', req: true, full: true, value: v.course, max: 3000 })}
+        <div class="field full"><label>Discharge medicines (from reconciliation and new prescriptions)</label><div class="note-box">${dmeds.length ? dmeds.map(m => `<div>${icon('pill', 'mute')} ${esc(m)}</div>`).join('') : '<span class="muted">None. Use the e-Prescription tab in the console for take-home medicines.</span>'}</div></div>
+        ${field({ id: 'dIns', label: 'Instructions to the patient', type: 'textarea', req: true, full: true, value: v.instructions })}
+      </div>
+      <div class="row" style="margin-top:14px"><span class="grow"></span><button class="btn" id="dPrint" ${dc && canPrint ? '' : 'disabled title="Save first"'}>${icon('printer')} Print summary</button>${signed ? '' : `<button class="btn" id="dSave" ${canEdit ? '' : 'disabled title="Needs Edit permission"'}>Save draft</button><button class="btn primary" id="dSign" disabled>${icon('file-signature')} Sign discharge order</button>`}</div>`;
+    if (signed) $$('#tb input, #tb select, #tb textarea').forEach(x => x.disabled = true);
+    const gr = $('#goRec'); if (gr) gr.addEventListener('click', () => { tab = 'recon'; drawDetail(); });
+    const read = () => ({ plannedDate: $('#dDate').value, disposition: $('#dDisp').value, condition: $('#dCond').value, followUpDays: $('#dFu').value, procedures: $('#dProc').value.trim(), course: $('#dCourse').value.trim(), instructions: $('#dIns').value.trim() });
+    const ok = () => { if (signed) return; const x = read(); $('#dSign').disabled = !canSign || !(x.plannedDate && x.disposition && x.condition && x.course.length >= 10 && x.instructions.length >= 5); };
+    ['input', 'change'].forEach(ev => tb.addEventListener(ev, ok)); ok();
+    const store = (status) => {
+      const x = read(), errs = {};
+      if (x.plannedDate && x.plannedDate < cur.start.slice(0, 10)) errs.dDate = 'Discharge date cannot be before admission.';
+      if (!UI.showErrors(tb, errs)) return false;
+      if (!dc) { dc = { id: UI.uid('dc'), encounterId: cur.id, patientId: p.id, doctorId: dr.id, createdAt: nowStamp() }; db.emrDischarges.push(dc); }
+      Object.assign(dc, x, { status, meds: dmeds, diagnosis: cur.diagnosis }); if (status === 'Signed') { dc.signedAt = nowStamp(); dc.signedBy = me().displayName; }
+      save(); audit(status === 'Signed' ? 'Discharge order signed' : 'Discharge summary saved', 'Discharge', { id: dc.id, label: p.name + ' · ' + cur.no }, [['Status', '', status], ['Discharge date', '', x.plannedDate]]); return true;
+    };
+    const ds = $('#dSave'); if (ds) ds.addEventListener('click', () => { if (store('Draft')) { toast('Discharge draft saved'); drawTab(); } });
+    const sg = $('#dSign'); if (sg) sg.addEventListener('click', () => UI.confirm({ title: 'Sign discharge order?', tone: 'primary', icon: 'door-open', confirm: 'Sign', body: `${esc(p.name)} is planned for discharge on <b>${Kit.day($('#dDate').value)}</b> (${esc($('#dDisp').value)}).`,
+      impact: ['Nursing starts discharge preparation', 'Pharmacy prepares discharge medicines', 'Billing prepares the final bill; Reception releases the bed after clearance'], onConfirm: () => { if (store('Signed')) { toast('Discharge order signed'); drawList(); drawTab(); } } }));
+    $('#dPrint').addEventListener('click', () => { const d = db.emrDischarges.find(x => x.encounterId === cur.id); if (!d) return; Kit.printDoc({ title: 'Discharge summary', sub: p.name + ' · ' + cur.no, html: `<h3>Discharge summary</h3><p><b>${esc(p.name)}</b> · ${esc(p.mrn)} · ${esc(Kit.sexAge(p))} · Allergies: <b>${esc((p.allergies || []).join(', ') || 'NKA')}</b></p>
+      <table><tbody><tr><td>Admitted</td><td>${esc(UI.fmtDate(cur.start))}</td><td>Discharge</td><td>${esc(Kit.day(d.plannedDate))}</td></tr><tr><td>Attending</td><td>${esc(Kit.docName(cur.doctorId))}</td><td>Disposition</td><td>${esc(d.disposition)}, ${esc(d.condition)}</td></tr><tr><td>Diagnosis</td><td colspan="3">${esc(cur.diagnosis)} ${esc(cur.reason)}</td></tr></tbody></table>
+      <p><b>Hospital course:</b> ${esc(d.course)}</p><p><b>Procedures:</b> ${esc(d.procedures || 'None')}</p><p><b>Discharge medicines:</b><br>${(d.meds || []).map(esc).join('<br>') || 'None'}</p><p><b>Instructions:</b> ${esc(d.instructions)}</p><p><b>Follow-up:</b> clinic in ${esc(d.followUpDays || '-')} days.</p>
+      <p style="margin-top:20px;font-size:11px;color:#555">${d.status === 'Signed' ? 'Electronically signed by ' + esc(d.signedBy) + ' on ' + esc(UI.fmtDate(d.signedAt)) : 'DRAFT'}</p>` }); audit('Discharge summary printed', 'Discharge', { id: d.id, label: p.name }, []); });
+  }
+
+  /* Medical reports */
+  function tReports(tb, p) {
+    const list = db.emrMedReports.filter(r => r.encounterId === cur.id || r.patientId === p.id).sort((a, b) => b.at.localeCompare(a.at));
+    tb.innerHTML = `<div class="row" style="margin-bottom:10px"><span class="small muted grow">Medical reports and certificates generated from the record. Each report is numbered and signed.</span><button class="btn sm primary" id="mrNew" ${canAdd ? '' : 'disabled title="Needs Add permission"'}>${icon('plus')} Generate report</button></div>
+      <div class="card">${list.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>Report</th><th>Type</th><th>Addressed to</th><th>Generated</th><th></th></tr></thead><tbody>${list.map(r => `<tr><td class="mono b">${esc(r.no)}</td><td>${esc(r.template)}</td><td>${esc(r.to)}</td><td class="small">${Kit.when(r.at)}<div class="xs mute">${esc(r.by)}</div></td><td class="actions"><button class="btn xs" data-pr="${r.id}" ${canPrint ? '' : 'disabled title="Needs Print permission"'}>${icon('printer')} Print</button></td></tr>`).join('')}</tbody></table></div>` : `<div class="empty">${icon('file-text')}<b>No medical reports yet</b><span>Generate a medical report or sick leave certificate.</span></div>`}</div>`;
+    const prt = (r) => { Kit.printDoc({ title: r.template, sub: r.no, html: `<div style="text-align:end">${esc(r.no)}<br>${esc(Kit.day(r.at))}</div><h3 style="text-align:center;margin:10px 0 16px">${esc(r.template.toUpperCase())}</h3><p>To: ${esc(r.to)}</p><p>Patient: <b>${esc(p.name)}</b>, ${esc(Kit.sexAge(p))}, Civil ID ${esc(p.civilId || '-')}, MRN ${esc(p.mrn)}</p><p>Admission: ${esc(UI.fmtDate(cur.start))}, ${esc(cur.no)}. Diagnosis: ${esc(cur.diagnosis)} ${esc(cur.reason)}.</p><p style="white-space:pre-wrap">${esc(r.body)}</p><div style="margin-top:40px">${esc(r.by)}<br><span style="font-size:11px;color:#555">Electronically signed. Verify with code ${esc(r.no.replace(/\D/g, ''))}.</span></div>` }); audit('Medical report printed', 'Medical report', { id: r.id, label: r.no + ' · ' + p.name }, []); };
+    $$('[data-pr]').forEach(b => b.addEventListener('click', () => prt(db.emrMedReports.find(r => r.id === b.dataset.pr))));
+    $('#mrNew').addEventListener('click', () => UI.drawer({ title: 'Generate medical report', sub: esc(p.name) + ' · ' + esc(cur.no),
+      body: `<div class="form-grid">${field({ id: 'mT', label: 'Template', type: 'select', req: true, options: db.emrNoteTemplates.filter(t => t.type === 'Medical report' || t.type === 'Discharge').map(t => [t.id, t.name]) })}${field({ id: 'mTo', label: 'Addressed to', type: 'select', req: true, options: ['To whom it may concern', 'Employer', 'Insurance company', 'Civil Service Commission', 'School'].map(x => [x, x]), value: 'To whom it may concern', placeholder: false })}${field({ id: 'mB', label: 'Report text', type: 'textarea', req: true, full: true, max: 3000, hint: 'Replace every ___ with the details before signing.' })}</div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="mGo" disabled>${icon('file-signature')} Sign and print</button>`,
+      onMount: (el, close) => {
+        $('#mT', el).addEventListener('change', () => { const t = db.emrNoteTemplates.find(x => x.id === $('#mT', el).value); if (t) $('#mB', el).value = t.body.replace('___', `${cur.reason} (${cur.diagnosis}), admitted on ${Kit.day(cur.start)}`); ok(); });
+        const ok = () => { $('#mGo', el).disabled = !($('#mT', el).value && $('#mB', el).value.trim().length >= 20 && !/___/.test($('#mB', el).value)); $('#mB', el).classList.toggle('bad', /___/.test($('#mB', el).value)); };
+        $('#mB', el).addEventListener('input', ok);
+        $('#mGo', el).addEventListener('click', () => { const t = db.emrNoteTemplates.find(x => x.id === $('#mT', el).value);
+          const r = { id: UI.uid('mr'), no: Kit.nextNo('MR-26-', db.emrMedReports.length ? db.emrMedReports : [{ no: 'MR-26-1200' }]), encounterId: cur.id, patientId: p.id, template: t.name, to: $('#mTo', el).value, body: $('#mB', el).value.trim(), at: nowStamp(), by: me().displayName };
+          db.emrMedReports.push(r); save(); audit('Medical report generated', 'Medical report', { id: r.id, label: r.no + ' · ' + p.name }, [['Template', '', t.name]]); close(); toast('Report ' + r.no + ' generated'); drawDetail(); prt(r); });
+      } }));
+  }
+  drawList(); drawDetail();
+})();
+</script>
+</body>
+</html>

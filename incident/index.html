@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Incident Management · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-incident.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/incident.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, esc, icon, $, R, can, fmtDate } = UI;
+  if (!UI.page({ module: 'incident', title: 'Incident Management', subtitle: 'Dashboard by status, category, severity and ageing (SOW V4 Module 8).',
+    actions: `${can('incident.register', 'view') ? `<a class="btn" href="${R('incident/register.html')}">${icon('folder-search')} Register</a>` : ''}${can('incident.rep.new', 'view') ? `<a class="btn primary" href="${R('incident/new.html')}">${icon('file-plus')} Report an incident</a>` : ''}` })) return;
+  const T = Inc.T;
+  const C = db.incidentCases;
+  const open = C.filter(c => c.status !== 'Closed');
+  const cnt = (s) => C.filter(c => c.status === s).length;
+  const closed30 = C.filter(c => c.status === 'Closed' && c.closedAt && c.closedAt.slice(0, 10) >= Kit.addDays(T, -30));
+  const closedAll = C.filter(c => c.status === 'Closed');
+  const avgClose = closedAll.length ? Math.round(closedAll.reduce((s, c) => s + Inc.ageDays(c), 0) / closedAll.length) : 0;
+  const mine = Inc.myCases();
+  const review = C.filter(c => !c.reviewed);
+  const reg = (q) => R('incident/register.html' + (q ? '?tab=' + encodeURIComponent(q) : ''));
+  const SEV_C = { Low: '#8794A7', Medium: '#2F6BC5', High: '#E0670E', Critical: '#D23F6A' };
+  const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const weeks = Array.from({ length: 12 }, (_, i) => Kit.addDays(T, -7 * (11 - i)));
+  const row = (c) => `<tr class="click" onclick="location.href='${R('incident/case.html?id=' + c.id)}'"><td><span class="mono b" style="white-space:nowrap">${esc(c.no)}</span><div class="xs muted">${esc(Kit.when(c.reportedAt))}</div></td><td><b class="small">${esc(Inc.typeName(c.typeCode))}</b><div class="xs muted">${esc(c.location)}</div></td><td><div style="display:flex;flex-direction:column;align-items:flex-start;gap:4px">${Inc.statusBadge(c.status)}${Inc.sevBadge(c.severity)}</div></td><td class="num" style="white-space:nowrap">${Inc.ageDays(c)} d</td></tr>`;
+  $('#page').innerHTML = `
+    <div class="grid g4" style="margin-bottom:16px">
+      ${Kit.kpi('Open', cnt('Open'), { icon: 'inbox', foot: review.length + ' awaiting review', href: reg('Open') })}
+      ${Kit.kpi('In Progress', cnt('In Progress'), { icon: 'search', foot: open.filter(c => !c.assigned.length).length + ' not yet assigned', href: reg('In Progress') })}
+      ${Kit.kpi('Hold', cnt('Hold'), { icon: 'circle-pause', foot: 'Waiting for information', href: reg('Hold') })}
+      ${Kit.kpi('Closed in 30 days', closed30.length, { icon: 'lock', foot: 'Average ' + avgClose + ' days to close', href: reg('Closed') })}
+    </div>
+    <div class="grid g2" style="margin-bottom:16px">
+      <div class="card"><div class="card-head"><h3>${icon('chart-column')} Incidents reported per week</h3><div class="actions"><span class="small muted">Last 12 weeks</span></div></div><div class="card-pad">
+        ${Kit.barChart({ labels: weeks.map(w => +w.slice(8) + ' ' + MON[+w.slice(5, 7) - 1]), values: weeks.map(w => C.filter(c => c.reportedAt.slice(0, 10) >= w && c.reportedAt.slice(0, 10) < Kit.addDays(w, 7)).length), color: '#D23F6A', height: 230, title: 'Incidents per week' })}</div></div>
+      <div class="card"><div class="card-head"><h3>${icon('layers')} By category</h3><div class="actions"><span class="small muted">All incidents</span></div></div><div class="card-pad">
+        ${Kit.barList(db.incidentCategories.map(k => [k.name, C.filter(c => c.categoryCode === k.code).length]).filter(r => r[1]).sort((a, b) => b[1] - a[1]))}</div></div>
+    </div>
+    <div class="card" style="margin-bottom:16px"><div class="card-head"><h3>${icon('chart-pie')} Status, severity and ageing</h3><div class="actions"><span class="small muted">${open.length} open of ${C.length}</span></div></div><div class="card-pad">
+      <div class="grid g3" style="gap:32px;align-items:start">
+        <div><div class="section-t" style="margin:0 0 12px">By status</div>${Kit.donut(Inc.STATUSES.map((s, i) => [s, cnt(s), ['#E0A100', '#2F6BC5', '#7C4DDB', '#0E9F6E'][i]]), { centerLabel: 'Incidents' })}</div>
+        <div><div class="section-t" style="margin:0 0 12px">Open by severity</div>${Kit.barList(Inc.SEVERITIES.slice().reverse().map(s => [s, open.filter(c => c.severity === s).length, s === 'Critical' ? 'err' : s === 'High' ? 'warn' : '']))}</div>
+        <div><div class="section-t" style="margin:0 0 12px">Ageing of open incidents</div>${Kit.barList(Inc.BUCKETS.map((b, i) => [b, open.filter(c => Inc.bucket(Inc.ageDays(c)) === b).length, i === 3 ? 'err' : i === 2 ? 'warn' : '']))}</div>
+      </div></div></div>
+    <div class="grid g2">
+      <div class="card"><div class="card-head"><h3>${icon('user-round-check')} My assignments</h3><div class="actions"><a class="btn sm" href="${reg('mine')}">All ${icon('arrow-right')}</a></div></div>
+        ${Inc.isMember() ? (mine.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>Reference</th><th>Incident</th><th>Status and severity</th><th class="num">Age</th></tr></thead><tbody>${mine.map(row).join('')}</tbody></table></div>` : `<div class="empty">${icon('user-round-check')}<b>No open assignments</b></div>`)
+          : `<div class="empty">${icon('lock')}<b>Not an Incident Management Team member</b><span>Assignments are shown to team members only.</span></div>`}</div>
+      <div class="card"><div class="card-head"><h3>${icon('inbox')} Awaiting review and categorization</h3><div class="actions"><a class="btn sm" href="${reg('review')}">Review ${icon('arrow-right')}</a></div></div>
+        ${review.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>Reference</th><th>Incident</th><th>Status and severity</th><th class="num">Age</th></tr></thead><tbody>${review.map(row).join('')}</tbody></table></div>` : `<div class="empty">${icon('inbox')}<b>Nothing waiting for review</b></div>`}</div>
+    </div>`;
+})();
+</script>
+</body>
+</html>

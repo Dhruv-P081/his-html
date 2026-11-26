@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Appointment Tracking · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-appointments.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/appointments.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, esc, icon, $, $$, R, can, fmtDate } = UI;
+  if (!UI.page({ opt: 'appointments.track', title: 'Appointment Tracking', subtitle: 'Every appointment by status. Check in, mark no-shows, reschedule or cancel.',
+    actions: `<a class="btn" href="${R('appointments/book.html')}">${icon('calendar-days')} Appointment Book</a>` })) return;
+  const T = Appt.T;
+  const edit = can('appointments.track', 'edit');
+  const st = { tab: UI.param('status') || 'all', from: T, to: T, doc: '', clinic: '' };
+  const docs = Appt.bookDoctors();
+  const clinics = Array.from(new Set(docs.map(d => d.clinicId))).map(id => UI.L.clinic(id)).filter(Boolean);
+
+  $('#page').innerHTML = `
+    <div class="card card-pad" style="margin-bottom:14px"><div class="row wrap" style="gap:10px;align-items:flex-end">
+      <div class="field" style="width:160px"><label for="fFrom">From</label><input type="date" class="input" id="fFrom" value="${st.from}"></div>
+      <div class="field" style="width:160px"><label for="fTo">To</label><input type="date" class="input" id="fTo" value="${st.to}"></div>
+      <div class="field" style="min-width:220px"><label for="fDoc">Doctor</label><select class="input" id="fDoc"><option value="">All doctors</option>${docs.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select></div>
+      <div class="field" style="min-width:180px"><label for="fCl">Clinic</label><select class="input" id="fCl"><option value="">All clinics</option>${clinics.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></div>
+      <div class="btn-group row" style="gap:6px"><button class="btn sm" data-q="0">Today</button><button class="btn sm" data-q="1">Tomorrow</button><button class="btn sm" data-q="7">Next 7 days</button><button class="btn sm" data-q="-7">Past 7 days</button></div>
+    </div></div>
+    <div class="grid g4" style="margin-bottom:14px" id="kpis"></div>
+    <div id="tabs" style="margin-bottom:12px"></div>
+    <div id="tbl"></div>`;
+
+  const base = () => db.appointmentsBookings.filter(a => a.date >= st.from && a.date <= st.to && (!st.doc || a.doctorId === st.doc) && (!st.clinic || a.clinicId === st.clinic));
+  const tabList = () => { const b = base(); return [{ id: 'all', label: 'All', count: b.length }].concat(Appt.STATUSES.map(s => ({ id: s, label: s, count: b.filter(a => a.status === s).length }))); };
+  let tabsCtl;
+  function drawTabs() { tabsCtl = Kit.tabs($('#tabs'), tabList(), st.tab, (id) => { st.tab = id; t.redraw(); }); }
+  function drawKpis() {
+    const b = base(), n = b.length || 1;
+    const arrived = b.filter(a => /Arrived|Completed/.test(a.status)).length, ns = b.filter(a => a.status === 'No-show').length, cx = b.filter(a => a.status === 'Cancelled').length;
+    const waiting = b.filter(a => a.date === T && /Booked|Confirmed/.test(a.status)).length;
+    $('#kpis').innerHTML = Kit.kpi('Appointments', b.length, { icon: 'calendar-days', foot: st.from === st.to ? Appt.dayLabel(st.from) : fmtDate(st.from) + ' to ' + fmtDate(st.to) })
+      + Kit.kpi('Arrived or seen', arrived, { icon: 'user-round-check', foot: Math.round(100 * arrived / n) + '% of appointments' })
+      + Kit.kpi('No-show', ns, { icon: 'user-x', foot: Math.round(100 * ns / n) + '% no-show rate' })
+      + Kit.kpi('Still to arrive today', waiting, { icon: 'clock', foot: cx + ' cancelled in range' });
+  }
+  const rowActs = (a) => {
+    const open = /Booked|Confirmed/.test(a.status), out = [];
+    if (open && a.date === T) out.push(`<button class="btn xs primary" data-ci="${a.id}" ${edit ? '' : 'disabled title="Needs Edit permission"'}>${icon('log-in')} Check in</button>`);
+    else if (a.status === 'Booked') out.push(`<button class="btn xs" data-cf="${a.id}" ${edit ? '' : 'disabled title="Needs Edit permission"'}>${icon('check')} Confirm</button>`);
+    if (open && a.date <= T) out.push(`<button class="btn xs danger" data-ns="${a.id}" ${edit ? '' : 'disabled title="Needs Edit permission"'}>${icon('user-x')} No-show</button>`);
+    out.push(`<button class="btn xs" data-v="${a.id}">${icon('ellipsis')} More</button>`);
+    return `<div class="row" style="gap:6px;justify-content:flex-end">${out.join('')}</div>`;
+  };
+  const t = UI.table($('#tbl'), {
+    columns: [
+      { label: 'When', sort: (a) => a.date + a.time, render: (a) => `<b>${esc(a.time)}</b><div class="small muted">${esc(a.date === T ? 'Today' : Appt.dayLabel(a.date))}</div>` },
+      { label: 'Reference', sort: (a) => a.no, render: (a) => `<span class="mono">${esc(a.no)}</span>${a.rescheduled ? `<div class="xs muted">${icon('calendar-sync')} rescheduled</div>` : ''}` },
+      { label: 'Patient', sort: (a) => Kit.ptName(a.patientId), render: (a) => Kit.patientCell(Kit.pt(a.patientId)) },
+      { label: 'Doctor', sort: (a) => Kit.docName(a.doctorId), render: (a) => `${esc(Kit.docName(a.doctorId))}<div class="small muted">${esc(UI.L.clName(a.clinicId))}</div>` },
+      { label: 'Type and source', sort: (a) => a.type, render: (a) => `<span class="small">${esc(Appt.typeName(a.type))}</span><div class="xs muted">${esc(a.source)}</div>` },
+      { label: 'Status', sort: (a) => a.status, render: (a) => Appt.statusBadge(a.status) + (a.encounterId ? `<div class="xs muted mono">${esc((Kit.enc(a.encounterId) || {}).no || '')}</div>` : '') },
+      { label: '', cls: 'actions', render: rowActs },
+    ],
+    rows: () => base().filter(a => st.tab === 'all' || a.status === st.tab), sort: 0,
+    search: (a) => [a.no, Kit.ptName(a.patientId), (Kit.pt(a.patientId) || {}).mrn, (Kit.pt(a.patientId) || {}).mobile, Kit.docName(a.doctorId), a.reason].join(' '),
+    searchPlaceholder: 'Search reference, patient, MRN, mobile or doctor',
+    filters: [
+      { label: 'Type', options: db.appointmentsTypes.map(x => [x.code, x.name]), test: (a, v) => a.type === v },
+      { label: 'Source', options: ['Front desk', 'Call centre', 'Patient app', 'Doctor referral'].map(x => [x, x]), test: (a, v) => a.source === v },
+    ],
+    pageSize: 12, onRow: (a) => Appt.detailDrawer(a, refresh), empty: 'No appointments for these filters', emptyIcon: 'calendar-x',
+    afterDraw: (tb) => {
+      const f = (id) => Appt.appt(id);
+      $$('[data-ci]', tb).forEach(b => b.addEventListener('click', () => Appt.checkIn(f(b.dataset.ci), refresh)));
+      $$('[data-cf]', tb).forEach(b => b.addEventListener('click', () => Appt.confirmAppt(f(b.dataset.cf), refresh)));
+      $$('[data-ns]', tb).forEach(b => b.addEventListener('click', () => Appt.noShow(f(b.dataset.ns), refresh)));
+      $$('[data-v]', tb).forEach(b => b.addEventListener('click', () => Appt.detailDrawer(f(b.dataset.v), refresh)));
+    },
+  });
+  function refresh() { drawTabs(); drawKpis(); t.redraw(); }
+  const setRange = () => { st.from = $('#fFrom').value || T; st.to = $('#fTo').value || st.from; if (st.to < st.from) { st.to = st.from; $('#fTo').value = st.to; } refresh(); };
+  $('#fFrom').addEventListener('change', setRange); $('#fTo').addEventListener('change', setRange);
+  $('#fDoc').addEventListener('change', (e) => { st.doc = e.target.value; refresh(); });
+  $('#fCl').addEventListener('change', (e) => { st.clinic = e.target.value; refresh(); });
+  $$('[data-q]').forEach(b => b.addEventListener('click', () => {
+    const q = +b.dataset.q;
+    if (q === 0) { st.from = st.to = T; } else if (q === 1) { st.from = st.to = Kit.addDays(T, 1); } else if (q > 0) { st.from = T; st.to = Kit.addDays(T, q); } else { st.from = Kit.addDays(T, q); st.to = Kit.addDays(T, -1); }
+    $('#fFrom').value = st.from; $('#fTo').value = st.to; refresh();
+  }));
+  refresh();
+})();
+</script>
+</body>
+</html>

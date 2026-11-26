@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · Tibbi Orbit</title>
+<link rel="stylesheet" href="assets/styles.css">
+<script src="assets/icons.js"></script><script src="assets/data.js"></script><script src="assets/data-core.js"></script><script src="assets/ui.js"></script>
+</head>
+<body>
+<div class="auth">
+  <section class="auth-art">
+    <span class="ring" style="width:520px;height:520px;right:-160px;top:-160px"></span>
+    <span class="ring" style="width:340px;height:340px;right:-70px;top:-70px"></span>
+    <div class="brand"><img src="assets/brand/app_icon.png" alt=""><div><b>Tibbi Orbit</b><span>Hospital Information System</span></div></div>
+    <div class="pitch">
+      <h1>One secure place for every hospital team.</h1>
+      <p>Sign in to open the modules you are authorized for, in the company, branch and department you work in.</p>
+      <div class="feat" id="f1"></div><div class="feat" id="f2"></div><div class="feat" id="f3"></div>
+    </div>
+  </section>
+
+  <section class="auth-form">
+    <div class="auth-card" id="card"></div>
+  </section>
+</div>
+
+<script>
+const { db, save, $, $$, icon, esc, toast, audit, setSession, contextsFor, effectiveRule, passwordRules, pwField, bindEyes, L } = UI;
+$('#f1').innerHTML = icon('shield-check') + 'Access checked on every action';
+$('#f2').innerHTML = icon('building-2') + 'Company, branch and department aware';
+$('#f3').innerHTML = icon('history') + 'Every change is audited';
+
+const S = db.support;
+const supportHtml = `<div class="support">${icon('circle-help')}<div><b style="color:var(--ink)">Need help signing in?</b><br>IT Helpdesk ${esc(S.phone)}<br><a href="mailto:${esc(S.email)}">${esc(S.email)}</a><br>${esc(S.hours)}</div></div>`;
+const notice = (() => {
+  const q = new URLSearchParams(location.search);
+  if (q.get('out')) return ['ok', 'circle-check', 'You have logged out. Your session has ended.'];
+  if (q.get('idle')) return ['warn', 'clock', 'You were signed out after a period of inactivity.'];
+  if (q.get('ended')) return ['warn', 'lock', 'Your session has ended. Please sign in again.'];
+  if (q.get('reset')) return ['ok', 'circle-check', 'Your password has been changed. Sign in with the new password.'];
+  return null;
+})();
+
+let pending = null; // user who passed the password step
+
+function viewLogin() {
+  $('#card').innerHTML = `
+    <h2>Sign in</h2><p class="sub">Use your Tibbi Orbit staff account.</p>
+    ${notice ? `<div class="banner ${notice[0]}" style="margin-bottom:16px">${icon(notice[1])}<span>${notice[2]}</span></div>` : ''}
+    <div class="banner err hidden" id="authErr" role="alert">${icon('circle-alert')}<span>The username or password is not correct, or the account cannot sign in right now. Please try again or contact the IT Helpdesk.</span></div>
+    <form class="stack" id="f" novalidate autocomplete="on" style="margin-top:14px">
+      <div class="field"><label for="uid">Username or email<span class="req">*</span></label><input class="input" id="uid" name="username" autocomplete="username" autocapitalize="none" spellcheck="false"></div>
+      ${pwField('pw', 'Password', 'current-password')}
+      <div class="row"><div class="grow"></div><button type="button" class="link-btn" id="forgot">Forgot password?</button></div>
+      <button class="btn primary" id="go" type="submit" disabled>Sign in</button>
+    </form>
+    ${supportHtml}
+    <div class="demo-box"><b>Prototype demo accounts</b> (password <code>Orbit@2026!</code>):<br>
+      <button class="btn sm primary" data-d="demo">All modules (demo)</button><button class="btn sm" data-d="sara.mutairi">System admin</button><button class="btn sm" data-d="omar.haddad">Branch admin</button><button class="btn sm" data-d="layla.hussain">Auditor</button><button class="btn sm" data-d="khalid.rashidi">Doctor</button><button class="btn sm" data-d="maria.santos">Nurse (warehouse)</button>
+      <div style="margin-top:8px">Other account states: <button class="btn sm" data-d="fatima.kandari" data-p="Temp#4821">First login</button><button class="btn sm" data-d="bilal.qureshi">No access yet</button><button class="btn sm" data-d="reem.fadhli">Blocked</button><button class="btn sm" data-d="rajesh.kumar">Locked</button></div></div>`;
+  bindEyes($('#card'));
+  const uid = $('#uid'), pw = $('#pw'), go = $('#go');
+  const upd = () => { go.disabled = !(uid.value.trim() && pw.value); };
+  [uid, pw].forEach(i => i.addEventListener('input', upd));
+  $$('[data-d]').forEach(b => b.addEventListener('click', () => { uid.value = b.dataset.d; pw.value = b.dataset.p || 'Orbit@2026!'; upd(); go.focus(); }));
+  $('#forgot').addEventListener('click', viewForgot);
+  $('#f').addEventListener('submit', (e) => {
+    e.preventDefault(); if (go.disabled) return;
+    go.disabled = true; go.innerHTML = '<span class="spinner"></span> Signing in';   // prevent duplicate submit
+    setTimeout(() => attempt(uid.value.trim().toLowerCase(), pw.value), 650);
+  });
+  uid.focus();
+}
+
+function homeBranch(u) {
+  const a = db.assignments.find(x => x.userId === u.id && x.isDefault) || db.assignments.find(x => x.userId === u.id);
+  return a ? a.branchId : 'br_01';
+}
+
+function fail(u, why) {
+  audit('Login failure', 'Session', { id: u ? u.id : 'unknown', label: u ? u.login : 'unknown' }, [], { actor: u ? u.login : 'unknown', outcome: 'Failure', reason: why });
+  $('#authErr').classList.remove('hidden');
+  $('#pw').value = ''; $('#go').innerHTML = 'Sign in'; $('#go').disabled = true; $('#pw').focus();
+}
+
+function attempt(id, pw) {
+  const u = db.users.find(x => x.login === id || (x.email || '').toLowerCase() === id);
+  if (!u) return fail(null, 'Unknown identifier');
+  // Expire a temporary lock.
+  if (u.status === 'Locked' && u.lockedUntil && u.lockedUntil < UI.nowStamp()) { u.status = 'Active'; u.failed = 0; save(); }
+  if (u.blocked || ['Blocked', 'Inactive', 'Locked'].includes(u.status)) return fail(u, 'Account ' + u.status.toLowerCase());
+  if (u.expiry && u.expiry < UI.today()) return fail(u, 'Account expired');
+  if (pw !== u.demoPassword) {
+    u.failed = (u.failed || 0) + 1;
+    const limit = Number(effectiveRule('lockout_threshold', homeBranch(u)).value) || 5;
+    if (u.failed >= limit) {
+      const mins = Number(effectiveRule('lockout_duration', homeBranch(u)).value) || 15;
+      const d = new Date(Date.now() + mins * 60000); const p = n => String(n).padStart(2, '0');
+      u.status = 'Locked'; u.lockedUntil = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+      audit('Account locked', 'User', { id: u.id, label: u.login }, [['Status', 'Active', 'Locked']], { actor: 'System', reason: `${limit} consecutive failures` });
+    }
+    save();
+    return fail(u, 'Invalid credentials');
+  }
+  u.failed = 0; save();
+  pending = u;
+  if (u.firstLogin) return viewFirstChange();          // LOG-02
+  if (u.mfa) return viewMfa();                          // LOG-06
+  finish();
+}
+
+function viewFirstChange() {
+  $('#card').innerHTML = `<div class="steps"><i class="on"></i><i class="on"></i><i></i></div>
+    <h2>Set a new password</h2><p class="sub">Welcome, ${esc(pending.displayName)}. You signed in with a temporary password, so choose your own now.</p>
+    <div class="stack">${pwField('n1', 'New password', 'new-password')}<ul class="rules" id="rules"></ul>${pwField('n2', 'Confirm new password', 'new-password')}
+    <button class="btn primary" id="set" disabled>Save and continue</button></div>${supportHtml}`;
+  bindEyes($('#card'));
+  const n1 = $('#n1'), n2 = $('#n2'), b = $('#set');
+  const upd = () => {
+    const r = passwordRules(n1.value, pending);
+    $('#rules').innerHTML = r.map(x => `<li class="${x.ok ? 'ok' : ''}">${icon(x.ok ? 'circle-check' : 'minus')}${x.t}</li>`).join('');
+    const mm = n2.value && n2.value !== n1.value; const e = $('[data-err=n2]'); e.textContent = mm ? 'Passwords do not match.' : ''; e.classList.toggle('hidden', !mm);
+    b.disabled = !(r.every(x => x.ok) && n2.value === n1.value && n1.value !== pending.demoPassword);
+  };
+  [n1, n2].forEach(i => i.addEventListener('input', upd)); upd();
+  b.addEventListener('click', () => {
+    pending.demoPassword = n1.value; pending.firstLogin = false; pending.status = 'Active'; save();
+    audit('Initial password changed', 'User', { id: pending.id, label: pending.login }, [['Status', 'Pending activation', 'Active']], { actor: pending.displayName });
+    finish();
+  });
+}
+
+function viewMfa() {
+  $('#card').innerHTML = `<div class="steps"><i class="on"></i><i class="on"></i><i></i></div>
+    <h2>Verify it is you</h2><p class="sub">Your role needs a second step. Enter the 6-digit code from your authenticator app.</p>
+    <div class="stack"><div class="field"><label for="otp">Verification code<span class="req">*</span></label><input class="input mono" id="otp" inputmode="numeric" autocomplete="one-time-code" maxlength="6" style="letter-spacing:.4em;font-size:18px;height:50px;text-align:center"></div>
+    <div class="err hidden" id="otpErr">The code is not correct or has expired.</div>
+    <button class="btn primary" id="vf" disabled>Verify</button><div class="hint">Prototype: any 6 digits work, except 000000.</div></div>${supportHtml}`;
+  const o = $('#otp'), b = $('#vf');
+  o.addEventListener('input', () => { o.value = o.value.replace(/\D/g, ''); b.disabled = o.value.length !== 6; });
+  b.addEventListener('click', () => { if (o.value === '000000') { $('#otpErr').classList.remove('hidden'); return; } finish(); });
+  o.focus();
+}
+
+function finish() {
+  const u = pending;
+  const ctxs = contextsFor(u.id);
+  if (!ctxs.length) {                                   // LOG-04
+    audit('Login without access', 'Session', { id: u.id, label: u.login }, [], { actor: u.login, outcome: 'Denied', reason: 'No current access assignment' });
+    $('#card').innerHTML = `<div class="m-ico b-warn" style="width:56px;height:56px;border-radius:18px;display:grid;place-items:center;margin-bottom:16px">${icon('lock')}</div>
+      <h2>Access not set up yet</h2><p class="sub">Your account is valid, but you have no current access to any module. Your administrator needs to assign your company, branch, department and role. If your access starts on a later date, you can sign in from that date.</p>
+      <button class="btn primary" onclick="location.href='login.html'">Back to sign in</button>${supportHtml}`;
+    return;
+  }
+  u.lastLogin = UI.nowStamp(); save();
+  const def = ctxs.find(c => c.isDefault);
+  const auto = ctxs.length === 1 ? ctxs[0] : null;     // LOG-03 single context
+  setSession({ userId: u.id, ctx: auto ? strip(auto) : null, defaultCtx: def ? strip(def) : null, at: UI.nowStamp() });
+  audit('Login success', 'Session', { id: u.id, label: u.login }, [], { actor: u.displayName });
+  const rawNext = new URLSearchParams(location.search).get('next');
+  const next = rawNext && /^[a-z0-9_\-\/]+\.html(\?[^#]*)?$/i.test(rawNext) ? rawNext : null;   // same-site pages only
+  location.href = auto ? (next || 'home.html') : 'context.html' + (next ? '?next=' + encodeURIComponent(next) : '');
+}
+const strip = c => ({ companyId: c.companyId, branchId: c.branchId, deptId: c.deptId, clinicId: c.clinicId || null, warehouseId: c.warehouseId || null });
+
+function viewForgot() {
+  $('#card').innerHTML = `<button class="link-btn" id="back">${icon('arrow-left')} Back to sign in</button>
+    <h2 style="margin-top:14px">Reset your password</h2><p class="sub">Enter your username or work email. If an account matches, we send a single-use reset link to its verified recovery channel. The link works for 15 minutes.</p>
+    <div class="stack" id="fs"><div class="field"><label for="fid">Username or email<span class="req">*</span></label><input class="input" id="fid" autocomplete="username"></div>
+    <button class="btn primary" id="send" disabled>Send reset link</button></div>${supportHtml}`;
+  $('#back').addEventListener('click', viewLogin);
+  const f = $('#fid'), s = $('#send');
+  f.addEventListener('input', () => { s.disabled = !f.value.trim(); });
+  s.addEventListener('click', () => {
+    const u = db.users.find(x => x.login === f.value.trim().toLowerCase() || (x.email || '').toLowerCase() === f.value.trim().toLowerCase());
+    if (u) { audit('Password reset initiated', 'User', { id: u.id, label: u.login }, [['Delivery', '', 'Email sent']], { actor: 'Self-service', reason: 'Forgot password' }); db.resetTrail.unshift({ at: UI.nowStamp(), admin: 'Self-service', target: u.login, reason: 'Forgot password', delivery: 'Email sent', status: 'Pending' }); save(); }
+    // Generic response regardless of whether the account exists.
+    $('#fs').innerHTML = `<div class="banner ok">${icon('mail')}<span>If an account matches what you entered, a reset link is on its way. Check your inbox and spam folder. The link expires in 15 minutes and can be used once.</span></div>
+      <button class="btn primary" id="back2">Back to sign in</button>`;
+    $('#back').classList.add('hidden'); $('#back2').addEventListener('click', viewLogin);
+  });
+  f.focus();
+}
+
+viewLogin();
+</script>
+</body>
+</html>

@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shift handover · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-nursing.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/nursing.js"></script>
+<style>
+  .sbar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; }
+  .sbar .field textarea { min-height: 84px; font-size: 12.5px; }
+  .sbar-ro { display: grid; grid-template-columns: 26px 1fr; gap: 6px 10px; font-size: 13px; }
+  .sbar-ro b.l { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 7px; background: var(--soft); font-weight: 800; color: var(--primary-light); }
+  .ho-pt { border: 1px solid var(--line); border-radius: 12px; margin-bottom: 12px; }
+  .ho-pt .ho-h { display: flex; gap: 10px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--raised); border-radius: 12px 12px 0 0; }
+  .ho-pt .ho-b { padding: 12px 14px; }
+</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, can, toast, audit, field } = UI;
+  const OPT = 'nursing.ward.handover';
+  if (!UI.page({ opt: OPT, title: 'Shift handover', subtitle: 'SBAR handover per patient, pre-filled from vital signs, orders and the MAR. The incoming nurse accepts the handover.', actions: Nursing.wardSelect() })) return;
+  const canAdd = can(OPT, 'add'), canPrint = can(OPT, 'print');
+  let ward = Nursing.getWard(), tab = 'prepare';
+  const me = Nursing.myName();
+  const curShift = Nursing.shiftOf(), toShift = Nursing.nextShift(curShift), curDay = Nursing.shiftDay();
+  const tplFor = (w) => { const t = (Kit.ward(w) || {}).type; return db.nursingHandoverTemplates.find(x => x.status !== 'Inactive' && x.wardType === t) || db.nursingHandoverTemplates.find(x => x.code === 'HO-SBAR'); };
+
+  function sbar(e) {
+    const p = Kit.pt(e.patientId), v = Nursing.latestVitals(e.id), m = Nursing.lastWith(e.id, 'morseScore'), b = Nursing.lastWith(e.id, 'bradenScore');
+    const pain = db.nursingPainLog.filter(x => x.encounterId === e.id).sort((a, z) => z.at.localeCompare(a.at))[0];
+    const [from, to] = Nursing.shiftRange(curDay, curShift);
+    const mar = db.nursingMar.filter(x => x.encounterId === e.id && x.at >= from && x.at < to);
+    const io = Nursing.ioTotals(Nursing.ioOf(e.id, curDay));
+    const tasks = Nursing.tasks([e]);
+    const overdue = tasks.filter(t => t.state === 'Overdue' || t.state === 'Not done');
+    const [nf, nt] = Nursing.shiftRange(curShift === 'Night' ? Kit.addDays(curDay, 1) : curDay, toShift);
+    const nextDoses = Nursing.marDoses(e, db.TODAY).concat(Nursing.marDoses(e, Kit.addDays(db.TODAY, 1))).filter(d => d.due >= nf && d.due < nt && !d.rec);
+    const overdueDoses = Nursing.marDoses(e, db.TODAY).filter(d => d.state === 'Overdue');
+    const diet = db.orders.find(o => o.encounterId === e.id && o.type === 'diet' && o.status === 'Active');
+    const plan = db.nursingAssessments.filter(a => a.encounterId === e.id && a.status === 'Completed').reduce((l, a) => l.concat((a.carePlan || []).filter(c => c.status === 'Active')), []).map(c => (db.nursingDiagnoses.find(d => d.id === c.diagnosisId) || {}).name);
+    const dis = db.nursingDischarge.find(d => d.encounterId === e.id);
+    return {
+      encounterId: e.id,
+      s: `${Nursing.bedNo(e)}: ${p.name}, ${Kit.sexAge(p)}. ${e.reason}. Day ${Nursing.losDays(e)} of stay, ${e.status.toLowerCase()}.${pain ? ` Pain ${pain.score}/10 (${Kit.time(pain.at)}).` : ''}`,
+      b: `Admitted ${Kit.day(e.start)} (${e.admissionType}) under ${Kit.docName(e.doctorId)}, ${e.diagnosis}. Allergies: ${(p.allergies || []).join(', ') || 'none known'}. ${(p.chronic || []).length ? 'History: ' + p.chronic.join(', ') + '. ' : ''}${diet ? 'Diet: ' + diet.name + '.' : ''}`,
+      a: `${v ? `Vitals ${Kit.time(v.at)}: T ${v.temp}, HR ${v.hr}, BP ${v.sbp}/${v.dbp}, RR ${v.rr}, SpO2 ${v.spo2}%${Nursing.vitalAbn(v).length ? ' (abnormal: ' + Nursing.abnText(v) + ')' : ''}.` : 'No vitals recorded.'} ${m ? `Morse ${m.morseScore} (${Nursing.morseLevel(m.morseScore)[0].toLowerCase()}).` : ''} ${b ? `Braden ${b.bradenScore}.` : ''} Fluid balance today ${Nursing.signed(io.balance)}. This shift: ${mar.filter(x => x.status === 'Given').length} doses given${mar.filter(x => x.status !== 'Given').length ? ', ' + mar.filter(x => x.status !== 'Given').map(x => x.status.toLowerCase() + ' ' + ((Kit.by('orders', x.orderId) || {}).name || '').split(' ')[0]).join(', ') : ''}.`.replace(/\s+/g, ' ').trim(),
+      r: [overdue.length ? `Outstanding tasks: ${overdue.slice(0, 4).map(t => t.name + ' ' + Kit.time(t.due)).join('; ')}${overdue.length > 4 ? ' and ' + (overdue.length - 4) + ' more' : ''}.` : 'No outstanding tasks.', overdueDoses.length ? `Overdue doses: ${overdueDoses.map(d => (d.item.generic || d.order.name) + ' ' + Kit.time(d.due)).join(', ')}.` : '', nextDoses.length ? `Next shift doses: ${nextDoses.map(d => (d.item.generic || d.order.name) + ' ' + Kit.time(d.due) + (Nursing.isHighAlert(d.item) ? ' (high alert, second nurse)' : '')).join(', ')}.` : '', plan.length ? `Continue care plan: ${plan.join(', ')}.` : '', dis ? `Discharge planned ${Kit.day(dis.plannedDate)}; checklist ${dis.status.toLowerCase()}.` : ''].filter(Boolean).join(' '),
+    };
+  }
+
+  function render() {
+    const mine = db.nursingHandovers.filter(h => h.wardId === ward);
+    const pending = mine.filter(h => h.status === 'Pending acceptance');
+    $('#page').innerHTML = `<div class="card"><div id="tabs"></div><div id="tb"></div></div>`;
+    Kit.tabs($('#tabs'), [{ id: 'prepare', label: 'Prepare handover', icon: 'clipboard-pen' }, { id: 'pending', label: 'Waiting for acceptance', icon: 'clock', count: pending.length }, { id: 'history', label: 'History', icon: 'history', count: mine.length }], tab, (t) => { tab = t; drawTab(); });
+    drawTab();
+  }
+  function drawTab() { const b = $('#tb'); if (tab === 'prepare') prepare(b); else if (tab === 'pending') pendingList(b); else history(b); }
+
+  function prepare(b) {
+    const encs = Nursing.inpatients(ward), t = tplFor(ward);
+    const done = db.nursingHandovers.find(h => h.wardId === ward && h.date === curDay && h.fromShift === curShift);
+    const items = encs.map(sbar);
+    b.innerHTML = `<div class="card-pad" style="border-bottom:1px solid var(--line)">
+        <div class="row wrap" style="gap:16px"><div><div class="xs muted">Ward</div><b>${esc(Kit.ward(ward).name)}</b></div><div><div class="xs muted">Handover</div><b>${curShift} to ${toShift}</b> <span class="small muted">${Kit.day(curDay)}</span></div><div><div class="xs muted">Template</div><b>${esc(t.name)}</b></div><div><div class="xs muted">Patients</div><b>${encs.length}</b></div><span class="grow"></span>
+        <div style="min-width:240px">${field({ id: 'hTo', label: 'Incoming nurse', type: 'select', options: db.nurses.filter(n => n.name !== me).map(n => [n.name, `${n.name} (${n.grade})`]), placeholder: 'Any nurse on the next shift' })}</div></div>
+        ${done ? `<div class="banner ${done.status === 'Accepted' ? 'ok' : 'info'}" style="margin-top:10px">${icon('info')}<span>A ${curShift.toLowerCase()} handover was already given by ${esc(done.by)} at ${Kit.time(done.at)} (${esc(done.status.toLowerCase())}). You can still hand over again with updates.</span></div>` : ''}
+        <div class="small muted" style="margin-top:8px">Text is generated from the latest vital signs, orders, MAR and care plan. Edit before handing over.</div></div>
+      <div class="card-pad">${encs.length ? encs.map((e, i) => { const p = Kit.pt(e.patientId); return `<div class="ho-pt"><div class="ho-h"><span class="token">${esc(Nursing.bedNo(e).split('-').pop())}</span><div class="grow"><b>${esc(p.name)}</b> <span class="small muted">${esc(p.mrn)} · ${esc(Kit.sexAge(p))}</span></div>${(p.allergies || []).length ? `<span class="badge b-err nodot">${icon('triangle-alert')} ${esc(p.allergies.join(', '))}</span>` : ''}<button class="btn xs ghost" data-regen="${i}">${icon('refresh-cw')} Refresh from data</button></div>
+        <div class="ho-b sbar">${[['s', 'Situation'], ['b', 'Background'], ['a', 'Assessment'], ['r', 'Recommendation']].map(([k, l]) => field({ id: `h_${i}_${k}`, label: l, type: 'textarea', max: 1500, value: items[i][k] })).join('')}</div></div>`; }).join('') : `<div class="empty">${icon('bed')}<b>No inpatients in this ward</b></div>`}</div>
+      <div class="sticky-foot"><span class="grow small muted">${encs.length} patient${encs.length === 1 ? '' : 's'} · given by ${esc(me)}</span><button class="btn" id="hPrint" ${canPrint && encs.length ? '' : 'disabled'}>${icon('printer')} Print sheet</button><button class="btn primary" id="hGo" ${canAdd && encs.length ? '' : 'disabled title="Needs Add permission"'}>${icon('send')} Hand over to ${toShift.toLowerCase()} shift</button></div>`;
+    $$('[data-regen]', b).forEach(x => x.addEventListener('click', () => { const i = +x.dataset.regen, s = sbar(encs[i]); ['s', 'b', 'a', 'r'].forEach(k => { $(`#h_${i}_${k}`, b).value = s[k]; }); toast('Refreshed from the latest data'); }));
+    const collect = () => encs.map((e, i) => ({ encounterId: e.id, s: $(`#h_${i}_s`, b).value.trim(), b: $(`#h_${i}_b`, b).value.trim(), a: $(`#h_${i}_a`, b).value.trim(), r: $(`#h_${i}_r`, b).value.trim() }));
+    $('#hPrint', b).addEventListener('click', () => printHo({ no: 'Draft', wardId: ward, date: curDay, fromShift: curShift, toShift, by: me, at: Nursing.now(), status: 'Draft', items: collect(), templateId: t.id }));
+    $('#hGo', b).addEventListener('click', () => {
+      const items = collect();
+      if (items.some(x => !x.s || !x.r)) { toast('Situation and Recommendation are required for every patient.', 'err'); return; }
+      UI.confirm({ title: `Hand over ${items.length} patients?`, body: `${curShift} to ${toShift} shift, ${esc(Kit.ward(ward).name)}. The incoming nurse must accept the handover.`, tone: 'primary', icon: 'send', confirm: 'Hand over',
+        onConfirm: () => {
+          const h = { id: UI.uid('nh'), no: Kit.nextNo('HO-26-', db.nursingHandovers), wardId: ward, date: curDay, fromShift: curShift, toShift, at: Nursing.now(), by: me, to: $('#hTo', b).value, status: 'Pending acceptance', acceptedBy: '', acceptedAt: '', templateId: t.id, items };
+          db.nursingHandovers.push(h); save(); audit('Shift handover given', 'Shift handover', { id: h.id, label: `${h.no} ${Kit.ward(ward).code} ${curShift}` }, [['Status', '', 'Pending acceptance'], ['Patients', '', String(items.length)]]);
+          toast('Handover sent. Waiting for the incoming nurse to accept.'); tab = 'pending'; render();
+        } });
+    });
+  }
+  function hoCard(h) {
+    return `<div class="list-rows pad" style="border-bottom:1px solid var(--line)"><div><span class="avatar sm">${UI.initials(h.by)}</span><div class="grow"><b>${esc(h.no)} · ${esc(h.fromShift)} to ${esc(h.toShift)}</b><div class="small muted">${Kit.day(h.date)} · given by ${esc(h.by)} at ${Kit.when(h.at)} · ${h.items.length} patients${h.to ? ' · for ' + esc(h.to) : ''}</div></div>${Kit.status(h.status === 'Accepted' ? 'Accepted' : 'Pending')}<button class="btn sm ${h.status === 'Accepted' ? '' : 'primary'}" data-open="${h.id}">${h.status === 'Accepted' ? icon('eye') + ' View' : icon('user-round-check') + ' Review and accept'}</button></div></div>`;
+  }
+  function pendingList(b) {
+    const list = db.nursingHandovers.filter(h => h.wardId === ward && h.status === 'Pending acceptance').sort((x, y) => y.at.localeCompare(x.at));
+    b.innerHTML = list.length ? list.map(hoCard).join('') : `<div class="empty">${icon('circle-check')}<b>No handovers waiting</b><span>Handovers given to your shift appear here for acceptance.</span></div>`;
+    $$('[data-open]', b).forEach(x => x.addEventListener('click', () => open(db.nursingHandovers.find(h => h.id === x.dataset.open))));
+  }
+  function history(b) {
+    b.innerHTML = `<div id="hT"></div>`;
+    UI.table($('#hT', b), {
+      columns: [{ label: 'Number', sort: h => h.no, render: h => `<span class="mono">${esc(h.no)}</span>` }, { label: 'Date', sort: h => h.at, render: h => Kit.when(h.at) }, { label: 'Shift', render: h => `${esc(h.fromShift)} to ${esc(h.toShift)}` }, { label: 'Given by', render: h => esc(h.by) }, { label: 'Accepted by', render: h => h.acceptedBy ? `${esc(h.acceptedBy)}<div class="xs muted">${Kit.time(h.acceptedAt)}${h.acceptedAt && Nursing.minsBetween(h.at, h.acceptedAt) > 30 ? ' · late' : ''}</div>` : '<span class="mute">-</span>' }, { label: 'Patients', render: h => h.items.length }, { label: 'Status', sort: h => h.status, render: h => Kit.status(h.status === 'Accepted' ? 'Accepted' : 'Pending', h.status === 'Accepted' ? 'ok' : 'warn').replace('Pending', 'Pending acceptance') }],
+      rows: () => db.nursingHandovers.filter(h => h.wardId === ward).sort((x, y) => y.at.localeCompare(x.at)), search: h => [h.no, h.by, h.acceptedBy].join(' '), searchPlaceholder: 'Search number or nurse',
+      filters: [{ label: 'Status', options: [['Accepted', 'Accepted'], ['Pending acceptance', 'Pending acceptance']], test: (h, v) => h.status === v }], onRow: open, empty: 'No handovers yet',
+    });
+  }
+  function open(h) {
+    const own = h.by === me, pending = h.status === 'Pending acceptance';
+    UI.drawer({ title: `Handover ${h.no}`, sub: `${esc(Kit.ward(h.wardId).name)} · ${esc(h.fromShift)} to ${esc(h.toShift)} · ${Kit.day(h.date)} · given by ${esc(h.by)} at ${Kit.time(h.at)}`, wide: true,
+      body: `${h.status === 'Accepted' ? `<div class="banner ok" style="margin-bottom:12px">${icon('circle-check')}<span>Accepted by ${esc(h.acceptedBy)} at ${Kit.when(h.acceptedAt)}.${h.acceptNote ? ' Note: ' + esc(h.acceptNote) : ''}</span></div>` : ''}
+        ${h.items.map(it => { const e = Kit.enc(it.encounterId) || {}; const p = Kit.pt(e.patientId) || {}; return `<div class="ho-pt"><div class="ho-h"><span class="token">${esc((Nursing.bedNo(e) || '').split('-').pop())}</span><b class="grow">${esc(p.name)}</b><span class="small muted">${esc(p.mrn || '')}</span></div><div class="ho-b sbar-ro">${[['S', it.s], ['B', it.b], ['A', it.a], ['R', it.r]].map(([l, t]) => `<b class="l">${l}</b><div>${esc(t)}</div>`).join('')}</div></div>`; }).join('')}
+        ${pending ? `<div class="section-t">Acceptance</div>${own ? `<div class="banner warn">${icon('user-x')}<span>You gave this handover. The incoming nurse must accept it.</span></div>` : `<label class="check"><input type="checkbox" id="acc1"> I received the handover for all ${h.items.length} patients and checked them at the bedside</label>${field({ id: 'accN', label: 'Questions or concerns (optional)', type: 'textarea', max: 400 })}`}` : ''}`,
+      foot: `<button class="btn" data-close>Close</button><button class="btn" id="hp" ${canPrint ? '' : 'disabled title="Needs Print permission"'}>${icon('printer')} Print</button>${pending ? `<button class="btn primary" id="accBtn" disabled ${own ? 'title="You cannot accept your own handover"' : ''}>${icon('user-round-check')} Accept handover</button>` : ''}`,
+      onMount: (el, close) => {
+        $('#hp', el).addEventListener('click', () => printHo(h));
+        const c = $('#acc1', el), ab = $('#accBtn', el);
+        if (c && ab) c.addEventListener('change', () => { ab.disabled = !c.checked || !canAdd; });
+        if (ab && !own) ab.addEventListener('click', () => {
+          h.status = 'Accepted'; h.acceptedBy = me; h.acceptedAt = Nursing.now(); h.acceptNote = $('#accN', el).value.trim();
+          save(); audit('Shift handover accepted', 'Shift handover', { id: h.id, label: h.no }, [['Status', 'Pending acceptance', 'Accepted'], ['Accepted by', '', me]]);
+          close(); toast('Handover accepted'); render();
+        });
+      } });
+  }
+  function printHo(h) {
+    const t = db.nursingHandoverTemplates.find(x => x.id === h.templateId) || {};
+    Kit.printDoc({ title: 'Shift handover ' + h.no, sub: `${Kit.ward(h.wardId).name} · ${h.fromShift} to ${h.toShift} · ${Kit.day(h.date)} · ${t.name || 'SBAR'}`,
+      html: `<p>Given by <b>${esc(h.by)}</b> at ${esc(h.at)}${h.acceptedBy ? ` · accepted by <b>${esc(h.acceptedBy)}</b> at ${esc(h.acceptedAt)}` : ' · not yet accepted'}</p><table><thead><tr><th style="width:150px">Patient</th><th>Situation</th><th>Background</th><th>Assessment</th><th>Recommendation</th></tr></thead><tbody>${h.items.map(it => { const e = Kit.enc(it.encounterId) || {}; const p = Kit.pt(e.patientId) || {}; return `<tr><td><b>${esc(Nursing.bedNo(e))}</b><br>${esc(p.name)}<br>${esc(p.mrn)}</td><td>${esc(it.s)}</td><td>${esc(it.b)}</td><td>${esc(it.a)}</td><td>${esc(it.r)}</td></tr>`; }).join('')}</tbody></table>` });
+  }
+  Nursing.bindWard((w) => { ward = w; render(); });
+  render();
+})();
+</script>
+</body>
+</html>

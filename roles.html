@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Roles · Tibbi Orbit</title>
+<link rel="stylesheet" href="assets/styles.css">
+<script src="assets/icons.js"></script><script src="assets/data.js"></script><script src="assets/data-core.js"></script><script src="assets/ui.js"></script>
+</head>
+<body>
+<script>
+const { db, save, $, $$, icon, esc, page, can, table, drawer, field, showErrors, badge, L, toast, audit, me, nowStamp, uid, CODE_RE, normCode, historyDrawer, statusToggle, lastUpdated, codeName, confirm } = UI;
+const OPT = 'admin.security.roles';
+const canAdd = can(OPT, 'add'), canEdit = can(OPT, 'edit');
+const permCount = r => Object.values(r.perms || {}).reduce((a, x) => a + x.length, 0);
+const usersOf = r => db.assignments.filter(a => a.roleId === r.id && a.status === 'Active');
+if (page({ active: 'roles.html', opt: OPT, title: 'Role Master', crumbs: [['Home', 'home.html'], ['Administration', 'admin.html'], ['Roles']],
+  subtitle: 'A role is a reusable set of screen and action rights. It authorizes only through an access assignment. Role names alone confer no permissions.',
+  actions: canAdd ? `<button class="btn" id="copy">${icon('copy')} Copy existing role</button><button class="btn primary" id="new">${icon('plus')} New role</button>` : '', body: '<div id="list"></div>' })) {
+  const tbl = table($('#list'), {
+    searchPlaceholder: 'Search code, name or owner', search: r => r.code + ' ' + r.name + ' ' + r.owner,
+    filters: [
+      { label: 'Scope', options: [['System', 'System'], ['Company', 'Company']], test: (r, v) => r.scope === v },
+      { label: 'Status', options: [['Active', 'Active'], ['Inactive', 'Inactive']], test: (r, v) => r.status === v },
+      { label: 'Kind', options: [['protected', 'Protected'], ['privileged', 'Privileged']], test: (r, v) => !!r[v] }],
+    rows: () => db.roles,
+    columns: [
+      { label: 'Role', render: r => `<div class="cell-main"><b>${esc(r.name)} ${r.protected ? `<span class="tag" title="System-protected">${icon('lock')} Protected</span>` : ''} ${r.privileged ? '<span class="tag">Privileged</span>' : ''}</b><span class="mono">${esc(r.code)}</span></div>`, sort: r => r.code },
+      { label: 'Ownership scope', render: r => r.scope === 'System' ? '<span class="inherit inh-sys">System</span>' : `<span class="inherit inh-co">Company</span> <span class="small muted">${esc(L.company(r.companyId).code)}</span>`, sort: r => r.scope },
+      { label: 'Business owner', render: r => esc(r.owner || '—') },
+      { label: 'Rights', render: r => `<b>${Object.keys(r.perms).length}</b> screens · ${permCount(r)} actions` },
+      { label: 'Assigned', render: r => { const a = usersOf(r), n = new Set(a.map(x => x.userId)).size; return `<b>${n}</b> user${n === 1 ? '' : 's'} <span class="small muted">(${a.length} assignment${a.length === 1 ? '' : 's'})</span>`; } },
+      { label: 'Status', render: r => badge(r.status), sort: r => r.status },
+      { label: 'Last updated', render: lastUpdated, sort: r => r.updatedAt },
+      { label: '', cls: 'actions', render: r => `<button class="btn sm ghost" data-h="${r.id}" title="History">${icon('history')}</button>${canEdit && !r.protected ? `<button class="btn sm ghost" data-t="${r.id}" title="${r.status === 'Active' ? 'Deactivate' : 'Activate'}">${icon(r.status === 'Active' ? 'ban' : 'circle-check')}</button>` : ''}` },
+    ],
+    onRow: r => location.href = 'role-editor.html?id=' + r.id,
+    afterDraw: tb => {
+      $$('[data-h]', tb).forEach(b => b.addEventListener('click', () => { const r = L.role(b.dataset.h); historyDrawer(r.id, r.code); }));
+      $$('[data-t]', tb).forEach(b => b.addEventListener('click', () => { const r = L.role(b.dataset.t); const a = usersOf(r);
+        if (r.status !== 'Active') { confirm({ title: `Reactivate ${r.code}?`, tone: 'primary', confirm: 'Review and activate', body: 'Reactivation requires a review of current permissions and unexpired assignments.', impact: [`${Object.keys(r.perms).length} screens, ${permCount(r)} actions`, `${a.filter(x => !x.to || x.to >= UI.today()).length} unexpired assignments will authorize again`], reason: true, onConfirm: (reason) => { r.status = 'Active'; r.version++; r.updatedAt = nowStamp(); r.updatedBy = me().displayName; save(); audit('Role reactivated', 'Role', { id: r.id, label: r.code }, [['Status', 'Inactive', 'Active']], { reason }); toast('Role activated'); tbl.redraw(); } }); return; }
+        statusToggle({ record: r, entity: 'Role', label: r.code + ' ' + r.name, impact: [`${new Set(a.map(x => x.userId)).size} user(s) lose these rights on their next request`, `${a.length} assignment(s) stay in history but stop authorizing`, 'Historical grants are not deleted'], done: tbl.redraw }); }));
+    },
+  });
+
+  function create(src) {
+    drawer({ title: src ? 'Copy existing role' : 'New role', sub: src ? 'Copies the permission tree and actions only. User assignments are never copied and the source role is not changed.' : 'A new role starts with no permissions.', wide: !!src,
+      body: `<div class="err-summary hidden" style="margin-bottom:14px"></div><div class="form-grid">
+        ${src !== undefined ? `<div class="field full"><label for="fSrc">Source role<span class="req">*</span></label><select class="input" id="fSrc"><option value="">Select a permitted role</option>${db.roles.filter(r => r.status === 'Active' && !r.protected).map(r => `<option value="${r.id}" ${src && src.id === r.id ? 'selected' : ''}>${esc(r.code)} · ${esc(r.name)}</option>`).join('')}</select><div class="err hidden" data-err="fSrc"></div></div><div class="full" id="preview"></div>` : ''}
+        ${field({ id: 'fCode', label: 'Role code', req: true, max: 30, hint: 'Unique within its ownership scope.' })}
+        ${field({ id: 'fName', label: 'Role name', req: true, max: 150 })}
+        ${field({ id: 'fScope', label: 'Ownership scope', type: 'select', req: true, value: 'Company', options: [['System', 'System (reusable across companies)'], ['Company', 'Company']], placeholder: false })}
+        ${field({ id: 'fCo', label: 'Owning company', type: 'select', value: UI.session().ctx.companyId, options: db.companies.filter(c => c.status === 'Active').map(c => [c.id, c.code + ' · ' + c.name]) })}
+        ${field({ id: 'fOwner', label: 'Business owner', max: 150 })}
+        ${field({ id: 'fDesc', label: 'Description', type: 'textarea', full: true })}
+        <div class="full banner info">${icon('info')}<span>The new role is created <b>inactive</b>. Review its permissions in the role editor, then activate it.</span></div></div>`,
+      foot: `<span class="grow req-ref">ROL-01 · ROL-02</span><button class="btn" data-close>Cancel</button><button class="btn primary" id="sv">${src !== undefined ? 'Create copy' : 'Create role'}</button>`,
+      onMount: (el, close) => {
+        const sc = $('#fScope', el); const togCo = () => $('#fCo', el).closest('.field').classList.toggle('hidden', sc.value !== 'Company'); sc.addEventListener('change', togCo); togCo();
+        const srcSel = $('#fSrc', el);
+        const prev = () => { const r = L.role(srcSel.value); $('#preview', el).innerHTML = r ? `<div class="card card-pad"><b>Preview: ${Object.keys(r.perms).length} screens, ${permCount(r)} actions will be copied</b><div class="list-rows" style="margin-top:8px;max-height:220px;overflow:auto">${Object.entries(r.perms).map(([o, a]) => `<div><span class="grow">${esc((UI.optionById(o) || {}).name || o)}</span><span class="chips">${a.map(x => `<span class="chip">${esc(db.ACTIONS[x])}</span>`).join('')}</span></div>`).join('')}</div><div class="small muted" style="margin-top:8px">${usersOf(r).length} user assignments of the source will NOT be copied.</div></div>` : ''; if (r && !$('#fName', el).value) $('#fName', el).value = r.name + ' (copy)'; };
+        if (srcSel) { srcSel.addEventListener('change', prev); prev(); }
+        $('#sv', el).addEventListener('click', () => {
+          const errs = {}; const code = normCode($('#fCode', el).value); const scope = sc.value; const coId = scope === 'Company' ? $('#fCo', el).value : null;
+          if (srcSel && !srcSel.value) errs.fSrc = 'Select the source role.';
+          if (!code) errs.fCode = 'Role code is required.'; else if (!CODE_RE.test(code)) errs.fCode = 'Use up to 30 letters, digits, hyphens or underscores.';
+          else if (db.roles.some(r => normCode(r.code) === code && r.scope === scope && (scope === 'System' || r.companyId === coId))) errs.fCode = `Role code ${code} already exists in this scope.`;
+          if (!$('#fName', el).value.trim()) errs.fName = 'Role name is required.';
+          if (!showErrors(el, errs)) return;
+          const from = srcSel ? L.role(srcSel.value) : null;
+          const r = { id: uid('ro'), code, name: $('#fName', el).value.trim(), scope, companyId: coId, status: 'Inactive', protected: false, privileged: false, owner: $('#fOwner', el).value.trim(), description: $('#fDesc', el).value.trim(), perms: from ? JSON.parse(JSON.stringify(from.perms)) : {}, updatedBy: me().displayName, updatedAt: nowStamp(), version: 1 };
+          db.roles.push(r); save();
+          audit(from ? 'Role copied' : 'Role created', 'Role', { id: r.id, label: r.code }, [['Source', '', from ? from.code : '(blank)'], ['Status', '', 'Inactive']]);
+          close(); toast(`Role ${r.code} created as inactive. Review its permissions.`); location.href = 'role-editor.html?id=' + r.id;
+        });
+      } });
+  }
+  const n = $('#new'); if (n) n.addEventListener('click', () => create());
+  const c = $('#copy'); if (c) c.addEventListener('click', () => create(null));
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Payer contracts and coverage · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-insurance.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/insurance.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, drawer, confirm, field, showErrors, me, nowStamp, uid } = UI;
+  const I = Insurance, OPT = 'insurance.contracts';
+  const canAdd = can(OPT, 'add'), canEdit = can(OPT, 'edit'), canApr = can(OPT, 'approve');
+  if (!UI.page({ opt: OPT, title: 'Payer contracts and coverage', subtitle: 'Coverage rules by payer, TPA, plan, department, category and service. New contracts and versions need approval by a second user.',
+    actions: `<button class="btn" id="simBtn">${icon('calculator')} Coverage check</button><button class="btn primary" id="newBtn" ${canAdd ? '' : 'disabled title="Needs Add permission"'}>${icon('plus')} New contract</button>` })) return;
+
+  const CATS = ['Consultation', 'Emergency', 'Procedure', 'Room', 'Package', 'Laboratory', 'Radiology', 'Pharmacy'];
+  const LEVELS = ['Department', 'Category', 'Service', 'Package', 'Item'];
+  const targetsFor = (lv) => lv === 'Department' ? db.departments.filter(d => d.type === 'Clinical').map(d => [d.id, d.name + ' (' + d.code + ')'])
+    : lv === 'Category' ? CATS.map(c => [c, c])
+    : lv === 'Package' ? db.services.filter(s => s.category === 'Package').map(s => [s.code, s.code + ' · ' + s.name])
+    : lv === 'Item' ? db.items.filter(x => x.type === 'Drug').map(x => [x.code, x.code + ' · ' + x.name])
+    : db.services.filter(s => s.category !== 'Package').map(s => [s.code, s.code + ' · ' + s.name]).concat(db.labTests.map(t => ['LAB-' + t.code, 'LAB-' + t.code + ' · ' + t.name]), db.radExams.map(x => ['RAD-' + x.code, 'RAD-' + x.code + ' · ' + x.name]));
+  const targetLabel = (r) => r.level === 'Department' ? I.deptName(r.target) : r.label || r.target;
+  const editable = (c) => /Draft|Rejected/.test(c.status);
+  const isMine = (c) => [c.createdBy, c.submittedBy].includes(me().displayName);
+  const plansTxt = (c) => (c.planIds || []).map(id => (Kit.plan(id) || {}).name).filter(Boolean).join(', ');
+
+  let tab = 'Active';
+  const tabsHost = document.createElement('div'), tblHost = document.createElement('div');
+  $('#page').append(tabsHost, tblHost);
+  const counts = () => ({ Active: db.insuranceContracts.filter(c => c.status === 'Active').length, 'Pending approval': db.insuranceContracts.filter(c => c.status === 'Pending approval').length, Draft: db.insuranceContracts.filter(c => /Draft|Rejected/.test(c.status)).length, Closed: db.insuranceContracts.filter(c => /Expired|Superseded/.test(c.status)).length, all: db.insuranceContracts.length });
+  const drawTabs = () => { const n = counts(); Kit.tabs(tabsHost, [{ id: 'Active', label: 'Active', count: n.Active }, { id: 'Pending approval', label: 'Pending approval', count: n['Pending approval'] }, { id: 'Draft', label: 'Draft or rejected', count: n.Draft }, { id: 'Closed', label: 'Expired or superseded', count: n.Closed }, { id: 'all', label: 'All', count: n.all }], tab, (t) => { tab = t; tb.redraw(); }); };
+  const inTab = (c) => tab === 'all' || (tab === 'Draft' ? /Draft|Rejected/.test(c.status) : tab === 'Closed' ? /Expired|Superseded/.test(c.status) : c.status === tab);
+  const tb = UI.table(tblHost, {
+    columns: [
+      { label: 'Contract', sort: r => r.no, render: r => `<div class="cell-main"><b>${esc(r.name)}</b><span class="mono">${esc(r.no)} · v${r.version}</span></div>` },
+      { label: 'Payer', sort: r => I.payerName(r.payerId), render: r => `<b>${esc(I.payerName(r.payerId))}</b><div class="small muted">${r.tpa ? 'TPA ' + esc(r.tpa) : 'Direct, no TPA'}</div>` },
+      { label: 'Plans', render: r => `<span class="small">${esc(plansTxt(r))}</span>` },
+      { label: 'Validity', sort: r => r.from, render: r => `${Kit.day(r.from)} to ${Kit.day(r.to)}${r.status === 'Active' && Kit.addDays(db.TODAY, 45) >= r.to ? '<div class="small" style="color:var(--warning);font-weight:700">Ends soon</div>' : ''}` },
+      { label: 'Rules', sort: r => r.rules.length, render: r => `<span class="tag">${r.rules.length} rules</span> ${r.rules.some(x => x.preauth) ? '<span class="tag">Pre-auth</span>' : ''}` },
+      { label: 'Status', sort: r => r.status, render: r => I.status(r.status) },
+      { label: '', cls: 'actions', render: r => `<button class="btn xs" data-o="${r.id}">${icon('eye')} Open</button>` },
+    ],
+    rows: () => db.insuranceContracts.filter(inTab), search: r => [r.no, r.name, I.payerName(r.payerId), r.tpa, plansTxt(r)].join(' '), searchPlaceholder: 'Search contract, payer, TPA or plan',
+    filters: [{ label: 'Payer', options: db.payers.map(p => [p.id, p.name]), test: (r, v) => r.payerId === v }],
+    onRow: r => open(r), afterDraw: (t) => $$('[data-o]', t).forEach(b => b.addEventListener('click', () => open(db.insuranceContracts.find(c => c.id === b.dataset.o)))),
+    empty: 'No contracts in this list',
+  });
+  drawTabs();
+  const refresh = () => { drawTabs(); tb.redraw(); };
+
+  /* ---------- Contract detail ---------- */
+  function open(c) {
+    drawer({ title: c.name, sub: esc(c.no) + ' · version ' + c.version + ' · ' + esc(I.payerName(c.payerId)), wide: true,
+      body: `<div id="cdBody"></div>`,
+      foot: `<div id="cdFoot" class="row" style="width:100%;gap:8px"></div>`,
+      onMount: (el, close) => {
+        const draw = () => {
+          const ed = editable(c) && canEdit;
+          const mine = isMine(c);
+          $('#cdBody', el).innerHTML = `
+            ${c.status === 'Rejected' ? `<div class="banner err" style="margin-bottom:12px">${icon('circle-x')}<span>Rejected by ${esc(c.rejectedBy || '')}: ${esc(c.rejectReason || '')}. Correct the rules and submit again.</span></div>` : ''}
+            ${c.status === 'Pending approval' ? `<div class="banner warn" style="margin-bottom:12px">${icon('hourglass')}<span>Submitted by ${esc(c.submittedBy)} on ${esc(UI.fmtDate(c.submittedAt))}. A different user must approve (maker-checker).</span></div>` : ''}
+            <div class="grid g2"><dl class="kv">
+              <dt>Payer</dt><dd>${esc(I.payerName(c.payerId))} (${esc(I.payerCode(c.payerId))})</dd><dt>TPA</dt><dd>${esc(c.tpa || 'Direct, no TPA')}</dd>
+              <dt>Plans</dt><dd>${esc(plansTxt(c))}</dd><dt>Validity</dt><dd>${Kit.day(c.from)} to ${Kit.day(c.to)}</dd></dl>
+              <dl class="kv"><dt>Default coverage</dt><dd>${c.defaultCoverage}%</dd><dt>Tariff discount</dt><dd>${c.discountPct}%</dd><dt>Status</dt><dd>${I.status(c.status)}</dd>
+              <dt>Created</dt><dd>${esc(c.createdBy)} · ${esc(UI.fmtDate(c.createdAt))}</dd>${c.approvedBy ? `<dt>Approved</dt><dd>${esc(c.approvedBy)} · ${esc(UI.fmtDate(c.approvedAt))}</dd>` : ''}</dl></div>
+            <div class="row" style="margin:16px 0 8px"><div class="section-t grow" style="margin:0">Coverage rules</div><span class="small muted">Most specific rule wins: service, package or item, then category, then department. Co-pay blank uses the plan co-pay.</span>
+              <button class="btn sm" id="addRule" ${ed ? '' : `disabled title="${editable(c) ? 'Needs Edit permission' : 'Only draft or rejected contracts can be changed. Create a new version.'}"`}>${icon('plus')} Add rule</button></div>
+            <div class="table-wrap"><table class="tbl compact"><thead><tr><th>Level</th><th>Applies to</th><th>Plan</th><th class="num">Coverage</th><th class="num">Co-pay</th><th class="num">Deductible</th><th class="num">Limit</th><th>Flags</th><th>Note</th><th></th></tr></thead><tbody>
+            ${c.rules.map(r => `<tr><td><span class="tag">${esc(r.level)}</span></td><td><b>${esc(targetLabel(r))}</b><div class="mono xs muted">${esc(r.level === 'Department' ? '' : r.target)}</div></td><td class="small">${r.planId ? esc((Kit.plan(r.planId) || {}).name) : 'All plans'}</td>
+              <td class="num">${r.excluded ? '-' : r.coveragePct + '%'}</td><td class="num">${r.copayPct === '' || r.copayPct == null ? '<span class="muted">Plan</span>' : r.copayPct + '%'}</td><td class="num">${r.deductible === '' || r.deductible == null ? '<span class="muted">Plan</span>' : Kit.money(r.deductible, false)}</td><td class="num">${r.limit ? Kit.money(r.limit, false) : '<span class="muted">None</span>'}</td>
+              <td>${r.excluded ? '<span class="badge b-err">Excluded</span> ' : ''}${r.preauth ? '<span class="badge b-info">Pre-auth</span>' : ''}</td><td class="small muted">${esc(r.note || '')}</td>
+              <td class="actions">${ed ? `<button class="btn xs" data-er="${r.id}" aria-label="Edit rule">${icon('pencil')}</button><button class="btn xs danger" data-dr="${r.id}" aria-label="Remove rule">${icon('trash-2')}</button>` : ''}</td></tr>`).join('') || `<tr><td colspan="10"><div class="empty">${icon('list')}<b>No rules yet</b><span>All services follow the default coverage.</span></div></td></tr>`}
+            </tbody></table></div>`;
+          const f = [];
+          f.push(`<button class="btn" id="hist">${icon('history')} History</button><span class="grow"></span>`);
+          if (editable(c)) f.push(`<button class="btn primary" id="submitC" ${canEdit ? (c.rules.length ? '' : 'disabled title="Add at least one rule"') : 'disabled title="Needs Edit permission"'}>${icon('send')} Submit for approval</button>`);
+          if (c.status === 'Pending approval') {
+            const t = !canApr ? 'Needs Approve permission' : mine ? 'You created or submitted this contract. Another user must approve it.' : '';
+            f.push(`<button class="btn danger" id="rejC" ${t ? `disabled title="${t}"` : ''}>${icon('x')} Reject</button><button class="btn success" id="aprC" ${t ? `disabled title="${t}"` : ''}>${icon('check')} Approve</button>`);
+          }
+          if (/Active|Expired|Superseded/.test(c.status)) f.push(`<button class="btn primary" id="verC" ${canAdd ? '' : 'disabled title="Needs Add permission"'}>${icon('copy-plus')} New version</button>`);
+          $('#cdFoot', el).innerHTML = f.join('');
+          const on = (id, fn) => { const b = $('#' + id, el); if (b) b.addEventListener('click', fn); };
+          on('addRule', () => ruleForm(c, null, draw));
+          $$('[data-er]', el).forEach(b => b.addEventListener('click', () => ruleForm(c, c.rules.find(r => r.id === b.dataset.er), draw)));
+          $$('[data-dr]', el).forEach(b => b.addEventListener('click', () => { const r = c.rules.find(x => x.id === b.dataset.dr); confirm({ title: 'Remove this rule?', body: `${esc(r.level)}: ${esc(targetLabel(r))}. Services fall back to the next rule or the default coverage.`, confirm: 'Remove rule', reason: true, onConfirm: (reason) => { c.rules = c.rules.filter(x => x !== r); save(); audit('Removed coverage rule', 'Payer contract', { id: c.id, label: c.no }, [['Rule', r.level + ' ' + targetLabel(r), '(removed)']], { reason }); toast('Rule removed'); draw(); refresh(); } }); }));
+          on('hist', () => UI.historyDrawer(c.id, c.no));
+          on('submitC', () => confirm({ title: 'Submit for approval?', body: `${esc(c.no)} with ${c.rules.length} rules goes to an approver. You cannot change it while it waits.`, tone: 'primary', confirm: 'Submit', onConfirm: () => { const b = c.status; Object.assign(c, { status: 'Pending approval', submittedBy: me().displayName, submittedAt: nowStamp() }); save(); audit('Submitted contract for approval', 'Payer contract', { id: c.id, label: c.no }, [['Status', b, c.status]]); toast('Submitted for approval'); draw(); refresh(); } }));
+          on('rejC', () => confirm({ title: 'Reject this contract?', body: 'The contract goes back to the maker for correction.', confirm: 'Reject', reason: true, onConfirm: (reason) => { Object.assign(c, { status: 'Rejected', rejectedBy: me().displayName, rejectReason: reason }); save(); audit('Rejected payer contract', 'Payer contract', { id: c.id, label: c.no }, [['Status', 'Pending approval', 'Rejected']], { reason }); toast('Contract rejected'); draw(); refresh(); } }));
+          on('aprC', () => {
+            const olds = db.insuranceContracts.filter(x => x !== c && x.payerId === c.payerId && x.status === 'Active' && x.from <= c.to && x.to >= c.from);
+            confirm({ title: 'Approve and activate?', body: `${esc(c.no)} becomes active from ${Kit.day(c.from)}. Claims and pre-authorizations use its rules from that date.`, tone: 'primary', confirm: 'Approve', impact: olds.map(o => `${esc(o.no)} overlaps and will be superseded`),
+              onConfirm: () => { olds.forEach(o => { o.status = 'Superseded'; }); Object.assign(c, { status: 'Active', approvedBy: me().displayName, approvedAt: nowStamp() }); save(); audit('Approved payer contract', 'Payer contract', { id: c.id, label: c.no }, [['Status', 'Pending approval', 'Active']].concat(olds.map(o => [o.no, 'Active', 'Superseded']))); toast('Contract approved and active'); draw(); refresh(); } });
+          });
+          on('verC', () => { close(); contractForm(c); });
+        };
+        draw();
+      } });
+  }
+
+  /* ---------- Rule form ---------- */
+  function ruleForm(c, r, done) {
+    const isNew = !r;
+    r = r || { level: 'Service', target: '', planId: '', coveragePct: c.defaultCoverage, copayPct: '', deductible: '', limit: '', excluded: false, preauth: false, note: '' };
+    drawer({ title: isNew ? 'Add coverage rule' : 'Edit coverage rule', sub: esc(c.no + ' · ' + c.name),
+      body: `<div class="err-summary hidden"></div><div class="form-grid">
+        ${field({ id: 'rLv', label: 'Level', type: 'select', options: LEVELS.map(l => [l, l]), value: r.level, req: true, placeholder: false })}
+        <div id="rTgHost"></div>
+        ${field({ id: 'rPl', label: 'Plan', type: 'select', options: (c.planIds || []).map(id => [id, (Kit.plan(id) || {}).name]), value: r.planId, placeholder: 'All plans in the contract' })}
+        ${field({ id: 'rCov', label: 'Coverage %', type: 'number', value: r.coveragePct, req: true, attrs: 'min="0" max="100"' })}
+        ${field({ id: 'rCo', label: 'Co-pay %', type: 'number', value: r.copayPct, hint: 'Blank uses the plan co-pay', attrs: 'min="0" max="100"' })}
+        ${field({ id: 'rDe', label: 'Deductible (KWD)', type: 'number', value: r.deductible, hint: 'Blank uses the plan deductible', attrs: 'min="0" step="0.5"' })}
+        ${field({ id: 'rLi', label: 'Limit (KWD)', type: 'number', value: r.limit, hint: 'Per line; per day for room rules', attrs: 'min="0"' })}
+        <div class="field"><label>Flags</label><div class="stack tight"><label class="check"><input type="checkbox" id="rPa" ${r.preauth ? 'checked' : ''}> Pre-authorization required</label><label class="check"><input type="checkbox" id="rEx" ${r.excluded ? 'checked' : ''}> Excluded (not covered)</label></div></div>
+        ${field({ id: 'rNo', label: 'Note', value: r.note, full: true, max: 120 })}
+      </div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="rSave">${isNew ? 'Add rule' : 'Save rule'}</button>`,
+      onMount: (el, close) => {
+        const drawTg = (val) => { const lv = $('#rLv', el).value; $('#rTgHost', el).innerHTML = field({ id: 'rTg', label: 'Applies to', type: 'select', options: targetsFor(lv), value: val, req: true }); };
+        drawTg(r.target); $('#rLv', el).addEventListener('change', () => drawTg(''));
+        $('#rEx', el).addEventListener('change', () => { if ($('#rEx', el).checked) $('#rCov', el).value = 0; });
+        $('#rSave', el).addEventListener('click', () => {
+          const v = { level: $('#rLv', el).value, target: $('#rTg', el).value, planId: $('#rPl', el).value, coveragePct: $('#rCov', el).value === '' ? '' : Number($('#rCov', el).value), copayPct: $('#rCo', el).value === '' ? '' : Number($('#rCo', el).value), deductible: $('#rDe', el).value === '' ? '' : Number($('#rDe', el).value), limit: $('#rLi', el).value === '' ? '' : Number($('#rLi', el).value), excluded: $('#rEx', el).checked, preauth: $('#rPa', el).checked, note: $('#rNo', el).value.trim() };
+          const e = {};
+          if (!v.target) e.rTg = 'Choose what the rule applies to.';
+          if (v.coveragePct === '' || v.coveragePct < 0 || v.coveragePct > 100) e.rCov = 'Coverage must be 0 to 100%.';
+          if (v.copayPct !== '' && (v.copayPct < 0 || v.copayPct > 100)) e.rCo = 'Co-pay must be 0 to 100%.';
+          if (v.excluded && v.coveragePct > 0) e.rCov = 'An excluded rule must have 0% coverage.';
+          if (c.rules.some(x => x !== r && x.level === v.level && x.target === v.target && (x.planId || '') === v.planId)) e.rTg = 'A rule for this target and plan already exists.';
+          if (!showErrors(el, e)) return;
+          const opt = targetsFor(v.level).find(o => o[0] === v.target);
+          v.label = v.level === 'Department' ? '' : (opt ? String(opt[1]).replace(/^.*? · /, '') : v.target);
+          if (isNew) { r = Object.assign({ id: uid('rule') }, v); c.rules.push(r); } else Object.assign(r, v);
+          save(); audit(isNew ? 'Added coverage rule' : 'Updated coverage rule', 'Payer contract', { id: c.id, label: c.no }, [['Rule', '', v.level + ' ' + (v.label || I.deptName(v.target)) + ' ' + v.coveragePct + '%' + (v.preauth ? ', pre-auth' : '') + (v.excluded ? ', excluded' : '')]]);
+          close(); toast(isNew ? 'Rule added' : 'Rule saved'); done(); refresh();
+        });
+      } });
+  }
+
+  /* ---------- New contract or new version ---------- */
+  function contractForm(base) {
+    const p0 = base ? base.payerId : '';
+    drawer({ title: base ? 'New version of ' + base.no : 'New payer contract', sub: base ? 'Rules are copied. The new version needs approval before it is used.' : 'Set up the contract, then add coverage rules and submit for approval.',
+      body: `<div class="err-summary hidden"></div><div class="form-grid">
+        ${field({ id: 'cPy', label: 'Insurance company', type: 'select', options: db.payers.filter(p => p.status === 'Active').map(p => [p.id, p.name]), value: p0, req: true, disabled: !!base })}
+        ${field({ id: 'cTpa', label: 'TPA', value: base ? base.tpa : '', hint: 'Blank when the payer settles directly' })}
+        ${field({ id: 'cNm', label: 'Contract name', value: base ? base.name.replace(/\s*\(.*\)$/, '') + ' (renewal)' : '', req: true, full: true, max: 80 })}
+        ${field({ id: 'cFr', label: 'Valid from', type: 'date', value: base ? Kit.addDays(base.to, 1) : db.TODAY, req: true })}
+        ${field({ id: 'cTo', label: 'Valid to', type: 'date', value: base ? Kit.addDays(base.to, 365) : Kit.addDays(db.TODAY, 365), req: true })}
+        ${field({ id: 'cDc', label: 'Default coverage %', type: 'number', value: base ? base.defaultCoverage : 100, req: true })}
+        ${field({ id: 'cDs', label: 'Tariff discount %', type: 'number', value: base ? base.discountPct : 0 })}
+        <div class="field full"><label>Plans<span class="req">*</span></label><div id="cPl" class="row wrap" style="gap:14px"></div><div class="err hidden" data-err="cPl"></div></div>
+        ${!base ? `<label class="check full"><input type="checkbox" id="cCopy" checked> Copy coverage rules from the payer's active contract</label>` : ''}
+      </div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="cSave" disabled>Create draft</button>`,
+      onMount: (el, close) => {
+        const btn = $('#cSave', el);
+        const plans = () => { const py = $('#cPy', el).value; $('#cPl', el).innerHTML = py ? db.plans.filter(p => p.payerId === py).map(p => `<label class="check"><input type="checkbox" value="${p.id}" ${!base || base.planIds.includes(p.id) ? 'checked' : ''}> ${esc(p.name)}</label>`).join('') : '<span class="muted small">Choose the insurance company first</span>'; if (!base && py) $('#cTpa', el).value = (Kit.payer(py) || {}).tpa || ''; upd(); $$('#cPl input', el).forEach(i => i.addEventListener('change', upd)); };
+        const upd = () => { btn.disabled = !($('#cPy', el).value && $('#cNm', el).value.trim() && $('#cFr', el).value && $('#cTo', el).value && $$('#cPl input:checked', el).length); };
+        $('#cPy', el).addEventListener('change', plans); ['cNm', 'cFr', 'cTo'].forEach(id => $('#' + id, el).addEventListener('input', upd));
+        plans();
+        btn.addEventListener('click', () => {
+          const v = { payerId: $('#cPy', el).value, tpa: $('#cTpa', el).value.trim(), name: $('#cNm', el).value.trim(), from: $('#cFr', el).value, to: $('#cTo', el).value, defaultCoverage: Number($('#cDc', el).value), discountPct: Number($('#cDs', el).value || 0), planIds: $$('#cPl input:checked', el).map(i => i.value) };
+          const e = {};
+          if (v.to <= v.from) e.cTo = 'Valid to must be after valid from.';
+          if (!(v.defaultCoverage >= 0 && v.defaultCoverage <= 100)) e.cDc = 'Coverage must be 0 to 100%.';
+          if (v.discountPct < 0 || v.discountPct > 50) e.cDs = 'Discount must be 0 to 50%.';
+          if (!showErrors(el, e)) return;
+          const src = base || ($('#cCopy', el) && $('#cCopy', el).checked ? I.contractFor(v.payerId, db.TODAY) : null);
+          const yr = v.from.slice(2, 4);
+          const c = Object.assign({ id: uid('ic'), no: 'CTR-' + yr + '-' + (101 + db.insuranceContracts.length), status: 'Draft', version: base ? base.version + 1 : 1, createdBy: me().displayName, createdAt: nowStamp(),
+            rules: src ? JSON.parse(JSON.stringify(src.rules)).map(r => Object.assign(r, { id: uid('rule') })) : [] }, v);
+          db.insuranceContracts.unshift(c); save();
+          audit(base ? 'Created contract version' : 'Created payer contract', 'Payer contract', { id: c.id, label: c.no }, [['Status', '', 'Draft'], ['Rules', '', String(c.rules.length)]]);
+          close(); toast('Draft contract created'); tab = 'Draft'; refresh(); open(c);
+        });
+      } });
+  }
+
+  /* ---------- Coverage check (what applies to a service for a plan) ---------- */
+  function simulator() {
+    drawer({ title: 'Coverage check', sub: 'See which rule applies to a service for a plan on a date.',
+      body: `<div class="form-grid">
+        ${field({ id: 'sPl', label: 'Plan', type: 'select', options: db.plans.map(p => [p.id, I.payerCode(p.payerId) + ' · ' + p.name]), value: 'pl_01', placeholder: false })}
+        ${field({ id: 'sDt', label: 'Service date', type: 'date', value: db.TODAY })}
+        ${field({ id: 'sSv', label: 'Service', type: 'select', options: targetsFor('Service').concat(targetsFor('Package'), db.items.filter(x => x.type === 'Drug').map(x => ['PHM-' + x.code, 'PHM-' + x.code + ' · ' + x.name])), value: 'RAD-CT-AB', full: true, placeholder: false })}
+        ${field({ id: 'sDp', label: 'Department', type: 'select', options: db.departments.filter(d => d.type === 'Clinical').map(d => [d.id, d.name]), value: 'dp_01', placeholder: false })}
+        </div><div id="sOut" style="margin-top:14px"></div>`,
+      onMount: (el) => {
+        const go = () => {
+          const pl = Kit.plan($('#sPl', el).value), date = $('#sDt', el).value, code = $('#sSv', el).value;
+          const ct = I.contractFor(pl.payerId, date);
+          const opt = $('#sSv', el).selectedOptions[0];
+          const line = { code, desc: opt ? opt.textContent : code, qty: 1, price: 0 };
+          const fake = { planId: pl.id, encounterId: null };
+          const enc = { deptId: $('#sDp', el).value };
+          const orig = Kit.enc; Kit.enc = () => enc;
+          const r = I.ruleFor(ct, line, fake); Kit.enc = orig;
+          const copay = r && r.copayPct !== '' && r.copayPct != null ? r.copayPct : pl.copayPct;
+          $('#sOut', el).innerHTML = !ct ? `<div class="banner err">${icon('circle-x')}<span>No active contract for ${esc(I.payerName(pl.payerId))} on ${Kit.day(date)}. Claims for this date fail rule V04.</span></div>`
+            : `<div class="card card-pad"><dl class="kv"><dt>Contract</dt><dd>${esc(ct.no)} · ${esc(ct.name)}</dd><dt>Rule applied</dt><dd>${r ? `${esc(r.level)}: ${esc(r.level === 'Department' ? I.deptName(r.target) : r.label || r.target)}` : 'Default coverage'}</dd>
+              <dt>Covered</dt><dd>${r && r.excluded ? '<span class="badge b-err">Excluded</span>' : (r ? r.coveragePct : ct.defaultCoverage) + '%'}</dd><dt>Co-pay</dt><dd>${copay}%${r && r.copayPct !== '' && r.copayPct != null ? '' : ' (plan)'}</dd>
+              <dt>Deductible</dt><dd>${Kit.money(r && r.deductible !== '' && r.deductible != null ? r.deductible : pl.deductible)}</dd><dt>Limit</dt><dd>${r && r.limit ? Kit.money(r.limit) : 'None'}</dd><dt>Pre-authorization</dt><dd>${r && r.preauth ? '<span class="badge b-info">Required</span>' : 'Not required'}</dd></dl></div>`;
+        };
+        $$('select,input', el).forEach(i => i.addEventListener('change', go)); go();
+      } });
+  }
+
+  $('#newBtn').addEventListener('click', () => contractForm(null));
+  $('#simBtn').addEventListener('click', simulator);
+})();
+</script>
+</body>
+</html>

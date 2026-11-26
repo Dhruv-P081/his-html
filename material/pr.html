@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Purchase requisitions · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-material.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/material.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, drawer, confirm, field, showErrors, nowStamp, fmtDate, param } = UI;
+  const M = Material, OPT = 'material.pr';
+  if (!UI.page({ opt: OPT, title: 'Purchase requisitions', subtitle: 'Raise item needs, route them through the approval cycle and hand approved lines to purchasing.',
+    actions: M.btn({ id: 'newPr', cls: 'primary', icon: 'plus', label: 'New requisition', allow: can(OPT, 'add'), why: 'Needs Add permission' }) })) return;
+  const LV = db.materialSettings.prLevels;
+  const amt = (p) => M.total(p.lines, 'qty', 'price');
+  const list = () => db.materialPRs;
+  const deptOpts = db.departments.filter(d => d.status === 'Active' && d.companyId === M.ctx().companyId).map(d => [d.id, d.name]);
+
+  $('#page').innerHTML = `
+    <div class="grid g4" style="margin-bottom:16px" id="kpis"></div>
+    <div id="tabs" style="margin-bottom:12px"></div>
+    <div id="tbl"></div>
+    <div class="row" style="margin-top:10px">${Kit.scopeNote('Approval levels by value: ' + LV.map(l => `L${l.level} ${l.name}${l.from ? ' from ' + Kit.money(l.from) : ''}`).join(', ') + '. The requester cannot approve their own requisition.')}</div>`;
+
+  let tab = param('tab') || 'open';
+  const TABS = [['open', 'Open', p => /Draft|Pending approval|Approved/.test(p.status)], ['Pending approval', 'Pending approval', p => p.status === 'Pending approval'], ['Approved', 'Approved, no PO', p => p.status === 'Approved'], ['PO raised', 'PO raised', p => p.status === 'PO raised'], ['closed', 'Rejected or cancelled', p => /Rejected|Cancelled/.test(p.status)], ['all', 'All', () => true]];
+  const drawTabs = () => Kit.tabs($('#tabs'), TABS.map(([id, label, f]) => ({ id, label, count: list().filter(f).length })), tab, (t) => { tab = t; t1.redraw(); });
+  const drawKpis = () => {
+    const pend = list().filter(p => p.status === 'Pending approval');
+    const mine = pend.filter(p => M.canAct(OPT, 'approve', p).ok);
+    $('#kpis').innerHTML = Kit.kpi('Open requisitions', list().filter(TABS[0][2]).length, { icon: 'file-plus-2', foot: Kit.money(Kit.sumBy(list().filter(TABS[0][2]), amt)) + ' estimated' })
+      + Kit.kpi('Waiting for approval', pend.length, { icon: 'hourglass', foot: mine.length + ' you can approve' })
+      + Kit.kpi('Approved, waiting for PO', list().filter(p => p.status === 'Approved').length, { icon: 'circle-check', foot: 'Convert on the PO screen' })
+      + Kit.kpi('Urgent open', list().filter(p => p.priority === 'Urgent' && TABS[0][2](p)).length, { icon: 'zap', foot: 'Need by within 3 days: ' + list().filter(p => TABS[0][2](p) && p.needBy <= Kit.addDays(db.TODAY, 3)).length });
+  };
+
+  const t1 = UI.table($('#tbl'), {
+    columns: [
+      { label: 'PR no.', sort: p => p.no, render: p => `<span class="mono b nw">${esc(p.no)}</span><div class="xs muted">${fmtDate(p.date)}</div>` },
+      { label: 'Department', sort: p => M.deptName(p.deptId), render: p => `<b>${esc(M.deptName(p.deptId))}</b><div class="xs muted">Deliver to ${esc(M.whName(p.warehouseId))}</div>` },
+      { label: 'Items', render: p => `${p.lines.length} line(s)<div class="xs muted">${esc(p.lines.slice(0, 2).map(l => M.item(l.itemId).name).join(', '))}${p.lines.length > 2 ? '…' : ''}</div>` },
+      { label: 'Estimated value', cls: 'num', sort: p => amt(p), render: p => `<span class="num">${Kit.money(amt(p))}</span>` },
+      { label: 'Priority', sort: p => p.priority, render: p => Kit.priority(p.priority) },
+      { label: 'Need by', sort: p => p.needBy, render: p => `<span class="nw ${p.needBy < db.TODAY && /Pending|Approved|Draft/.test(p.status) ? 'b' : ''}" style="${p.needBy < db.TODAY && /Pending|Approved|Draft/.test(p.status) ? 'color:var(--error)' : ''}">${fmtDate(p.needBy)}</span>` },
+      { label: 'Raised by', sort: p => p.createdBy, render: p => esc(p.createdBy) },
+      { label: 'Status', sort: p => p.status, render: p => { const n = M.nextLevel(p, LV, amt(p)); return M.st(p.status) + (p.status === 'Pending approval' && n ? `<div class="xs muted">L${n.level} ${esc(n.name)}</div>` : p.poNo ? `<div class="xs mono muted">${esc(p.poNo)}</div>` : ''); } },
+    ],
+    rows: () => list().filter(TABS.find(t => t[0] === tab)[2]).slice().sort((a, b) => b.no.localeCompare(a.no)),
+    search: p => [p.no, p.createdBy, M.deptName(p.deptId), p.justification, p.lines.map(l => M.itemLabel(l.itemId)).join(' ')].join(' '),
+    searchPlaceholder: 'Search PR no., item, department or person',
+    filters: [{ label: 'Department', options: deptOpts, test: (p, v) => p.deptId === v }, { label: 'Priority', options: [['Routine', 'Routine'], ['Urgent', 'Urgent']], test: (p, v) => p.priority === v }],
+    onRow: open, empty: 'No requisitions in this view', emptyIcon: 'file-plus-2',
+  });
+  const refresh = () => { drawTabs(); drawKpis(); t1.redraw(); };
+  drawTabs(); drawKpis();
+
+  /* ---------- Detail ---------- */
+  function open(p) {
+    const total = amt(p), next = M.nextLevel(p, LV, total);
+    const isMaker = p.createdBy === M.meName();
+    const canEdit = p.status === 'Draft' && (isMaker || can(OPT, 'edit'));
+    const ap = M.canAct(OPT, 'approve', p);
+    drawer({ title: p.no, sub: `${esc(M.deptName(p.deptId))} · ${M.st(p.status)}`, wide: true,
+      body: `<div class="grid g-side">
+        <div class="stack">
+          ${p.status === 'Pending approval' && next ? `<div class="banner ${ap.ok ? 'info' : 'warn'}">${icon(ap.ok ? 'info' : 'lock')}<span>Waiting for <b>Level ${next.level}: ${esc(next.name)}</b>. ${ap.ok ? 'You can approve or reject this level.' : esc(ap.why)}</span></div>` : ''}
+          ${p.status === 'Rejected' ? `<div class="banner err">${icon('circle-x')}<span>Rejected: ${esc((p.approvals.find(a => a.decision === 'Rejected') || {}).note || '')}</span></div>` : ''}
+          ${p.status === 'Cancelled' ? `<div class="banner err">${icon('ban')}<span>Cancelled: ${esc(p.cancelReason || '')}</span></div>` : ''}
+          <div class="card card-pad">${M.kv([['Department', esc(M.deptName(p.deptId))], ['Deliver to store', esc(M.whName(p.warehouseId))], ['Priority', Kit.priority(p.priority)], ['Need by', fmtDate(p.needBy)], ['Justification', esc(p.justification)], ['Raised by', esc(p.createdBy) + ' · ' + fmtDate(p.createdAt)], ['Purchase order', p.poNo ? `<a href="${R('material/po.html?id=' + encodeURIComponent(p.poNo))}" class="mono">${esc(p.poNo)}</a>` : '']])}</div>
+          <div class="card"><div class="card-head"><h3>${icon('list')} Item lines</h3></div><div class="table-wrap"><table class="tbl compact"><thead><tr><th>Item</th><th class="num">Qty</th><th>UOM</th><th class="num">Est. price</th><th class="num">Total</th><th class="num" title="On hand in Main Store">In stock</th></tr></thead><tbody>
+            ${p.lines.map(l => `<tr><td>${M.itemCell(l.itemId)}</td><td class="num">${Kit.num(l.qty)}</td><td>${esc(M.item(l.itemId).uom)}</td><td class="num">${Kit.money(l.price, false)}</td><td class="num">${Kit.money(l.qty * l.price, false)}</td><td class="num">${Kit.num(M.onHand(l.itemId, 'wh_01'))}</td></tr>`).join('')}
+          </tbody><tfoot><tr><td colspan="4" style="text-align:end"><b>Estimated total</b></td><td class="num nw"><b>${Kit.money(total)}</b></td><td></td></tr></tfoot></table></div></div>
+        </div>
+        <div class="card card-pad"><div class="section-t">Approval cycle</div>${M.approvalTrail(p, LV, total)}</div>
+      </div>`,
+      foot: `${p.status === 'Draft' ? M.btn({ id: 'dEdit', icon: 'pencil', label: 'Edit', allow: canEdit, why: 'Only the requester or a user with Edit permission' }) : ''}
+        ${/Draft|Pending approval|Approved/.test(p.status) ? M.btn({ id: 'dCancel', cls: 'danger', icon: 'ban', label: 'Cancel PR', allow: can(OPT, 'cancel') && (isMaker || p.status !== 'Draft' || can(OPT, 'edit')), why: 'Needs Cancel permission' }) : ''}
+        <span class="grow"></span><button class="btn" data-close>Close</button>
+        ${p.status === 'Draft' ? M.btn({ id: 'dSubmit', cls: 'primary', icon: 'send', label: 'Submit for approval', allow: canEdit }) : ''}
+        ${p.status === 'Pending approval' ? M.btn({ id: 'dReject', cls: 'destructive', icon: 'circle-x', label: 'Reject', allow: ap }) + M.btn({ id: 'dApprove', cls: 'success', icon: 'check', label: 'Approve level ' + (next ? next.level : ''), allow: ap }) : ''}
+        ${p.status === 'Approved' ? `<a class="btn primary ${can('material.po', 'add') ? '' : 'disabled'}" ${can('material.po', 'add') ? `href="${R('material/po.html?pr=' + p.id)}"` : 'aria-disabled="true" title="Needs Add permission on Purchase Orders"'}>${icon('shopping-bag')} Create PO</a>` : ''}`,
+      onMount: (el, close) => {
+        const on = (id, fn) => { const b = $('#' + id, el); if (b) b.addEventListener('click', fn); };
+        on('dEdit', () => { close(); edit(p); });
+        on('dSubmit', () => { p.status = 'Pending approval'; p.createdAt = p.createdAt || nowStamp(); save(); audit('PR submitted', 'Purchase requisition', { id: p.id, label: p.no }, [['Status', 'Draft', 'Pending approval']]); toast(p.no + ' submitted for approval'); close(); refresh(); });
+        let note = '';
+        on('dApprove', () => confirm({ title: `Approve ${p.no} at level ${next.level}?`, tone: 'primary', icon: 'check', confirm: 'Approve', body: `${esc(next.name)} approval for ${Kit.money(total)}.`,
+          extra: `<div class="field" style="margin-top:12px"><label for="apNote">Comment (optional)</label><textarea class="input" id="apNote" maxlength="300"></textarea></div>`,
+          onMount: (m) => $('#apNote', m).addEventListener('input', (e) => { note = e.target.value.trim(); }),
+          onConfirm: () => {
+            p.approvals.push({ level: next.level, by: M.meName(), at: nowStamp(), decision: 'Approved', note });
+            const after = M.nextLevel(p, LV, total); const before = p.status;
+            if (!after) p.status = 'Approved';
+            save(); audit('PR approved, level ' + next.level, 'Purchase requisition', { id: p.id, label: p.no }, [['Status', before, p.status]]);
+            toast(after ? `Level ${next.level} approved. Next: ${after.name}` : p.no + ' fully approved'); close(); refresh();
+          } }));
+        on('dReject', () => confirm({ title: 'Reject ' + p.no + '?', body: 'The requester is told the reason. A rejected requisition cannot be converted to a PO.', confirm: 'Reject requisition', reason: true,
+          onConfirm: (reason) => { p.approvals.push({ level: next.level, by: M.meName(), at: nowStamp(), decision: 'Rejected', note: reason }); p.status = 'Rejected'; save();
+            audit('PR rejected', 'Purchase requisition', { id: p.id, label: p.no }, [['Status', 'Pending approval', 'Rejected']], { reason }); toast(p.no + ' rejected'); close(); refresh(); } }));
+        on('dCancel', () => confirm({ title: 'Cancel ' + p.no + '?', body: 'The requisition is kept in history with the reason.', confirm: 'Cancel requisition', reason: true,
+          onConfirm: (reason) => { const b = p.status; p.status = 'Cancelled'; p.cancelReason = reason; save(); audit('PR cancelled', 'Purchase requisition', { id: p.id, label: p.no }, [['Status', b, 'Cancelled']], { reason }); toast(p.no + ' cancelled'); close(); refresh(); } }));
+      } });
+  }
+
+  /* ---------- Create / edit ---------- */
+  function edit(p, preset) {
+    const isNew = !p;
+    const v = p || Object.assign({ deptId: M.ctx().deptId, warehouseId: M.ctxWh() || 'wh_01', priority: 'Routine', needBy: Kit.addDays(db.TODAY, 7), justification: '', lines: [] }, preset || {});
+    let le;
+    drawer({ title: isNew ? 'New purchase requisition' : 'Edit ' + p.no, sub: 'Lines are priced at the last purchase cost. Purchasing confirms the price on the PO.', wide: true,
+      body: `<div class="err-summary hidden"></div><div class="form-grid c4">
+        ${field({ id: 'fDept', label: 'Department', type: 'select', options: deptOpts, value: v.deptId, req: true })}
+        ${field({ id: 'fWh', label: 'Deliver to store', type: 'select', options: M.storeOpts(), value: v.warehouseId, req: true })}
+        ${field({ id: 'fPri', label: 'Priority', type: 'select', options: [['Routine', 'Routine'], ['Urgent', 'Urgent']], value: v.priority, placeholder: false })}
+        ${field({ id: 'fNeed', label: 'Need by', type: 'date', value: v.needBy, req: true, attrs: `min="${db.TODAY}"` })}
+        ${field({ id: 'fJust', label: 'Justification', type: 'textarea', value: v.justification, req: true, full: true, max: 300 })}</div>
+        <div class="section-t" style="margin-top:16px">Item lines</div><div id="fLines"></div>
+        <div class="small muted" style="margin-top:8px" id="fLevels"></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><span class="grow"></span><button class="btn" id="fDraft">${icon('save')} Save draft</button><button class="btn primary" id="fSubmit" disabled>${icon('send')} Submit for approval</button>`,
+      onMount: (el, close) => {
+        const upd = () => {
+          const ok = le && le.valid() && $('#fDept', el).value && $('#fWh', el).value && $('#fNeed', el).value && $('#fJust', el).value.trim().length >= 5;
+          $('#fSubmit', el).disabled = !ok;
+          const tot = le ? M.total(le.get()) : 0;
+          $('#fLevels', el).innerHTML = `${icon('git-branch')} Estimated ${Kit.money(tot)} needs ${M.levelsFor(tot, LV).map(l => 'L' + l.level + ' ' + l.name).join(', then ')}.`;
+        };
+        le = M.lineEditor($('#fLines', el), { lines: v.lines, price: true, wh: () => $('#fWh', el) ? $('#fWh', el).value : '', onChange: upd });
+        $$('input,select,textarea', $('.form-grid', el)).forEach(i => i.addEventListener('input', upd));
+        $('#fWh', el).addEventListener('change', () => le.redraw());
+        const store = (status) => {
+          const errs = {};
+          if (!$('#fDept', el).value) errs.fDept = 'Department is required.';
+          if (!$('#fWh', el).value) errs.fWh = 'Store is required.';
+          if (!$('#fNeed', el).value) errs.fNeed = 'Need-by date is required.'; else if ($('#fNeed', el).value < db.TODAY && status !== 'Draft') errs.fNeed = 'Need-by date cannot be in the past.';
+          if ($('#fJust', el).value.trim().length < 5) errs.fJust = 'Give a short justification (5 characters or more).';
+          le.problems().forEach((m, i) => { errs['line' + i] = m; });
+          if (!showErrors(el, errs)) return;
+          const rec = p || { id: UI.uid('mpr'), no: M.docNo('PR-26-', 'materialPRs'), date: db.TODAY, createdBy: M.meName(), createdAt: nowStamp(), approvals: [] };
+          Object.assign(rec, { deptId: $('#fDept', el).value, warehouseId: $('#fWh', el).value, priority: $('#fPri', el).value, needBy: $('#fNeed', el).value, justification: $('#fJust', el).value.trim(), lines: le.get().map(l => ({ id: 'ln_' + UI.uid('l').slice(2), itemId: l.itemId, qty: l.qty, price: l.price })), status });
+          if (isNew) db.materialPRs.push(rec);
+          save(); audit(isNew ? 'PR created' : 'PR updated', 'Purchase requisition', { id: rec.id, label: rec.no }, [['Status', isNew ? '' : 'Draft', status], ['Estimated value', '', Kit.money(amt(rec))]]);
+          toast(status === 'Draft' ? rec.no + ' saved as draft' : rec.no + ' submitted for approval'); close(); refresh();
+        };
+        $('#fDraft', el).addEventListener('click', () => store('Draft'));
+        $('#fSubmit', el).addEventListener('click', () => store('Pending approval'));
+        upd();
+      } });
+  }
+
+  $('#newPr').addEventListener('click', () => edit(null));
+  // Shortcut from reorder alerts: pr.html?new=1&wh=wh_04&items=it_001:120,it_002:40
+  if (param('new') && can(OPT, 'add')) {
+    const lines = (param('items') || '').split(',').filter(Boolean).map(s => { const [itemId, q] = s.split(':'); return { itemId, qty: +q || '', price: M.item(itemId).cost }; }).filter(l => M.item(l.itemId).id);
+    edit(null, Object.assign({}, param('wh') ? { warehouseId: param('wh') } : {}, lines.length ? { lines, justification: 'Reorder alert: stock below the minimum level.' } : {}));
+  }
+  M.openFromQuery(list(), open);
+})();
+</script>
+</body>
+</html>

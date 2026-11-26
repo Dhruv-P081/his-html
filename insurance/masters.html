@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Insurance masters · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-insurance.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/insurance.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, $ } = UI;
+  if (!UI.page({ opt: 'insurance.masters', title: 'Insurance masters', subtitle: 'Insurance companies and TPAs, plans and co-pay, claim rejection reasons and pre-authorization statuses.' })) return;
+  $('#page').innerHTML = '<div id="m"></div>';
+  Kit.masters($('#m'), { opt: 'insurance.masters', defs: [
+    { id: 'payers', title: 'Insurance Company / TPA', icon: 'building-2', key: 'payers', note: 'Shared with Reception (SOW V4 Module 1).', columns: ['code', 'name', 'type', 'tpa', 'creditDays'],
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Name', req: true }, { key: 'type', label: 'Type', type: 'select', options: ['Insurer', 'TPA', 'Government scheme', 'Corporate'], req: true },
+        { key: 'tpa', label: 'Third party administrator (TPA)' }, { key: 'contact', label: 'Claims contact email' }, { key: 'creditDays', label: 'Credit days', type: 'number', req: true }] },
+    { id: 'plans', title: 'Plan and Co-pay', icon: 'id-card', key: 'plans', code: 'name', note: 'Shared with Reception. Contract coverage rules can override the plan co-pay per service.', columns: ['name', 'payerId', 'copayPct', 'deductible', 'maxCopay', 'limit'],
+      fields: [{ key: 'name', label: 'Plan name', req: true }, { key: 'payerId', label: 'Insurance company', type: 'select', options: db.payers.map(p => [p.id, p.name]), req: true },
+        { key: 'copayPct', label: 'Co-pay %', type: 'number', req: true }, { key: 'deductible', label: 'Deductible (KWD)', type: 'number', money: true }, { key: 'maxCopay', label: 'Maximum co-pay per visit (KWD)', type: 'number', money: true },
+        { key: 'limit', label: 'Annual limit (KWD, 0 = no limit)', type: 'number', money: true }, { key: 'network', label: 'Network', type: 'select', options: ['A', 'B', 'C'] }] },
+    { id: 'insuranceRejectReasons', title: 'Claim Rejection Reason', icon: 'circle-x', key: 'insuranceRejectReasons', columns: ['code', 'name', 'category', 'action'],
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Reason', req: true }, { key: 'category', label: 'Category', type: 'select', options: ['Coding', 'Coverage', 'Authorization', 'Eligibility', 'Administrative', 'Pricing', 'Clinical'], req: true },
+        { key: 'action', label: 'Suggested correction', type: 'textarea' }] },
+    { id: 'insurancePaStatuses', title: 'Pre-Authorization Status', icon: 'shield-question-mark', key: 'insurancePaStatuses', columns: ['code', 'name', 'final', 'description'],
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Status', req: true }, { key: 'final', label: 'Final status (no further payer action)', type: 'check', full: true }, { key: 'description', label: 'Description', type: 'textarea' }] },
+  ] });
+  // Show the payer name instead of the id in the plan list.
+  const fix = () => document.querySelectorAll('#m td').forEach(td => { const p = db.payers.find(x => x.id === td.textContent.trim()); if (p) td.textContent = p.name; });
+  new MutationObserver(fix).observe($('#m'), { childList: true, subtree: true }); fix();
+})();
+</script>
+</body>
+</html>

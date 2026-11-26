@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reception reports · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-reception.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/reception.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, $ } = UI;
+  const Rc = window.Reception;
+  if (!UI.page({ opt: 'reception.reports', title: 'Reception reports', subtitle: '10 reports for SOW V4 Module 1 (Annexure B). Run, export to Excel (CSV) or print.' })) return;
+  const T = db.TODAY;
+  const inRange = (d, v) => (!v.from || String(d).slice(0, 10) >= v.from) && (!v.to || String(d).slice(0, 10) <= v.to);
+  const F = { from: { id: 'from', label: 'From', type: 'date' }, to: { id: 'to', label: 'To', type: 'date' } };
+  const todayF = (o) => Object.assign({}, o, { value: T });
+  const enc = (t) => db.encounters.filter(e => e.type === t);
+  const sum = (a) => a.reduce((x, y) => x + y, 0);
+  const avg = (a) => a.length ? Math.round(sum(a) / a.length) : 0;
+  const add = (s, m) => { const d = new Date(s.replace(' ', 'T')); d.setMinutes(d.getMinutes() + m); const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`; };
+  const tri = (l) => (db.receptionTriage || []).find(t => t.level === l) || {};
+  const triAt = (e) => e.triagedAt || (e.triage ? add(e.start, 3 + e.triage * 2) : '');
+  const seenAt = (e) => e.seenAt || (/Under treatment|Under observation|Discharged|Admitted/.test(e.status) && e.triage ? add(e.start, Math.max(4, Math.round((tri(e.triage).targetMins || 30) * 0.7))) : '');
+  const opt = (list) => list.map(x => Array.isArray(x) ? x : [x, x]);
+  const pays = () => db.receptionPayments || [];
+  Kit.reportCatalog($('#page'), { opt: 'reception.reports', reports: [
+    { id: 'rc01', title: 'Patient registrations', purpose: 'New MRNs created in the period by nationality, payer and registering user.',
+      filters: [F.from, F.to, { id: 'nat', label: 'Nationality', type: 'select', options: opt([...new Set(db.patients.map(p => p.nationality).filter(Boolean))].sort()) }, { id: 'g', label: 'Gender', type: 'select', options: opt(['Male', 'Female']) }],
+      columns: ['MRN', 'Patient', 'Gender', 'Nationality', 'Payer', 'Registered', 'Status'],
+      rows: (v) => db.patients.filter(p => inRange(p.registeredAt, v) && (!v.nat || p.nationality === v.nat) && (!v.g || p.gender === v.g)).sort((a, b) => b.registeredAt.localeCompare(a.registeredAt)).map(p => [p.mrn, p.name, p.gender, p.nationality, Kit.payerLabel(p), Kit.day(p.registeredAt), p.status]),
+      totals: (r) => ['Total', r.length + ' patients', '', '', '', '', ''] },
+    { id: 'rc02', title: 'OPD visits by clinic and doctor', purpose: 'Visit counts, new versus follow-up and cancellations per doctor.',
+      filters: [todayF(F.from), F.to, { id: 'cl', label: 'Clinic', type: 'select', options: db.clinics.map(c => [c.id, c.name]) }, { id: 'src', label: 'Source', type: 'select', options: opt(['Walk-in', 'Appointment', 'Referral']) }],
+      columns: ['Clinic', 'Doctor', 'Visits', 'New', 'Follow-up', 'Completed', 'Cancelled or no-show'],
+      rows: (v) => { const L = enc('OPD').filter(e => inRange(e.start, v) && (!v.cl || e.clinicId === v.cl) && (!v.src || e.source === v.src)); return Object.entries(Kit.groupBy(L, e => e.doctorId)).map(([d, es]) => [UI.L.clName(es[0].clinicId), Kit.docName(d), es.length, es.filter(e => e.visitType === 'New').length, es.filter(e => e.visitType === 'Follow-up').length, es.filter(e => e.status === 'Completed').length, es.filter(e => /Cancelled|No-show/.test(e.status)).length]).sort((a, b) => b[2] - a[2]); },
+      totals: (r) => ['Total', '', sum(r.map(x => x[2])), sum(r.map(x => x[3])), sum(r.map(x => x[4])), sum(r.map(x => x[5])), sum(r.map(x => x[6]))] },
+    { id: 'rc03', title: 'OPD waiting time and turnaround', purpose: 'Check-in to doctor and check-in to completion, by clinic.',
+      filters: [todayF(F.from), todayF(F.to), { id: 'cl', label: 'Clinic', type: 'select', options: db.clinics.map(c => [c.id, c.name]) }],
+      columns: ['Clinic', 'Visits', 'Waiting now', 'Average wait now (min)', 'Completed', 'Average turnaround (min)'],
+      rows: (v) => { const L = enc('OPD').filter(e => inRange(e.start, v) && (!v.cl || e.clinicId === v.cl)); return Object.entries(Kit.groupBy(L, e => e.clinicId)).map(([c, es]) => { const w = es.filter(e => /Checked in|Waiting/.test(e.status)); const d = es.filter(e => e.status === 'Completed' && e.end); return [UI.L.clName(c), es.length, w.length, avg(w.map(e => Rc.mins(Rc.qStart(e)))), d.length, avg(d.map(e => Rc.mins(e.checkedInAt || e.start, e.end)))]; }); } },
+    { id: 'rc04', title: 'ER attendance by triage level', purpose: 'ER arrivals by ESI level, area and arrival mode.',
+      filters: [todayF(F.from), F.to, { id: 'area', label: 'Area', type: 'select', options: opt(Rc.AREAS) }, { id: 'arr', label: 'Arrival mode', type: 'select', options: opt(['Walk-in', 'Ambulance', 'Police', 'Transfer from another hospital']) }],
+      columns: ['ESI level', 'Category', 'Colour', 'Arrivals', 'Still in ER', 'Admitted', 'Left without being seen'],
+      rows: (v) => { const L = enc('ER').filter(e => inRange(e.start, v) && (!v.area || e.area === v.area) && (!v.arr || e.arrival === v.arr)); return (db.receptionTriage || []).map(t => { const es = L.filter(e => e.triage === t.level); return [t.code, t.name, t.colour, es.length, es.filter(e => !/Discharged|Cancelled|Left|Admitted/.test(e.status)).length, es.filter(e => e.status === 'Admitted' || e.admitRequestId).length, es.filter(e => /Left/.test(e.status)).length]; }).concat([['Not triaged', '', '', L.filter(e => !e.triage).length, L.filter(e => !e.triage && !/Discharged|Cancelled|Left/.test(e.status)).length, 0, L.filter(e => !e.triage && /Left/.test(e.status)).length]]); },
+      totals: (r) => ['Total', '', '', sum(r.map(x => x[3])), sum(r.map(x => x[4])), sum(r.map(x => x[5])), sum(r.map(x => x[6]))] },
+    { id: 'rc05', title: 'ER turnaround times', purpose: 'Door to triage, door to doctor and length of stay per patient against the ESI target.',
+      filters: [todayF(F.from), F.to, { id: 'esi', label: 'ESI level', type: 'select', options: [1, 2, 3, 4, 5].map(l => [String(l), 'ESI ' + l]) }],
+      columns: ['ER no.', 'Patient', 'ESI', 'Arrived', 'Door to triage (min)', 'Door to doctor (min)', 'Target (min)', 'Length of stay (min)', 'Status'],
+      rows: (v) => enc('ER').filter(e => inRange(e.start, v) && (!v.esi || String(e.triage) === v.esi)).map(e => [e.no, Kit.ptName(e.patientId), e.triage ? 'ESI ' + e.triage : '-', Kit.time(e.start), triAt(e) ? Rc.mins(e.start, triAt(e)) : '-', seenAt(e) ? Rc.mins(e.start, seenAt(e)) : '-', e.triage ? tri(e.triage).targetMins : '-', Rc.mins(e.start, e.end || null), e.status]) },
+    { id: 'rc06', title: 'Admissions and discharges (ADT)', purpose: 'Admissions, transfers and discharges with type, ward and length of stay.',
+      filters: [{ id: 'from', label: 'From', type: 'date', value: Kit.addDays(T, -7) }, F.to, { id: 'ward', label: 'Ward', type: 'select', options: db.wards.map(w => [w.id, w.name]) }, { id: 'type', label: 'Admission type', type: 'select', options: opt(['Elective', 'Emergency']) }],
+      columns: ['Admission', 'Patient', 'Type', 'Ward', 'Bed', 'Attending', 'Admitted', 'Discharged', 'Discharge type', 'Stay (days)'],
+      rows: (v) => enc('IPD').filter(e => (inRange(e.start, v) || (e.end && inRange(e.end, v))) && (!v.ward || (Kit.bed(e.bedId) || {}).wardId === v.ward) && (!v.type || e.admissionType === v.type)).map(e => { const b = Kit.bed(e.bedId) || {}; return [e.no, Kit.ptName(e.patientId), e.admissionType || '', (Kit.ward(b.wardId) || {}).code || '', b.no || e.releasedBed || '', Kit.docName(e.attendingId || e.doctorId), Kit.day(e.start), e.end ? Kit.day(e.end) : 'In house', e.dischargeType || '', Math.max(1, Math.round((new Date((e.end || T).slice(0, 10)) - new Date(e.start.slice(0, 10))) / 864e5))]; }) },
+    { id: 'rc07', title: 'Bed occupancy by ward', purpose: 'Current bed status and occupancy percentage per ward.',
+      filters: [{ id: 'ward', label: 'Ward', type: 'select', options: db.wards.map(w => [w.id, w.name]) }, { id: 'bt', label: 'Bed type', type: 'select', options: opt([...new Set(db.beds.map(b => b.type))]) }],
+      columns: ['Ward', 'Beds', 'Occupied', 'Vacant', 'Cleaning', 'Reserved', 'Blocked', 'Occupancy %'],
+      rows: (v) => db.wards.filter(w => !v.ward || w.id === v.ward).map(w => { const B = db.beds.filter(b => b.wardId === w.id && (!v.bt || b.type === v.bt)); const n = (s) => B.filter(b => b.status === s).length; return [w.name, B.length, n('Occupied'), n('Vacant'), n('Cleaning'), n('Reserved'), n('Blocked'), B.length ? Math.round(100 * n('Occupied') / B.length) : 0]; }),
+      totals: (r) => ['Total', sum(r.map(x => x[1])), sum(r.map(x => x[2])), sum(r.map(x => x[3])), sum(r.map(x => x[4])), sum(r.map(x => x[5])), sum(r.map(x => x[6])), sum(r.map(x => x[1])) ? Math.round(100 * sum(r.map(x => x[2])) / sum(r.map(x => x[1]))) : 0] },
+    { id: 'rc08', title: 'Cashier collections by payment mode', purpose: 'Receipts by cashier and payment mode (cash, KNET, card, credit).',
+      filters: [todayF(F.from), todayF(F.to), { id: 'mode', label: 'Payment mode', type: 'select', options: opt((db.receptionPayModes || []).map(m => m.name)) }, { id: 'by', label: 'Cashier', type: 'select', options: opt([...new Set(pays().map(p => p.by))]) }],
+      columns: ['Receipt', 'Time', 'Cashier', 'Patient', 'Invoice', 'Mode', 'Reference', 'Amount (KWD)'],
+      rows: (v) => pays().filter(p => inRange(p.at, v) && (!v.mode || p.mode === v.mode) && (!v.by || p.by === v.by)).map(p => [p.no, Kit.when(p.at), p.by, Kit.ptName(p.patientId), (db.invoices.find(i => i.id === p.invoiceId) || {}).no || '', p.mode, p.ref || '', +p.amount.toFixed(3)]),
+      totals: (r) => ['Total', '', '', r.length + ' receipts', '', '', '', +sum(r.map(x => x[7])).toFixed(3)] },
+    { id: 'rc09', title: 'Cashier shift close and variance', purpose: 'Shift float, expected and counted cash, variance and reason.',
+      filters: [{ id: 'from', label: 'From', type: 'date', value: Kit.addDays(T, -7) }, F.to, { id: 'user', label: 'Cashier', type: 'select', options: opt([...new Set((db.receptionShifts || []).map(s => s.user))]) }],
+      columns: ['Shift', 'Cashier', 'Counter', 'Opened', 'Closed', 'Float', 'Expected', 'Counted', 'Variance', 'Reason'],
+      rows: (v) => (db.receptionShifts || []).filter(s => inRange(s.openedAt, v) && (!v.user || s.user === v.user)).map(s => [s.no, s.user, s.counter, Kit.when(s.openedAt), s.closedAt ? Kit.when(s.closedAt) : 'Open', +s.float.toFixed(3), s.status === 'Open' ? +Rc.shiftTotals(s).expected.toFixed(3) : +Number(s.expected).toFixed(3), s.status === 'Open' ? '-' : +Number(s.counted).toFixed(3), s.status === 'Open' ? '-' : +Number(s.variance).toFixed(3), s.varianceReason || '']) },
+    { id: 'rc10', title: 'Insurance mapping and eligibility', purpose: 'Patients by payer and plan, with verification and expiry status.',
+      filters: [{ id: 'payer', label: 'Payer', type: 'select', options: db.payers.map(p => [p.id, p.name]) }, { id: 'st', label: 'Eligibility', type: 'select', options: opt(['Verified', 'Not verified', 'Expiring', 'Expired']) }, { id: 'rank', label: 'Rank', type: 'select', options: opt(['Primary', 'Secondary']) }],
+      columns: ['MRN', 'Patient', 'Rank', 'Payer', 'Plan', 'Policy no.', 'Valid to', 'Eligibility', 'Verified by'],
+      rows: (v) => (db.receptionCoverage || []).filter(c => c.status !== 'Inactive' && (!v.payer || c.payerId === v.payer) && (!v.rank || c.rank === v.rank) && (!v.st || Rc.covState(c)[0] === v.st)).map(c => { const p = Kit.pt(c.patientId) || {}; return [p.mrn || '', p.name || '', c.rank, (Kit.payer(c.payerId) || {}).name || '', (Kit.plan(c.planId) || {}).name || '', c.policyNo, Kit.day(c.to), Rc.covState(c)[0], c.verifiedBy || '']; }) },
+  ] });
+})();
+</script>
+</body>
+</html>

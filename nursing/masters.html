@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nursing masters · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-nursing.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/nursing.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { $, icon } = UI;
+  if (!UI.page({ opt: 'nursing.masters', title: 'Nursing masters', subtitle: 'Assessment templates, nursing diagnoses and care plans, medication routes and frequencies, pain scales and handover templates.' })) return;
+  $('#page').innerHTML = `<div style="margin-bottom:14px">${Kit.phase2('2nd phase (SOW V4): Early Warning Score (NEWS) Rules Master and Care Pathway Master. Not configurable in this phase.')}</div><div id="m"></div>`;
+  Kit.masters($('#m'), { opt: 'nursing.masters', defs: [
+    { id: 'tpl', title: 'Nursing assessment templates', icon: 'clipboard-check', key: 'nursingTemplates', columns: ['code', 'name', 'type', 'frequency'], note: 'Sections: general, morse, pain, braden, nutrition (comma separated). Used by the Nursing Assessments screen.',
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Name', req: true }, { key: 'type', label: 'Type', type: 'select', options: ['Admission', 'Reassessment', 'Screening'], req: true }, { key: 'sections', label: 'Sections', req: true }, { key: 'frequency', label: 'Frequency', req: true }, { key: 'appliesTo', label: 'Applies to wards' }] },
+    { id: 'ndx', title: 'Nursing diagnoses and care plans', icon: 'target', key: 'nursingDiagnoses', columns: ['code', 'name', 'domain', 'frequency'], note: 'Goal and interventions are copied into the patient care plan. Separate interventions with a semicolon.',
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Diagnosis', req: true }, { key: 'domain', label: 'Domain', type: 'select', options: ['Safety', 'Comfort', 'Respiration', 'Circulation', 'Nutrition', 'Elimination', 'Education', 'Psychosocial'], req: true }, { key: 'trigger', label: 'Suggested when' }, { key: 'goal', label: 'Goal', type: 'textarea', req: true }, { key: 'interventions', label: 'Interventions', type: 'textarea', req: true }, { key: 'frequency', label: 'Review frequency', type: 'select', options: ['Every 2 hours', 'Every 4 hours', 'Every shift', 'Before meals', 'Once daily'], req: true }] },
+    { id: 'rte', title: 'Medication routes', icon: 'route', key: 'nursingRoutes', columns: ['code', 'name', 'description', 'siteRequired'],
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Route', req: true }, { key: 'description', label: 'Description' }, { key: 'siteRequired', label: 'Site must be recorded on the MAR', type: 'check' }] },
+    { id: 'frq', title: 'Medication frequencies', icon: 'clock', key: 'nursingFrequencies', columns: ['code', 'name', 'times', 'prn'], note: 'Scheduled times (24 hour, comma separated) drive the MAR grid and the order worklist. PRN frequencies use the minimum interval in hours.',
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Frequency', req: true }, { key: 'times', label: 'Scheduled times' }, { key: 'perDay', label: 'Doses per day', type: 'number' }, { key: 'prn', label: 'As needed (PRN)', type: 'check' }, { key: 'minHours', label: 'Minimum interval (hours, PRN)', type: 'number' }] },
+    { id: 'psc', title: 'Pain scales', icon: 'gauge', key: 'nursingPainScales', columns: ['code', 'name', 'population', 'reassessMins'],
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Scale', req: true }, { key: 'type', label: 'Type', type: 'select', options: ['Self-report', 'Observational'], req: true }, { key: 'population', label: 'Population', req: true }, { key: 'range', label: 'Score range' }, { key: 'reassessMins', label: 'Reassess after intervention (minutes)', type: 'number', req: true }] },
+    { id: 'hot', title: 'Shift handover templates', icon: 'repeat', key: 'nursingHandoverTemplates', columns: ['code', 'name', 'format', 'wardType'],
+      fields: [{ key: 'code', label: 'Code', req: true }, { key: 'name', label: 'Name', req: true }, { key: 'format', label: 'Format', type: 'select', options: ['SBAR', 'I-SBAR', 'ISOBAR'], req: true }, { key: 'wardType', label: 'Ward type', type: 'select', options: ['General ward', 'ICU', 'Paediatric', 'Private', 'All wards'], req: true }, { key: 'sections', label: 'Sections', type: 'textarea', req: true }, { key: 'bedside', label: 'Bedside handover', type: 'check' }] },
+  ] });
+  void icon;
+})();
+</script>
+</body>
+</html>

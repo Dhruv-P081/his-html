@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>End of Service Benefits · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-hr.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/hr.js"></script>
+<style>.nw{white-space:nowrap}</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, field, showErrors, drawer, confirm } = UI;
+  const OPT = 'hr.eosb';
+  if (!UI.page({ opt: OPT, title: 'End of Service Benefits', subtitle: 'Indemnity under the Kuwait Labour Law (Law 6 of 2010, private sector), with the worked calculation, approval and print.',
+    actions: HR.btn(OPT, 'add', 'New calculation', 'id="new"', 'primary', 'calculator') })) return;
+  const T = db.TODAY, ME = UI.me();
+  const REASONS = ['Resignation', 'Termination by employer', 'End of contract', 'Retirement', 'Death or disability'];
+  const calcOf = (c) => c.final || HR.eosbCalc(c);
+  let view = 'all';
+  const liab = HR.active().map(v => HR.eosbCalc({ empId: v.id, reason: 'Termination by employer', lastDay: T, unpaidDays: 0 })).filter(Boolean);
+  $('#page').innerHTML = `<div class="grid g4" style="margin-bottom:14px">
+      ${Kit.kpi('Pending approval', db.hrEosb.filter(c => c.status === 'Pending approval').length, { icon: 'hourglass' })}
+      ${Kit.kpi('Approved, not paid', db.hrEosb.filter(c => c.status === 'Approved').length, { icon: 'badge-check' })}
+      ${Kit.kpi('Paid this year', Kit.money(Kit.sumBy(db.hrEosb.filter(c => c.status === 'Paid'), c => calcOf(c).net), false), { icon: 'wallet', unit: 'KWD' })}
+      ${Kit.kpi('Accrued liability', Kit.money(Kit.sumBy(liab, x => x.capped), false), { icon: 'landmark', unit: 'KWD', foot: 'All active staff, full indemnity at today' })}
+    </div>
+    <div id="seg" style="margin-bottom:12px"></div><div class="row" style="margin-bottom:12px"><span class="grow"></span>${Kit.scopeNote('Kuwaiti nationals covered by PIFSS: indemnity offset against PIFSS contributions to be confirmed with Tibbi Finance.')}</div>
+    <div id="t"></div>
+    <div class="card card-pad" style="margin-top:14px"><div class="section-t" style="margin-bottom:10px">Rules in use (HR Masters, Indemnity rules)</div><div class="grid g4">${HR.rules().map(r => `<div class="small"><b>${esc(r.name)}</b><div class="muted">${r.type === 'Accrual' ? esc(r.value + ' ' + r.unit) : r.type === 'Resignation share' ? esc(r.value + r.unit.replace('% of indemnity', '%')) : esc(r.value + ' ' + r.unit)} · ${esc(r.note)}</div></div>`).join('')}</div></div>`;
+  const sts = ['all', 'Pending approval', 'Approved', 'Paid', 'Rejected'];
+  const drawSeg = () => Kit.tabs($('#seg'), sts.map(s => ({ id: s, label: s === 'all' ? 'All' : s, count: s === 'all' ? db.hrEosb.length : db.hrEosb.filter(c => c.status === s).length })), view, (v) => { view = v; t.redraw(); });
+  drawSeg();
+  const t = UI.table($('#t'), {
+    rows: () => db.hrEosb.filter(c => view === 'all' || c.status === view).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+    search: (c) => [c.no, HR.name(c.empId), c.reason].join(' '), searchPlaceholder: 'Case or employee',
+    filters: [{ label: 'Reason', options: REASONS.map(x => [x, x]), test: (c, x) => c.reason === x }],
+    columns: [
+      { label: 'Case', sort: (c) => c.no, render: (c) => `<span class="mono">${esc(c.no)}</span>` },
+      { label: 'Employee', sort: (c) => HR.name(c.empId), render: (c) => HR.empCell(HR.get(c.empId)) },
+      { label: 'Reason', render: (c) => esc(c.reason) },
+      { label: 'Service', render: (c) => { const x = calcOf(c); return `<span class="nw">${x.years.toFixed(2)} years</span><div class="xs muted nw">${esc(Kit.day(x.joinDate))} to ${esc(Kit.day(c.lastDay))}</div>`; } },
+      { label: 'Indemnity', cls: 'num', sort: (c) => calcOf(c).indemnity, render: (c) => { const x = calcOf(c); return `<span class="num nw">${Kit.money(x.indemnity)}</span>${x.share < 100 ? `<div class="xs muted">${x.share.toFixed(x.share % 1 ? 1 : 0)}% for resignation</div>` : ''}`; } },
+      { label: 'Net settlement', cls: 'num', sort: (c) => calcOf(c).net, render: (c) => `<b class="num nw">${Kit.money(calcOf(c).net)}</b>` },
+      { label: 'Status', sort: (c) => c.status, render: (c) => Kit.status(c.status) },
+    ],
+    onRow: (c) => detail(c), empty: 'No end of service cases', emptyIcon: 'hourglass',
+  });
+
+  function worked(x, c) {
+    const M = (n) => Kit.money(n);
+    return `<table class="calc-t" style="width:100%"><tbody>
+      <tr><td>Service period</td><td>${esc(Kit.day(x.joinDate))} to ${esc(Kit.day(x.lastDay))}${c.unpaidDays ? `, less ${c.unpaidDays} unpaid days` : ''}</td><td class="num">${x.totalDays} days = ${x.years.toFixed(3)} years</td></tr>
+      <tr><td>Monthly remuneration</td><td>Basic ${M(x.basic)} + fixed allowances ${M(x.allowances)}</td><td class="num">${M(x.salary)}</td></tr>
+      <tr><td>Daily rate</td><td>${M(x.salary)} / ${x.divisor}</td><td class="num">${M(x.daily)}</td></tr>
+      ${x.steps.map(s => `<tr><td>${esc(s.label)}</td><td>${s.years.toFixed(3)} years x ${s.daysPerYear} days x ${M(x.daily)}</td><td class="num">${M(s.amount)}</td></tr>`).join('')}
+      <tr class="tot"><td>Indemnity before cap</td><td></td><td class="num">${M(x.raw)}</td></tr>
+      <tr><td>Cap</td><td>${x.capMonths} months x ${M(x.salary)} = ${M(x.cap)}</td><td class="num">${x.raw > x.cap ? 'Capped to ' + M(x.cap) : 'Not reached'}</td></tr>
+      <tr><td>Reason adjustment</td><td>${c.reason === 'Resignation' ? '' : esc(c.reason) + ': '}${esc(x.shareRule)}</td><td class="num">${x.share.toFixed(x.share % 1 ? 3 : 0)}%</td></tr>
+      <tr class="tot"><td>End of service indemnity</td><td></td><td class="num">${M(x.indemnity)}</td></tr>
+      <tr><td>Plus unused annual leave</td><td>${x.leaveDays} days x ${M(x.daily)}</td><td class="num">${M(x.leaveEnc)}</td></tr>
+      <tr><td>Less loans outstanding</td><td>${x.loanNos.length ? esc(x.loanNos.join(', ')) : 'None'}</td><td class="num">${x.loanBal ? '-' + M(x.loanBal) : M(0)}</td></tr>
+      <tr class="tot"><td>Net final settlement</td><td></td><td class="num">${M(x.net)}</td></tr></tbody></table>`;
+  }
+
+  function detail(c) {
+    const x = calcOf(c), v = HR.get(c.empId);
+    const blk = HR.selfBlock(c.createdBy, c.empId);
+    const okApprove = can(OPT, 'approve') && !blk;
+    drawer({ title: 'End of service ' + c.no, sub: esc(v.name) + ' · ' + esc(v.designation), wide: true,
+      body: `<div class="row wrap" style="gap:8px;margin-bottom:12px">${Kit.status(c.status)}<span class="tag">${esc(c.reason)}</span><span class="small muted">Prepared by ${esc(c.createdBy)} ${esc(Kit.when(c.createdAt))}${c.approvedBy ? ' · approved by ' + esc(c.approvedBy) + ' ' + esc(Kit.when(c.approvedAt)) : ''}</span></div>
+        ${c.final ? `<div class="banner ok" style="margin-bottom:12px">${icon('lock')}<span>Calculation frozen at approval (${esc(Kit.when(c.final.at))}).</span></div>` : `<div class="banner info" style="margin-bottom:12px">${icon('info')}<span>Live calculation from the current salary, leave balance and loans. It is frozen when approved.</span></div>`}
+        <div class="card">${worked(x, c)}</div>
+        ${c.notes ? `<div class="small muted" style="margin-top:10px">Notes: ${esc(c.notes)}</div>` : ''}${c.rejectNote ? `<div class="banner err" style="margin-top:10px">${icon('x')}<span>Rejected: ${esc(c.rejectNote)}</span></div>` : ''}
+        ${blk && c.status === 'Pending approval' ? `<div class="banner warn" style="margin-top:10px">${icon('user-lock')}<span>${esc(blk)}</span></div>` : ''}`,
+      foot: `<button class="btn" data-close>Close</button><span class="grow"></span><button class="btn" id="ePrint" ${can(OPT, 'print') ? '' : 'disabled title="Needs Print permission"'}>${icon('printer')} Print</button>
+        ${c.status === 'Pending approval' ? `<button class="btn danger" id="eRej" ${okApprove ? '' : `disabled title="${esc(blk || 'Needs Approve permission')}"`}>${icon('x')} Reject</button><button class="btn primary" id="eApp" ${okApprove ? '' : `disabled title="${esc(blk || 'Needs Approve permission')}"`}>${icon('badge-check')} Approve</button>` : ''}
+        ${c.status === 'Approved' ? HR.btn(OPT, 'approve', 'Mark as paid', 'id="ePaid"', 'success', 'wallet') : ''}`,
+      onMount: (el, close) => {
+        $('#ePrint', el).addEventListener('click', () => Kit.printDoc({ title: 'End of service benefit calculation', sub: c.no + ' · ' + v.name, html: `<table><tbody><tr><td><b>Employee</b></td><td>${esc(v.name)} (${esc(v.empNo)})</td><td><b>Designation</b></td><td>${esc(v.designation)}</td></tr><tr><td><b>Civil ID</b></td><td>${esc(v.civilId)}</td><td><b>Nationality</b></td><td>${esc(v.nationality)}</td></tr><tr><td><b>Reason</b></td><td>${esc(c.reason)}</td><td><b>Status</b></td><td>${esc(c.status)}</td></tr></tbody></table><h3 style="margin-top:14px">Worked calculation</h3>${worked(x, c)}<p style="font-size:11px;margin-top:12px">Basis: Kuwait Labour Law in the Private Sector, Law 6 of 2010, Articles 51 and 53. Prepared by ${esc(c.createdBy)}${c.approvedBy ? '; approved by ' + esc(c.approvedBy) : ''}.</p><table style="margin-top:30px"><tbody><tr><td>Prepared by: ____________</td><td>Approved by: ____________</td><td>Employee signature: ____________</td></tr></tbody></table>` }));
+        const on = (i, fn) => { const b = $('#' + i, el); if (b) b.addEventListener('click', () => { close(); fn(); }); };
+        on('eApp', () => confirm({ title: 'Approve ' + c.no + '?', tone: 'primary', icon: 'badge-check', confirm: 'Approve', body: `Net final settlement ${Kit.money(x.net)} for ${esc(v.name)}. The calculation is frozen.`,
+          onConfirm: () => { c.final = HR.eosbCalc(c); c.status = 'Approved'; c.approvedBy = ME.displayName; c.approvedAt = UI.nowStamp(); save(); audit('Approved end of service benefit', 'EOSB', { id: c.id, label: c.no }, [['Status', 'Pending approval', 'Approved'], ['Net settlement', '', Kit.money(c.final.net)]]); toast(c.no + ' approved'); drawSeg(); t.redraw(); detail(c); } }));
+        on('eRej', () => confirm({ title: 'Reject ' + c.no + '?', confirm: 'Reject', reason: true, body: 'The case is closed. Prepare a new calculation if needed.',
+          onConfirm: (reason) => { c.status = 'Rejected'; c.rejectNote = reason; save(); audit('Rejected end of service benefit', 'EOSB', { id: c.id, label: c.no }, [['Status', 'Pending approval', 'Rejected']], { reason }); toast(c.no + ' rejected'); drawSeg(); t.redraw(); } }));
+        on('ePaid', () => confirm({ title: 'Mark ' + c.no + ' as paid?', tone: 'primary', icon: 'wallet', confirm: 'Mark as paid', body: 'Record that the final settlement was paid to the employee.',
+          onConfirm: () => { c.status = 'Paid'; c.paidAt = T; save(); audit('Paid end of service benefit', 'EOSB', { id: c.id, label: c.no }, [['Status', 'Approved', 'Paid']]); toast(c.no + ' marked as paid'); drawSeg(); t.redraw(); } }));
+      } });
+  }
+
+  function create() {
+    const cands = HR.all().filter(v => v.hrStatus !== 'Separated' && !db.hrEosb.some(c => c.empId === v.id && c.status !== 'Rejected'));
+    drawer({ title: 'New end of service calculation', sub: 'The worked calculation updates as you fill the form.', wide: true,
+      body: `<div class="err-summary hidden"></div><div class="form-grid c4">
+        ${field({ id: 'n_emp', label: 'Employee', type: 'select', options: cands.sort((a, b) => a.name.localeCompare(b.name)).map(v => [v.id, `${v.name} (${v.empNo})${v.hrStatus !== 'Active' ? ' · ' + v.hrStatus : ''}`]), req: true, full: false })}
+        ${field({ id: 'n_reason', label: 'Reason', type: 'select', options: REASONS.map(x => [x, x]), value: 'Resignation', req: true })}
+        ${field({ id: 'n_day', label: 'Last working day', type: 'date', req: true })}
+        ${field({ id: 'n_unpaid', label: 'Unpaid leave days to exclude', type: 'number', value: 0, attrs: 'min="0"' })}
+        ${field({ id: 'n_notes', label: 'Notes', type: 'textarea', full: true })}</div>
+        <div id="n_calc" style="margin-top:14px"></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><span class="grow"></span><button class="btn primary" id="nSave" disabled>${icon('send')} Submit for approval</button>`,
+      onMount: (el, close) => {
+        const g = (i) => $('#' + i, el).value, sv = $('#nSave', el);
+        $('#n_emp', el).addEventListener('change', () => { const v = HR.get(g('n_emp')); if (v && v.lastWorkingDate) $('#n_day', el).value = v.lastWorkingDate; });
+        const upd = () => {
+          const ok = g('n_emp') && g('n_reason') && g('n_day');
+          sv.disabled = !ok;
+          if (!ok) { $('#n_calc', el).innerHTML = `<div class="empty">${icon('calculator')}<b>Pick the employee, reason and last working day</b></div>`; return; }
+          const c = { empId: g('n_emp'), reason: g('n_reason'), lastDay: g('n_day'), unpaidDays: Number(g('n_unpaid') || 0) };
+          const v = HR.get(c.empId);
+          if (c.lastDay < v.joinDate) { $('#n_calc', el).innerHTML = `<div class="banner err">${icon('x')}<span>Last working day is before the join date (${esc(Kit.day(v.joinDate))}).</span></div>`; sv.disabled = true; return; }
+          $('#n_calc', el).innerHTML = `<div class="card">${worked(HR.eosbCalc(c), c)}</div>`;
+        };
+        $$('input,select,textarea', el).forEach(i => { i.addEventListener('input', upd); i.addEventListener('change', upd); });
+        upd();
+        sv.addEventListener('click', () => {
+          const errs = {}, v = HR.get(g('n_emp'));
+          if (g('n_day') < v.joinDate) errs.n_day = 'Last working day is before the join date.';
+          if (Number(g('n_unpaid')) < 0) errs.n_unpaid = 'Cannot be negative.';
+          if (!showErrors(el, errs)) return;
+          const no = Kit.nextNo('EOS-', db.hrEosb);
+          const c = { id: 'heo_' + no.slice(4), no, empId: v.id, reason: g('n_reason'), lastDay: g('n_day'), unpaidDays: Number(g('n_unpaid') || 0), notes: g('n_notes').trim(), status: 'Pending approval', createdBy: ME.displayName, createdAt: UI.nowStamp(), approvedBy: '', approvedAt: '', final: null };
+          db.hrEosb.push(c); save(); audit('Created end of service calculation', 'EOSB', { id: c.id, label: no }, [['Employee', '', v.name], ['Net settlement', '', Kit.money(HR.eosbCalc(c).net)]]);
+          close(); toast(no + ' submitted for approval'); drawSeg(); t.redraw(); detail(c);
+        });
+      } });
+  }
+  const n = $('#new'); if (n) n.addEventListener('click', create);
+  const q = db.hrEosb.find(c => c.id === UI.param('id')); if (q) detail(q);
+})();
+</script>
+</body>
+</html>

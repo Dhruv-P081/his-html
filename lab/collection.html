@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sample collection · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-lab.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/lab.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, nowStamp, field } = UI;
+  const OPT = 'lab.work.sample';
+  if (!UI.page({ opt: OPT, title: 'Sample collection', subtitle: 'Phlebotomy worklist: identify the patient, follow the order of draw, label and collect.',
+    actions: `<a class="btn" href="${R('lab/receiving.html')}">${icon('scan-barcode')} Sample receiving</a>` })) return;
+  const canAdd = can(OPT, 'add'), canPrint = can(OPT, 'print'), canCancel = can(OPT, 'cancel');
+  let tab = 'todo', cur = UI.param('pt') || null, q = '';
+  const pending = () => Lab.orders().filter(o => o.status === 'Ordered' && o.acceptedAt);
+  const collectedToday = () => Lab.orders().filter(o => o.collectedAt && o.collectedAt.startsWith(db.TODAY) && o.status !== 'Cancelled');
+  const rank = { STAT: 0, Urgent: 1, Routine: 2 };
+  const groups = (list) => {
+    const m = Kit.groupBy(list, o => o.patientId);
+    return Object.entries(m).map(([pid, os]) => ({ pid, os, p: Kit.pt(pid), pri: os.reduce((a, o) => Math.min(a, rank[o.priority] ?? 2), 2), first: os.map(o => o.orderedAt).sort()[0], recol: os.some(o => o.sampleRejected) }))
+      .filter(g => !q || [g.p && g.p.name, g.p && g.p.mrn, g.p && g.p.civilId].join(' ').toLowerCase().includes(q.toLowerCase()))
+      .sort((a, b) => a.pri - b.pri || (a.first < b.first ? -1 : 1));
+  };
+  $('#page').innerHTML = `<div class="split"><div class="card list-pane"><div style="padding:12px 14px 0" id="cTabs"></div><div style="padding:10px 14px"><div class="search">${icon('search')}<input class="input" id="cQ" placeholder="Patient, MRN or Civil ID" aria-label="Search patients"></div></div><div id="cList"></div></div><div id="cBody"></div></div>`;
+  $('#cQ').addEventListener('input', (e) => { q = e.target.value.trim(); drawList(); });
+  const drawTabs = () => Kit.tabs($('#cTabs'), [{ id: 'todo', label: 'To collect', count: groups(pending()).length }, { id: 'done', label: 'Collected today', count: groups(collectedToday()).length }], tab, (t) => { tab = t; cur = null; drawList(); drawBody(); });
+  function drawList() {
+    const gs = groups(tab === 'todo' ? pending() : collectedToday());
+    if (!cur && gs.length) cur = gs[0].pid;
+    const newCount = Lab.orders().filter(o => Lab.stageKey(o) === 'new').length;
+    $('#cList').innerHTML = (tab === 'todo' && newCount ? `<div class="qitem" onclick="location.href='${R('lab/orders.html')}'">${icon('info')}<span class="small grow">${newCount} new order${newCount > 1 ? 's' : ''} waiting for lab acceptance</span>${icon('chevron-right', 'mute')}</div>` : '')
+      + (gs.length ? gs.map(g => `<div class="qitem ${g.pid === cur ? 'on' : ''}" data-p="${g.pid}">${Kit.avatar(g.p, 'sm')}<div class="grow" style="min-width:0"><b style="font-size:13px">${esc(g.p ? g.p.name : '')}</b><div class="xs muted">${esc(g.p ? g.p.mrn : '')} · ${esc(Lab.location(g.os[0]))}</div><div class="xs muted">${g.os.length} test${g.os.length > 1 ? 's' : ''} · ordered ${esc(Kit.time(g.first))}</div></div><div class="stack tight" style="align-items:flex-end">${g.pri < 2 ? Kit.priority(g.pri === 0 ? 'STAT' : 'Urgent') : ''}${g.recol ? '<span class="badge b-err nodot">Recollect</span>' : ''}</div></div>`).join('')
+      : `<div class="empty">${icon('test-tube')}<b>${tab === 'todo' ? 'No samples to collect' : 'Nothing collected today'}</b></div>`);
+    $$('[data-p]', $('#cList')).forEach(n => n.addEventListener('click', () => { cur = n.dataset.p; drawList(); drawBody(); }));
+  }
+  function drawBody() {
+    const host = $('#cBody');
+    const list = (tab === 'todo' ? pending() : collectedToday()).filter(o => o.patientId === cur);
+    if (!cur || !list.length) { host.innerHTML = `<div class="card"><div class="empty">${icon('user-search')}<b>Select a patient</b><span>Choose a patient from the worklist to see the tests and containers.</span></div></div>`; return; }
+    const p = Kit.pt(cur), e = Kit.enc(list[0].encounterId);
+    if (tab === 'done') {
+      host.innerHTML = `${Kit.patientBanner(p, e)}<div class="card"><div class="card-head"><h3>${icon('test-tube')} Collected today</h3><div class="actions"><button class="btn sm" id="reprint" ${canPrint ? '' : 'disabled title="Needs Print permission"'}>${icon('printer')} Reprint labels</button></div></div>
+        <div class="table-wrap"><table class="tbl"><thead><tr><th>Test</th><th>Accession</th><th>Container</th><th>Collected</th><th>By</th><th>Stage</th></tr></thead><tbody>
+        ${list.map(o => `<tr><td><b>${esc(o.name)}</b></td><td class="mono">${esc(Lab.acc(o))}</td><td>${Lab.tube(Lab.test(o.code).container)}</td><td>${esc(Kit.when(o.collectedAt))}<div class="small muted">${esc(o.collectSite || '')}</div></td><td>${esc(o.collectedBy || '')}</td><td>${Lab.stageBadge(o)}</td></tr>`).join('')}</tbody></table></div></div>`;
+      $('#reprint').addEventListener('click', () => printLabels(list));
+      return;
+    }
+    host.innerHTML = `${Kit.patientBanner(p, e)}
+      ${list.some(o => o.sampleRejected) ? `<div class="banner warn" style="margin-bottom:12px">${icon('rotate-ccw')}<span>Recollection: ${list.filter(o => o.sampleRejected).map(o => esc(o.name) + ' (' + esc(o.sampleRejected.reason) + ')').join(', ')}</span></div>` : ''}
+      <div class="grid g2" style="margin-bottom:16px">
+        <div class="card"><div class="card-head"><h3>${icon('list-checks')} Tests to collect</h3><span class="small muted" id="selCount"></span></div>
+          <div class="table-wrap"><table class="tbl compact"><thead><tr><th><input type="checkbox" id="selAll" checked aria-label="Select all"></th><th>Test</th><th>Priority</th><th>Ordered</th></tr></thead><tbody>
+          ${list.map(o => `<tr><td><input type="checkbox" data-o="${o.id}" checked aria-label="Collect ${esc(o.name)}"></td><td><b>${esc(o.name)}</b><div class="small muted"><span class="mono">${esc(Lab.acc(o))}</span> · ${esc(Lab.test(o.code).specimen)}</div>${o.sampleRejected ? '<span class="badge b-err nodot">Recollect</span>' : ''}${o.collectNote ? `<div class="xs flag-h">${esc(o.collectNote)}</div>` : ''}</td><td>${Kit.priority(o.priority)}</td><td>${esc(Kit.when(o.orderedAt))}<div class="small muted">${esc(Kit.docName(o.by))}</div></td></tr>`).join('')}
+          </tbody></table></div></div>
+        <div class="card"><div class="card-head"><h3>${icon('test-tubes')} Containers and order of draw</h3></div><div class="card-pad" id="guide"></div></div>
+      </div>
+      <div class="card"><div class="card-head"><h3>${icon('clipboard-pen')} Collection</h3></div><div class="card-pad">
+        <div class="err-summary hidden"></div>
+        <div class="form-grid c3">
+          ${field({ id: 'cAt', label: 'Collection time', type: 'datetime-local', value: Lab.local(nowStamp()), req: true })}
+          ${field({ id: 'cBy', label: 'Collected by', value: Lab.meName(), req: true })}
+          ${field({ id: 'cSite', label: 'Site', type: 'select', options: ['Left antecubital', 'Right antecubital', 'Dorsal hand vein', 'Finger prick', 'Heel prick', 'Arterial line', 'Central line', 'Not applicable (urine or swab)'].map(x => [x, x]), value: 'Left antecubital', placeholder: false })}
+          ${field({ id: 'cFast', label: 'Fasting status', type: 'select', options: [['Fasting', 'Fasting (8 h or more)'], ['Not fasting', 'Not fasting'], ['Not required', 'Not required']], value: 'Not required', placeholder: false })}
+          <label class="check full"><input type="checkbox" id="cId"> Patient identity confirmed with two identifiers (name and MRN or Civil ID) against the wristband or ID card</label>
+          ${field({ id: 'cNote', label: 'Notes', type: 'textarea', full: true, placeholder: 'For example: difficult venepuncture, two attempts' })}
+        </div></div>
+        <div class="card-foot"><button class="btn danger" id="cIssue" ${canCancel ? '' : 'disabled title="Needs Cancel permission"'}>${icon('circle-slash')} Unable to collect</button><span class="grow"></span>
+          <button class="btn" id="cPrint" ${canPrint ? '' : 'disabled title="Needs Print permission"'}>${icon('printer')} Print barcode labels</button>
+          <button class="btn primary" id="cGo" ${canAdd ? '' : 'disabled title="Needs Add permission"'}>${icon('check')} Mark collected</button></div></div>`;
+    const sel = () => $$('[data-o]:checked', host).map(c => db.orders.find(o => o.id === c.dataset.o));
+    const guide = () => {
+      const s = sel(), g = Kit.groupBy(s, o => Lab.test(o.code).container);
+      const rows = Object.entries(g).sort((a, b) => Lab.cont(a[0])[0] - Lab.cont(b[0])[0]);
+      const fasting = s.some(o => /GLU|LIPID/.test(o.code));
+      $('#guide', host).innerHTML = rows.length ? `<div class="list-rows">${rows.map(([c, os], i) => `<div><span class="token">${i + 1}</span><div class="grow"><b>${Lab.tube(c)}</b><div class="small muted">${esc(Lab.cont(c)[2])}</div><div class="small">${os.map(o => esc(o.code)).join(', ')}</div></div><span class="tag">${os.length} label${os.length > 1 ? 's' : ''}</span></div>`).join('')}</div>
+        ${fasting ? `<div class="banner warn" style="margin-top:10px">${icon('utensils-crossed')}<span>Glucose or lipid test: ask about fasting and record it below.</span></div>` : ''}`
+        : `<div class="empty">${icon('test-tube')}<b>No test selected</b></div>`;
+      $('#selCount', host).textContent = s.length + ' of ' + list.length + ' selected';
+      $('#cGo', host).disabled = !canAdd || !s.length || !$('#cId', host).checked || !$('#cAt', host).value || !$('#cBy', host).value.trim();
+      $('#cPrint', host).disabled = !canPrint || !s.length;
+    };
+    $$('[data-o]', host).forEach(c => c.addEventListener('change', guide));
+    $('#selAll', host).addEventListener('change', (e) => { $$('[data-o]', host).forEach(c => { c.checked = e.target.checked; }); guide(); });
+    ['cId', 'cAt', 'cBy'].forEach(id => { $('#' + id, host).addEventListener('input', guide); $('#' + id, host).addEventListener('change', guide); });
+    guide();
+    $('#cPrint', host).addEventListener('click', () => printLabels(sel(), UI.$('#cAt').value));
+    $('#cIssue', host).addEventListener('click', () => {
+      const s = sel(); if (!s.length) return;
+      UI.confirm({ title: 'Record that the sample could not be collected?', reason: true, confirm: 'Record', body: 'The tests stay on the worklist and the ward or clinic sees the note. Use Lab orders to cancel a test.',
+        onConfirm: (reason) => { s.forEach(o => { o.collectNote = 'Not collected: ' + reason + ' (' + Kit.time(nowStamp()) + ')'; audit('Sample not collected', 'Lab order', { id: o.id, label: o.no }, [], { reason }); }); save(); toast('Note recorded'); drawBody(); } });
+    });
+    $('#cGo', host).addEventListener('click', () => {
+      const s = sel(), at = Lab.fromLocal($('#cAt', host).value), by = $('#cBy', host).value.trim();
+      const errs = {}; if (at.slice(0, 10) > db.TODAY) errs.cAt = 'Collection time cannot be in the future.';
+      if (!UI.showErrors(host, errs)) return;
+      s.forEach(o => {
+        Object.assign(o, { status: 'Collected', collectedAt: at, collectedBy: by, collectSite: $('#cSite', host).value, fasting: $('#cFast', host).value, collectNotes: $('#cNote', host).value.trim() });
+        delete o.collectNote; if (o.sampleRejected) { o.recollected = true; delete o.sampleRejected; }
+        audit('Sample collected', 'Lab order', { id: o.id, label: o.no }, [['Status', 'Ordered', 'Collected'], ['Collected by', '', by]]);
+      });
+      save(); toast(s.length + ' sample' + (s.length > 1 ? 's' : '') + ' collected. Send them to the laboratory.');
+      const remaining = pending().filter(o => o.patientId === cur).length;
+      if (!remaining) cur = null;
+      drawTabs(); drawList(); drawBody();
+    });
+  }
+  function printLabels(list, at) {
+    Kit.printDoc({ title: 'Sample labels', sub: 'Barcode labels · ' + list.length + ' label' + (list.length > 1 ? 's' : ''), html: list.map(o => Lab.labelHtml(o, { at: at ? Lab.fromLocal(at) : o.collectedAt })).join('') });
+    list.forEach(o => audit('Sample label printed', 'Lab order', { id: o.id, label: o.no }, []));
+  }
+  drawTabs(); drawList(); drawBody();
+})();
+</script>
+</body>
+</html>

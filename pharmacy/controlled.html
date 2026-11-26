@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Controlled drug register · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-pharmacy.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/pharmacy.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, me, nowStamp, field, showErrors, drawer } = UI;
+  const P = Pharmacy, T = db.TODAY;
+  const OPT = 'pharmacy.cd';
+  if (!UI.page({ opt: OPT, title: 'Controlled drug register', subtitle: 'Receipts, issues and running balance for each scheduled drug and pharmacy store. Every entry has a witness and is verified by a second person.',
+    actions: `<button class="btn" id="prt" ${can(OPT, 'print') ? '' : 'disabled title="Needs Print permission"'}>${icon('printer')} Print register</button><button class="btn primary" id="add" ${can(OPT, 'add') ? '' : 'disabled title="Needs Add permission"'}>${icon('plus')} New entry</button>` })) return;
+
+  const drugs = db.items.filter(it => it.schedule);
+  let itemId = drugs[0] ? drugs[0].id : '', wh = P.WH.IPD;
+  const physical = (id, w) => db.stock.filter(s => s.itemId === id && s.warehouseId === w).reduce((n, s) => n + Number(s.qty), 0);
+  $('#page').innerHTML = `
+    <div id="sum" class="grid g3" style="margin-bottom:16px"></div>
+    <div class="card"><div class="card-head"><h3>${icon('lock-keyhole')} <span id="ttl"></span></h3><div class="actions"><div id="whSeg"></div></div></div>
+      <div id="bal" class="card-pad" style="border-bottom:1px solid var(--line)"></div><div id="tbl"></div></div>
+    <div style="margin-top:14px">${Kit.phase2('Regulatory submission of controlled drug data to the authority is in the SOW V4 2nd phase scope. This register is kept and printed inside Tibbi Orbit.')}</div>`;
+  Kit.seg($('#whSeg'), [[P.WH.IPD, 'Inpatient Pharmacy', 'bed'], [P.WH.OPD, 'Outpatient Pharmacy', 'store']], wh, (v) => { wh = v; drawAll(); });
+
+  function drawSum() {
+    $('#sum').innerHTML = drugs.map(it => { const b = P.cdBalance(it.id, wh), ph = physical(it.id, wh), unv = P.cdEntries(it.id, wh).filter(e => !e.verifiedBy).length;
+      return `<div class="card kpi" data-d="${it.id}" style="cursor:pointer;${it.id === itemId ? 'box-shadow:inset 0 0 0 2px var(--primary-light)' : ''}"><div class="k-label">${icon('pill')}${esc(it.brand)} · ${esc(it.schedule)}</div><div class="k-value">${b}<small>${esc((it.uom || '').toLowerCase())} in register</small></div>
+        <div class="k-foot">${ph === b ? `<span class="badge b-ok">Matches stock (${ph})</span>` : `<span class="badge b-err">Stock ${ph}, difference ${ph - b}</span>`} ${unv ? `<span class="badge b-warn">${unv} to verify</span>` : ''}</div></div>`; }).join('');
+    $$('[data-d]').forEach(c => c.addEventListener('click', () => { itemId = c.dataset.d; drawAll(); }));
+  }
+  let t;
+  function drawAll() {
+    drawSum();
+    const it = Kit.item(itemId);
+    $('#ttl').textContent = `${it.name} (${it.brand}) · ${it.schedule} · ${P.WH_NAME[wh]}`;
+    const es = P.cdEntries(itemId, wh);
+    const rec = Kit.sumBy(es.filter(e => e.sign > 0 && e.type !== 'Opening balance'), e => e.qty), iss = Kit.sumBy(es.filter(e => e.sign < 0), e => e.qty);
+    const op = (es.find(e => e.type === 'Opening balance') || {}).qty || 0;
+    $('#bal').innerHTML = `<div class="row wrap" style="gap:28px"><div><div class="xs muted b">OPENING</div><b style="font-size:18px">${op}</b></div><div><div class="xs muted b">RECEIVED AND RETURNED</div><b style="font-size:18px;color:var(--success)">+${rec}</b></div><div><div class="xs muted b">ISSUED AND WASTED</div><b style="font-size:18px;color:var(--error)">-${iss}</b></div><div><div class="xs muted b">REGISTER BALANCE</div><b style="font-size:18px">${es.length ? es[es.length - 1].balance : 0}</b></div><div><div class="xs muted b">PHYSICAL STOCK</div><b style="font-size:18px">${physical(itemId, wh)}</b></div><span class="grow"></span><span class="small muted">${(n => n === 1 ? '1 entry' : n + ' entries')(es.filter(e => !e.verifiedBy).length)} waiting for verification</span></div>`;
+    const rows = es.slice().reverse();
+    t = UI.table($('#tbl'), {
+      columns: [
+        { label: 'Date and time', sort: e => e.at, render: e => esc(Kit.when(e.at)) },
+        { label: 'Movement', sort: e => e.type, render: e => `<span class="badge ${e.sign > 0 ? 'b-ok' : e.type === 'Wastage' ? 'b-err' : 'b-info'} nodot">${esc(e.type)}</span>` },
+        { label: 'Reference', render: e => `${esc(e.ref)}${e.patientId ? `<div class="small muted">${esc(Kit.ptName(e.patientId))} · ${esc((Kit.pt(e.patientId) || {}).mrn || '')}</div>` : ''}` },
+        { label: 'In', cls: 'num', render: e => e.sign > 0 ? `<span class="num" style="color:var(--success);font-weight:700">+${e.qty}</span>` : '' },
+        { label: 'Out', cls: 'num', render: e => e.sign < 0 ? `<span class="num" style="color:var(--error);font-weight:700">-${e.qty}</span>` : '' },
+        { label: 'Balance', cls: 'num', render: e => `<b class="num">${e.balance}</b>` },
+        { label: 'Entered by / witness', render: e => `${esc(e.by)}<div class="small muted">Witness: ${esc(e.witness || '-')}</div>` },
+        { label: 'Verified', render: e => e.verifiedBy ? `<span class="badge b-ok">${esc(e.verifiedBy)}</span>` : `<button class="btn xs" data-v="${e.id}" ${!can(OPT, 'verify') ? 'disabled title="Needs Verify permission"' : e.by === me().displayName ? 'disabled title="You made this entry. Another person must verify it."' : ''}>${icon('badge-check')} Verify</button>` },
+      ],
+      rows, search: e => [e.type, e.ref, e.by, e.witness, Kit.ptName(e.patientId)].join(' '), searchPlaceholder: 'Search reference, patient or staff',
+      filters: [{ label: 'Movement', options: ['Opening balance', 'Receipt', 'Issue', 'Return', 'Wastage', 'Adjustment'].map(x => [x, x]), test: (e, v) => e.type === v }, { label: 'Verification', options: [['no', 'Not verified'], ['yes', 'Verified']], test: (e, v) => !!e.verifiedBy === (v === 'yes') }],
+      afterDraw: (tb) => $$('[data-v]', tb).forEach(b => b.addEventListener('click', () => {
+        const e = db.pharmacyCdRegister.find(x => x.id === b.dataset.v);
+        UI.confirm({ title: 'Verify this entry?', tone: 'primary', icon: 'badge-check', confirm: 'Verify', body: `${esc(e.type)} of ${e.qty} ${esc(Kit.item(e.itemId).name)} on ${esc(Kit.when(e.at))}, entered by ${esc(e.by)}. You confirm the count and the paperwork.`, onConfirm: () => {
+          e.verifiedBy = me().displayName; e.verifiedAt = nowStamp(); save();
+          audit('Controlled drug entry verified', 'Controlled drug register', { id: e.id, label: `${Kit.item(e.itemId).name} ${e.type}` }, [['Verified by', '', e.verifiedBy]]); toast('Entry verified'); drawAll();
+        } });
+      })),
+      empty: 'No register entries', pageSize: 12,
+    });
+  }
+  drawAll();
+
+  $('#add').addEventListener('click', () => {
+    drawer({ title: 'New register entry', sub: 'Issues from dispensing are written automatically. Use this for receipts, wastage and count adjustments.',
+      body: `<div class="err-summary hidden" style="margin-bottom:12px"></div><div class="form-grid">
+        ${field({ id: 'cItem', label: 'Drug', type: 'select', options: drugs.map(d => [d.id, `${d.name} (${d.schedule})`]), value: itemId, req: true, full: true })}
+        ${field({ id: 'cWh', label: 'Store', type: 'select', options: [[P.WH.IPD, 'Inpatient Pharmacy'], [P.WH.OPD, 'Outpatient Pharmacy']], value: wh, req: true })}
+        ${field({ id: 'cType', label: 'Movement', type: 'select', options: [['Receipt', 'Receipt (in)'], ['Return', 'Return from ward (in)'], ['Wastage', 'Wastage or destruction (out)'], ['Adjustment', 'Count adjustment (out)']], req: true })}
+        ${field({ id: 'cQty', label: 'Quantity', type: 'number', attrs: 'min="1" step="1"', req: true })}
+        ${field({ id: 'cRef', label: 'Reference', placeholder: 'Transfer note, ward, reason', req: true })}
+        ${field({ id: 'cWit', label: 'Witness name', req: true, hint: 'The second staff member present.' })}
+        <div class="field full banner info">${icon('info')}<span>Receipts and wastage here update the register only. Stock receipts are posted in Material Management.</span></div></div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="cSave" disabled>Add entry</button>`,
+      onMount: (el, close) => {
+        const ids = ['cItem', 'cWh', 'cType', 'cQty', 'cRef', 'cWit'];
+        const vals = () => Object.fromEntries(ids.map(i => [i, $('#' + i, el).value.trim()]));
+        const check = () => { const v = vals(), errs = {};
+          if (!(Number(v.cQty) > 0)) errs.cQty = 'Enter a quantity above zero.';
+          if (/Wastage|Adjustment/.test(v.cType) && Number(v.cQty) > P.cdBalance(v.cItem, v.cWh)) errs.cQty = `More than the register balance (${P.cdBalance(v.cItem, v.cWh)}).`;
+          if (v.cRef.length < 3) errs.cRef = 'Enter a reference.';
+          if (v.cWit.length < 3) errs.cWit = 'Enter the witness name.';
+          else if (v.cWit.toLowerCase() === me().displayName.toLowerCase()) errs.cWit = 'The witness must be another person.';
+          return errs; };
+        ids.forEach(i => $('#' + i, el).addEventListener('input', () => { $('#cSave', el).disabled = Object.keys(check()).length > 0; }));
+        $('#cSave', el).addEventListener('click', () => {
+          const errs = check(); if (!showErrors(el, errs)) return;
+          const v = vals();
+          const e = P.cdAdd({ itemId: v.cItem, warehouseId: v.cWh, type: v.cType, qty: Number(v.cQty), ref: v.cRef, witness: v.cWit });
+          save(); audit('Controlled drug entry added', 'Controlled drug register', { id: e.id, label: `${Kit.item(e.itemId).name} ${e.type}` }, [['Quantity', '', String(e.qty)], ['Witness', '', e.witness]]);
+          toast('Entry added. It needs verification by another person.'); close(); itemId = v.cItem; wh = v.cWh; drawAll();
+          Kit.seg($('#whSeg'), [[P.WH.IPD, 'Inpatient Pharmacy', 'bed'], [P.WH.OPD, 'Outpatient Pharmacy', 'store']], wh, (x) => { wh = x; drawAll(); });
+        });
+      } });
+  });
+  $('#prt').addEventListener('click', () => {
+    const it = Kit.item(itemId), es = P.cdEntries(itemId, wh);
+    Kit.printDoc({ title: 'Controlled drug register', sub: `${it.name} (${it.brand}) · ${it.schedule} · ${P.WH_NAME[wh]}`,
+      html: `<table><thead><tr><th>Date</th><th>Movement</th><th>Reference</th><th>In</th><th>Out</th><th>Balance</th><th>By</th><th>Witness</th><th>Verified</th></tr></thead><tbody>${es.map(e => `<tr><td>${esc(Kit.day(e.at))} ${esc(Kit.time(e.at))}</td><td>${esc(e.type)}</td><td>${esc(e.ref)}${e.patientId ? ' · ' + esc(Kit.ptName(e.patientId)) : ''}</td><td>${e.sign > 0 ? e.qty : ''}</td><td>${e.sign < 0 ? e.qty : ''}</td><td><b>${e.balance}</b></td><td>${esc(e.by)}</td><td>${esc(e.witness)}</td><td>${esc(e.verifiedBy || '')}</td></tr>`).join('')}</tbody></table>
+        <div style="margin-top:24px;display:flex;gap:60px"><div>Pharmacist in charge: ____________________</div><div>Date: ____________</div></div>` });
+  });
+})();
+</script>
+</body>
+</html>

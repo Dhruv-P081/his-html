@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Doctor worklist · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-emr.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/emr.js"></script>
+<style>@media (max-width:1560px){#emrGrid{grid-template-columns:repeat(2,minmax(0,1fr))}#emrGrid>.card:nth-child(1),#emrGrid>.card:nth-child(3),#emrGrid>.card:nth-child(5){grid-column:1/-1}#emrGrid>.card:nth-child(1){order:1}#emrGrid>.card:nth-child(2){order:2}#emrGrid>.card:nth-child(4){order:3}#emrGrid>.card:nth-child(3){order:4}#emrGrid>.card:nth-child(5){order:5}}</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, me, nowStamp } = UI;
+  const dr = EMR.actingDoctor();
+  const pick = EMR.doctorPicker();
+  if (!UI.page({ module: 'emr', title: 'Doctor worklist', subtitle: `${esc(dr.name)} · ${esc(dr.specialty)} · ${esc(dr.room)} · ${Kit.day(db.TODAY)}`,
+    actions: `<div class="row">${pick.html}</div><a class="btn" href="${R('emr/summary.html')}">${icon('file-heart')} Find patient</a>` })) return;
+  pick.wire();
+  const T = db.TODAY;
+  const opd = db.encounters.filter(e => e.type === 'OPD' && e.start.startsWith(T) && e.doctorId === dr.id).sort((a, b) => a.start.localeCompare(b.start));
+  const ipd = db.encounters.filter(e => e.type === 'IPD' && e.status !== 'Discharged' && (e.attendingId || e.doctorId) === dr.id);
+  const myPts = new Set(db.encounters.filter(e => e.doctorId === dr.id && (e.type !== 'OPD' || e.start >= Kit.addDays(T, -30))).map(e => e.patientId));
+  const results = () => db.orders.filter(o => o.results && o.results.length && (o.by === dr.id || myPts.has(o.patientId)) && !EMR.ackOf(o.id) && /Resulted|Verified|Reported|Approved/.test(o.status))
+    .sort((a, b) => (EMR.isCritical(b) - EMR.isCritical(a)) || (EMR.isAbnormal(b) - EMR.isAbnormal(a)) || String(b.resultedAt).localeCompare(String(a.resultedAt)));
+  const refs = () => db.emrReferrals.filter(r => r.toDoctorId === dr.id && r.status === 'Pending');
+  const unsigned = db.emrNotes.filter(n => n.doctorId === dr.id && n.status === 'Draft').length + db.emrProgressNotes.filter(n => n.doctorId === dr.id && n.status === 'Draft').length;
+  const st = (e) => EMR.visitStatus(e);
+  const waiting = opd.filter(e => /Waiting|Checked in/.test(st(e)));
+  const crit = results().filter(EMR.isCritical);
+
+  $('#page').innerHTML = `
+    ${crit.length ? `<div class="alert-cdss" style="margin-bottom:14px">${icon('siren')}<div class="grow">${crit.length} critical result${crit.length > 1 ? 's' : ''} waiting for your review: ${crit.map(o => `${esc(Kit.ptName(o.patientId))}, ${esc(o.name)}`).join(' · ')}</div><a class="btn sm danger" href="#res">Review now</a></div>` : ''}
+    <div class="grid g4" style="margin-bottom:16px">
+      ${Kit.kpi('My OPD patients today', opd.length, { icon: 'clipboard-list', foot: opd.filter(e => st(e) === 'Completed').length + ' seen · ' + waiting.length + ' waiting' })}
+      ${Kit.kpi('My inpatients', ipd.length, { icon: 'bed', foot: ipd.filter(e => /Discharge/.test(e.status)).length + ' discharge planned', href: R('emr/inpatient.html') })}
+      ${Kit.kpi('Results to review', results().length, { icon: 'flask-conical', foot: crit.length + ' critical · ' + results().filter(EMR.isAbnormal).length + ' abnormal' })}
+      ${Kit.kpi('Pending referrals', refs().length, { icon: 'arrow-right-left', foot: unsigned + ' unsigned notes', href: R('emr/referrals.html') })}
+    </div>
+    <div class="grid g-side" id="emrGrid">
+      <div class="card"><div class="card-head"><h3>${icon('users')} Today's OPD patients</h3><div class="actions"><span class="small muted">${esc(UI.L.clName(dr.clinicId) || dr.room)}</span></div></div><div id="opdTabs" style="padding:0 12px"></div><div id="opdList"></div></div>
+      <div class="card"><div class="card-head"><h3>${icon('activity')} Patient tracker</h3></div><div class="card-pad">
+        ${Kit.donut([['Booked', opd.filter(e => st(e) === 'Booked').length, '#8794A7'], ['Checked in', opd.filter(e => st(e) === 'Checked in').length, '#7C4DDB'], ['Waiting', opd.filter(e => /Waiting/.test(st(e))).length, '#E0A100'], ['In consultation', opd.filter(e => st(e) === 'In consultation').length, '#2F6BC5'], ['Completed', opd.filter(e => st(e) === 'Completed').length, '#0E9F6E']], { centerLabel: 'Visits', title: 'Visits by status' })}
+        <div class="hint" style="margin-top:10px">Status follows the clinical note: a draft note means in consultation, a signed note completes the visit.</div></div></div>
+      <div class="card" id="res"><div class="card-head"><h3>${icon('flask-conical')} Results to review</h3><div class="actions"><span class="small muted">Critical and abnormal first</span></div></div><div id="resList"></div></div>
+      <div class="card"><div class="card-head"><h3>${icon('arrow-right-left')} Pending referrals to me</h3><div class="actions"><a class="btn sm" href="${R('emr/referrals.html')}">All ${icon('arrow-right')}</a></div></div><div id="refList"></div></div>
+      <div class="card span-all"><div class="card-head"><h3>${icon('bed')} My inpatients</h3><div class="actions"><a class="btn sm" href="${R('emr/inpatient.html')}">Rounds ${icon('arrow-right')}</a></div></div><div id="ipdList"></div></div>
+    </div>`;
+
+  let tab = 'all';
+  const tabsDef = () => [{ id: 'all', label: 'All', count: opd.length }, { id: 'wait', label: 'Waiting', count: waiting.length }, { id: 'cons', label: 'In consultation', count: opd.filter(e => st(e) === 'In consultation').length }, { id: 'done', label: 'Completed', count: opd.filter(e => st(e) === 'Completed').length }, { id: 'book', label: 'Booked', count: opd.filter(e => st(e) === 'Booked').length }];
+  Kit.tabs($('#opdTabs'), tabsDef(), tab, (t) => { tab = t; drawOpd(); });
+  function drawOpd() {
+    const list = opd.filter(e => tab === 'all' || (tab === 'wait' && /Waiting|Checked in/.test(st(e))) || (tab === 'cons' && st(e) === 'In consultation') || (tab === 'done' && st(e) === 'Completed') || (tab === 'book' && st(e) === 'Booked'));
+    $('#opdList').innerHTML = list.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>Token</th><th>Patient</th><th>Time</th><th>Complaint</th><th>Status</th><th></th></tr></thead><tbody>${list.map(e => {
+      const p = Kit.pt(e.patientId), w = EMR.waitMins(e), s = st(e);
+      return `<tr><td><span class="token">${esc(e.token)}</span></td><td>${Kit.patientCell(p, (p.allergies || []).length ? '<span class="badge allergy">' + icon('triangle-alert') + ' ' + esc(p.allergies.join(', ')) + '</span>' : '')}</td>
+        <td>${Kit.time(e.start)}<div class="xs mute">${esc(e.visitType || '')}</div></td><td class="small">${esc(e.complaint || '')}</td>
+        <td>${Kit.status(s)}${w ? `<div class="xs ${w > 30 ? 'flag-h' : 'mute'}">${EMR.waitLabel(w)} wait</div>` : ''}</td>
+        <td class="actions">${s === 'Booked' ? `<span class="small muted">Not arrived</span>` : `<a class="btn sm ${/Waiting|Checked in|In consultation/.test(s) ? 'primary' : ''}" href="${R('emr/console.html?enc=' + e.id)}">${icon(s === 'Completed' ? 'file-text' : 'stethoscope')} ${s === 'Completed' ? 'View note' : s === 'In consultation' ? 'Continue' : 'Start consult'}</a>`}</td></tr>`; }).join('')}</tbody></table></div>`
+      : `<div class="empty">${icon('calendar-check')}<b>No patients in this list</b><span>Change the tab or pick another doctor.</span></div>`;
+  }
+  function drawRes() {
+    const list = results().slice(0, 8);
+    $('#resList').innerHTML = list.length ? `<div class="table-wrap"><table class="tbl compact"><thead><tr><th style="min-width:210px">Patient</th><th style="min-width:200px">Test</th><th>Result</th><th style="white-space:nowrap">Resulted</th><th></th></tr></thead><tbody>${list.map(o => `<tr>
+      <td>${Kit.patientCell(Kit.pt(o.patientId))}</td><td><b>${esc(o.name)}</b>${EMR.isCritical(o) ? ' <span class="badge b-err">Critical</span>' : EMR.isAbnormal(o) ? ' <span class="badge b-warn">Abnormal</span>' : ''}<div class="xs mute mono">${esc(o.no)}</div></td>
+      <td class="small">${EMR.resultLine(o)}</td><td class="small" style="white-space:nowrap">${Kit.when(o.resultedAt || o.orderedAt)}</td>
+      <td class="actions" style="white-space:nowrap"><a class="btn xs" href="${R('emr/summary.html?pt=' + o.patientId)}">Chart</a> <button class="btn xs ${EMR.isCritical(o) ? 'danger' : ''}" data-ack="${o.id}" ${can('emr.consult.note', 'edit') ? '' : 'disabled title="Needs Edit permission"'}>${icon('check')} Acknowledge</button></td></tr>`).join('')}</tbody></table></div>`
+      : `<div class="empty">${icon('circle-check')}<b>All results reviewed</b><span>New results for your patients appear here.</span></div>`;
+    $$('[data-ack]').forEach(b => b.addEventListener('click', () => ack(db.orders.find(o => o.id === b.dataset.ack))));
+  }
+  function ack(o) { EMR.ackResult(o, () => location.reload()); }
+  function drawRefs() {
+    const list = refs();
+    $('#refList').innerHTML = list.length ? `<div class="list-rows pad">${list.map(r => `<div style="display:block"><div class="row between" style="gap:8px"><b>${esc(Kit.ptName(r.patientId))}</b>${Kit.priority(r.urgency)}</div><div class="xs mute" style="margin-top:2px">${esc(r.type)} from ${esc(Kit.docName(r.fromDoctorId))}</div><div class="small" style="margin-top:6px">${esc(r.notes)}</div><div style="margin-top:8px"><a class="btn xs" href="${R('emr/referrals.html?id=' + r.id)}">${icon('arrow-right')} Open referral</a></div></div>`).join('')}</div>`
+      : `<div class="empty">${icon('inbox')}<b>No pending referrals</b></div>`;
+  }
+  function drawIpd() {
+    $('#ipdList').innerHTML = ipd.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>Bed</th><th>Patient</th><th>Admitted</th><th>Diagnosis</th><th>Latest vitals</th><th class="num">Open orders</th><th>Status</th><th></th></tr></thead><tbody>${ipd.map(e => {
+      const p = Kit.pt(e.patientId), b = Kit.bed(e.bedId) || {}, v = EMR.vitalsOf(e.patientId).slice(-1)[0];
+      const los = Math.max(0, Math.round((new Date(T) - new Date(e.start.slice(0, 10))) / 864e5));
+      const abn = v && ['temp', 'hr', 'sbp', 'spo2', 'rr'].some(k => EMR.vitalFlag(k, v[k]));
+      const crit = db.orders.some(o => o.encounterId === e.id && EMR.isCritical(o) && !EMR.ackOf(o.id));
+      return `<tr><td><b>${esc(b.no || '')}</b><div class="xs mute">${esc((Kit.ward(b.wardId) || {}).name || '')}</div></td><td>${Kit.patientCell(p, (p.allergies || []).length ? '<span class="badge allergy">' + icon('triangle-alert') + ' ' + esc(p.allergies.join(', ')) + '</span>' : '')}</td>
+        <td class="small">${Kit.day(e.start)}<div class="xs mute">Day ${los + 1}</div></td><td class="small"><span class="mono">${esc(e.diagnosis)}</span> ${esc(e.reason)}</td>
+        <td class="small ${abn ? 'flag-h' : ''}">${v ? `BP ${v.sbp}/${v.dbp} · HR ${v.hr} · T ${v.temp} · SpO2 ${v.spo2}%` : '-'}</td>
+        <td class="num">${db.orders.filter(o => o.encounterId === e.id && EMR.isOpen(o)).length}${crit ? ' <span class="badge b-err">Critical</span>' : ''}</td><td>${Kit.status(e.status)}</td>
+        <td class="actions"><a class="btn sm primary" href="${R('emr/console.html?enc=' + e.id)}">${icon('stethoscope')} Consult</a> <a class="btn sm" href="${R('emr/inpatient.html?enc=' + e.id)}">Round</a></td></tr>`; }).join('')}</tbody></table></div>`
+      : `<div class="empty">${icon('bed')}<b>No admitted patients under this doctor</b></div>`;
+  }
+  drawOpd(); drawRes(); drawRefs(); drawIpd();
+})();
+</script>
+</body>
+</html>

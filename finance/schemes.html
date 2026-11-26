@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Discount and markup schemes · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-finance.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/finance.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, can, toast, audit, drawer, confirm, field, showErrors, uid, nowStamp } = UI;
+  const OPT = 'finance.schemes';
+  if (!UI.page({ opt: OPT, title: 'Discount and markup schemes', subtitle: 'Price rules by service category, payer, patient category and validity. New and changed schemes need approval by a second user before billing uses them.',
+    actions: Fin.btn({ attrs: 'id="newMk"', icon: 'trending-up', label: 'New markup', gate: Fin.gate(OPT, 'add') }) + Fin.btn({ cls: 'primary', attrs: 'id="newDs"', icon: 'percent', label: 'New discount scheme', gate: Fin.gate(OPT, 'add') }) })) return;
+  const T = Fin.T, me = Fin.meName();
+  const S = () => db.financeSchemes;
+  const live = (s) => Fin.schemeLive(s, T);
+  const usage = (s) => db.financeDiscountReqs.filter(r => r.schemeId === s.id).length + (db.invoices || []).filter(v => v.schemeId === s.id || (v.lines || []).some(l => l.markup && l.markup.code === s.code)).length;
+  let tab = 'Discount';
+  $('#page').innerHTML = `<div class="grid g4" id="kp" style="margin-bottom:16px"></div><div id="tabs" style="margin-bottom:12px"></div><div id="tbl"></div>`;
+  function kpis() {
+    $('#kp').innerHTML = Kit.kpi('Active discount schemes', S().filter(s => s.kind === 'Discount' && live(s)).length, { icon: 'percent', foot: 'Valid today' })
+      + Kit.kpi('Active markup schemes', S().filter(s => s.kind === 'Markup' && live(s)).length, { icon: 'trending-up', foot: 'Applied automatically when charges are added' })
+      + Kit.kpi('Waiting for approval', S().filter(s => s.status === 'Pending approval').length, { icon: 'stamp', foot: 'Maker-checker, no self-approval' })
+      + Kit.kpi('Expiring in 45 days', S().filter(s => live(s) && s.to && s.to <= Kit.addDays(T, 45)).length, { icon: 'calendar-clock', foot: 'Renew or let lapse' });
+  }
+  function drawTabs() {
+    Kit.tabs($('#tabs'), [{ id: 'Discount', label: 'Discount schemes', icon: 'percent', count: S().filter(s => s.kind === 'Discount').length }, { id: 'Markup', label: 'Markup schemes', icon: 'trending-up', count: S().filter(s => s.kind === 'Markup').length }, { id: 'pending', label: 'Pending approval', icon: 'stamp', count: S().filter(s => s.status === 'Pending approval').length }], tab, (x) => { tab = x; t.redraw(); });
+  }
+  const statusOf = (s) => s.status === 'Active' && s.to && s.to < T ? 'Expired' : s.status === 'Active' && s.from > T ? 'Scheduled' : s.status;
+  const t = UI.table($('#tbl'), {
+    columns: [
+      { label: 'Scheme', sort: s => s.code, render: s => `<div class="cell-main"><b>${esc(s.name)}</b><span class="mono">${esc(s.code)}</span>${tab === 'pending' ? ` · <span>${esc(s.kind)}</span>` : ''}</div>` },
+      { label: 'Value', cls: 'num', sort: s => s.value, render: s => `<b>${s.kind === 'Markup' ? '+' : '-'}${s.value}%</b>` },
+      { label: 'Service categories', render: s => s.categories.length === Fin.SVC_CATS.length ? '<span class="tag">All categories</span>' : s.categories.map(c => `<span class="tag">${esc(c)}</span>`).join(' ') },
+      { label: 'Payer', render: s => `<span class="small">${esc(s.payerId ? (Kit.payer(s.payerId) || {}).name : 'Any payer')}</span>` },
+      { label: 'Patient category', render: s => esc(s.patientCat) },
+      { label: 'Validity', sort: s => s.to, render: s => `<span class="small">${esc(Kit.day(s.from))} to ${esc(Kit.day(s.to))}</span>` },
+      { label: 'Approval', render: s => s.kind === 'Discount' ? `<span class="small">${s.approvalLimit ? 'Above ' + Fin.amt(s.approvalLimit) : 'Every use'}</span>` : '<span class="muted small">-</span>' },
+      { label: 'Status', sort: s => s.status, render: s => Kit.status(statusOf(s)) },
+    ],
+    rows: () => S().filter(s => tab === 'pending' ? s.status === 'Pending approval' : s.kind === tab),
+    search: s => [s.code, s.name, s.notes, s.patientCat].join(' '), searchPlaceholder: 'Code, name or notes',
+    filters: [{ label: 'Status', options: ['Draft', 'Pending approval', 'Active', 'Rejected', 'Inactive'].map(x => [x, x]), test: (s, v) => s.status === v },
+      { label: 'Category', options: Fin.SVC_CATS.map(c => [c, c]), test: (s, v) => s.categories.includes(v) },
+      { label: 'Payer', options: [['any', 'Any payer']].concat(db.payers.map(p => [p.id, p.name])), test: (s, v) => v === 'any' ? !s.payerId : s.payerId === v }],
+    onRow: s => open(s), empty: 'No schemes',
+  });
+
+  function open(s) {
+    const d = drawer({ title: s.name, sub: esc(s.code + ' · ' + s.kind + ' scheme'), body: '<div id="sB"></div>', foot: '<div id="sF" class="row grow" style="gap:8px"></div>' });
+    const el = d.el;
+    const render = () => {
+      const svc = db.services.filter(x => s.categories.includes(x.category)).slice(0, 5);
+      $('#sB', el).innerHTML = `<div class="row" style="margin-bottom:12px">${Kit.status(statusOf(s))}<span class="grow"></span><b style="font-size:22px">${s.kind === 'Markup' ? '+' : '-'}${s.value}%</b></div>
+        ${s.status === 'Rejected' && s.rejectReason ? `<div class="banner err" style="margin-bottom:12px">${icon('x')}<span>Rejected by ${esc(s.approvedBy)}: ${esc(s.rejectReason)}</span></div>` : ''}
+        <dl class="kv"><dt>Kind</dt><dd>${esc(s.kind)}</dd><dt>Service categories</dt><dd>${esc(s.categories.join(', '))}</dd><dt>Payer</dt><dd>${esc(s.payerId ? (Kit.payer(s.payerId) || {}).name : 'Any payer')}</dd><dt>Patient category</dt><dd>${esc(s.patientCat)}</dd>
+        <dt>Valid</dt><dd>${esc(Kit.day(s.from))} to ${esc(Kit.day(s.to))}</dd>${s.kind === 'Discount' ? `<dt>Approval on use</dt><dd>${s.approvalLimit ? 'When the discount is above ' + Fin.money(s.approvalLimit) : 'Every use needs approval'}</dd>` : ''}
+        <dt>Notes</dt><dd>${esc(s.notes || '-')}</dd><dt>Created by</dt><dd>${esc(s.by)} · ${esc(Kit.when(s.at))}</dd><dt>Approved by</dt><dd>${esc(s.approvedBy || '-')}${s.approvedAt ? ' · ' + esc(Kit.when(s.approvedAt)) : ''}</dd><dt>Times used</dt><dd>${usage(s)}</dd></dl>
+        <div class="section-t" style="margin-top:16px">Price preview</div>
+        <div class="table-wrap card"><table class="tbl compact"><thead><tr><th>Service</th><th class="num">List price</th><th class="num">${s.kind === 'Markup' ? 'With markup' : 'After discount'}</th></tr></thead><tbody>${svc.map(x => `<tr><td>${esc(x.name)}<div class="xs muted mono">${esc(x.code)}</div></td><td class="num">${Fin.amt(x.price)}</td><td class="num"><b>${Fin.amt(x.price * (1 + (s.kind === 'Markup' ? 1 : -1) * s.value / 100))}</b></td></tr>`).join('') || '<tr><td colspan="3" class="muted">Laboratory and radiology prices come from their catalogues.</td></tr>'}</tbody></table></div>
+        ${s.status === 'Pending approval' ? Fin.selfNote(s) : ''}`;
+      const editable = ['Draft', 'Rejected'].includes(s.status);
+      $('#sF', el).innerHTML = (editable ? Fin.btn({ attrs: 'id="sEd"', icon: 'pencil', label: 'Edit', gate: Fin.gate(OPT, 'edit') }) : '')
+        + (s.status === 'Active' ? Fin.btn({ cls: 'danger', attrs: 'id="sOff"', icon: 'power', label: 'Deactivate', gate: Fin.gate(OPT, 'edit') }) + Fin.btn({ attrs: 'id="sCopy"', icon: 'copy', label: 'Revise as new version', gate: Fin.gate(OPT, 'add') }) : '')
+        + '<span class="grow"></span>'
+        + (editable ? Fin.btn({ cls: 'primary', attrs: 'id="sSub"', icon: 'send', label: 'Submit for approval', gate: Fin.gate(OPT, 'edit') }) : '')
+        + (s.status === 'Pending approval' ? Fin.btn({ cls: 'danger', attrs: 'id="sRj"', icon: 'x', label: 'Reject', gate: Fin.gate(OPT, 'approve', s) }) + Fin.btn({ cls: 'success', attrs: 'id="sAp"', icon: 'check', label: 'Approve', gate: Fin.gate(OPT, 'approve', s) }) : '');
+      const on = (q, f) => { const b = $(q, el); if (b) b.addEventListener('click', f); };
+      on('#sEd', () => { d.close(); form(s.kind, s); });
+      on('#sCopy', () => { d.close(); form(s.kind, Object.assign({}, s, { id: null, code: s.code + '-V2', from: Kit.addDays(T, 1), status: 'Draft' }), true); });
+      on('#sSub', () => { const b = s.status; s.status = 'Pending approval'; s.by = me; s.at = nowStamp(); save(); audit('Scheme submitted', 'Scheme', { id: s.id, label: s.code }, [['Status', b, 'Pending approval']]); toast('Submitted for approval'); render(); refresh(); });
+      on('#sAp', () => confirm({ title: 'Approve ' + s.code + '?', tone: 'primary', icon: 'stamp', body: `${esc(s.name)}, ${s.kind === 'Markup' ? '+' : '-'}${s.value}% from ${esc(Kit.day(s.from))}. Billing uses it from that date.`, confirm: 'Approve', onConfirm: () => { Object.assign(s, { status: 'Active', approvedBy: me, approvedAt: nowStamp() }); save(); audit('Scheme approved', 'Scheme', { id: s.id, label: s.code }, [['Status', 'Pending approval', 'Active']]); toast('Scheme approved'); render(); refresh(); } }));
+      on('#sRj', () => confirm({ title: 'Reject ' + s.code + '?', reason: true, confirm: 'Reject', onConfirm: (reason) => { Object.assign(s, { status: 'Rejected', approvedBy: me, approvedAt: nowStamp(), rejectReason: reason }); save(); audit('Scheme rejected', 'Scheme', { id: s.id, label: s.code }, [['Status', 'Pending approval', 'Rejected']], { reason }); toast('Rejected'); render(); refresh(); } }));
+      on('#sOff', () => confirm({ title: 'Deactivate ' + s.code + '?', body: 'Billing stops offering this scheme. Invoices that already use it keep their prices.', reason: true, confirm: 'Deactivate', onConfirm: (reason) => { Object.assign(s, { status: 'Inactive' }); save(); audit('Scheme deactivated', 'Scheme', { id: s.id, label: s.code }, [['Status', 'Active', 'Inactive']], { reason }); toast('Deactivated'); render(); refresh(); } }));
+    };
+    render();
+  }
+  function form(kind, s, isCopy) {
+    const isNew = !s || isCopy;
+    s = s || { kind, code: '', name: '', value: '', categories: [], payerId: '', patientCat: 'All', from: T, to: Kit.addDays(T, 364), approvalLimit: kind === 'Discount' ? 25 : 0, notes: '' };
+    drawer({ title: (isNew ? 'New ' : 'Edit ') + kind.toLowerCase() + ' scheme', sub: 'Saved as draft. Submit it for approval when ready.',
+      body: `<div class="err-summary hidden"></div><div class="form-grid">
+        ${field({ id: 'fCode', label: 'Code', value: s.code, req: true, placeholder: kind === 'Discount' ? 'DS-...' : 'MK-...', max: 20 })}
+        ${field({ id: 'fVal', label: (kind === 'Markup' ? 'Markup' : 'Discount') + ' %', type: 'number', value: s.value, req: true, attrs: 'min="0.5" max="100" step="0.5"' })}
+        ${field({ id: 'fName', label: 'Name', value: s.name, req: true, full: true })}
+        <div class="field full"><label>Service categories<span class="req">*</span></label><div class="chips" id="fCats">${Fin.SVC_CATS.map(c => `<label class="chip ${s.categories.includes(c) ? 'sel' : ''}" style="cursor:pointer"><input type="checkbox" value="${c}" ${s.categories.includes(c) ? 'checked' : ''} style="display:none">${esc(c)}</label>`).join('')}</div><div class="err hidden" data-err="fCats"></div></div>
+        ${field({ id: 'fPayer', label: 'Payer', type: 'select', options: db.payers.map(p => [p.id, p.name]), value: s.payerId, placeholder: 'Any payer' })}
+        ${field({ id: 'fCat', label: 'Patient category', type: 'select', options: Fin.PT_CATS.map(c => [c, c]), value: s.patientCat, placeholder: false })}
+        ${field({ id: 'fFrom', label: 'Valid from', type: 'date', value: s.from, req: true })}
+        ${field({ id: 'fTo', label: 'Valid to', type: 'date', value: s.to, req: true })}
+        ${kind === 'Discount' ? field({ id: 'fLim', label: 'Approval needed above (KWD)', type: 'number', value: s.approvalLimit, hint: '0 means every use needs approval', attrs: 'min="0" step="0.001"' }) : ''}
+        ${field({ id: 'fNotes', label: 'Notes', type: 'textarea', value: s.notes, full: true })}
+      </div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="fSave" disabled>Save draft</button>`,
+      onMount: (el, close) => {
+        $$('#fCats .chip', el).forEach(c => c.addEventListener('click', (e) => { e.preventDefault(); const i = $('input', c); i.checked = !i.checked; c.classList.toggle('sel', i.checked); check(); }));
+        const cats = () => $$('#fCats input', el).filter(i => i.checked).map(i => i.value);
+        const check = () => {
+          const errs = {}, code = UI.normCode($('#fCode', el).value), v = +$('#fVal', el).value;
+          if (code && S().some(x => x !== s && x.id && x.code === code && x.id !== s.id)) errs.fCode = 'This code is already used.';
+          if ($('#fVal', el).value && (v <= 0 || v > 100)) errs.fVal = 'Enter a percentage between 0.5 and 100.';
+          if ($('#fTo', el).value && $('#fFrom', el).value && $('#fTo', el).value < $('#fFrom', el).value) errs.fTo = 'Valid to must be after valid from.';
+          showErrors(el, errs);
+          $('#fSave', el).disabled = !(code && v > 0 && v <= 100 && $('#fName', el).value.trim() && cats().length && $('#fFrom', el).value && $('#fTo', el).value && !Object.keys(errs).length);
+        };
+        $$('input,select,textarea', el).forEach(i => { i.addEventListener('input', check); i.addEventListener('change', check); });
+        check();
+        $('#fSave', el).addEventListener('click', () => {
+          const v = { code: UI.normCode($('#fCode', el).value), name: $('#fName', el).value.trim(), value: +$('#fVal', el).value, categories: cats(), payerId: $('#fPayer', el).value, patientCat: $('#fCat', el).value, from: $('#fFrom', el).value, to: $('#fTo', el).value, approvalLimit: kind === 'Discount' ? +($('#fLim', el).value || 0) : 0, notes: $('#fNotes', el).value.trim() };
+          let rec;
+          if (isNew) { rec = Object.assign({ id: uid('sc'), kind, status: 'Draft', by: me, at: nowStamp(), approvedBy: '', approvedAt: '' }, v); S().push(rec); }
+          else { rec = S().find(x => x.id === s.id); const ch = Object.keys(v).filter(k => JSON.stringify(rec[k]) !== JSON.stringify(v[k])).map(k => [k, String(rec[k]), String(v[k])]); Object.assign(rec, v, { status: 'Draft', rejectReason: '' }); audit('Scheme edited', 'Scheme', { id: rec.id, label: rec.code }, ch); }
+          save(); if (isNew) audit('Scheme created', 'Scheme', { id: rec.id, label: rec.code }, [['Value', '', rec.value + '%']]);
+          close(); toast('Saved as draft'); refresh(); open(rec);
+        });
+      } });
+  }
+  function refresh() { kpis(); drawTabs(); t.redraw(); }
+  $('#newDs') && $('#newDs').addEventListener('click', () => form('Discount'));
+  $('#newMk') && $('#newMk').addEventListener('click', () => { tab = 'Markup'; refresh(); form('Markup'); });
+  kpis(); drawTabs();
+  const q = UI.param('id'); if (q) { const s = S().find(x => x.id === q); if (s) { tab = s.status === 'Pending approval' ? 'pending' : s.kind; drawTabs(); t.redraw(); open(s); } }
+})();
+</script>
+</body>
+</html>

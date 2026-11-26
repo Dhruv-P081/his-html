@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Review and dispense · Tibbi Orbit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-pharmacy.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/pharmacy.js"></script>
+<style>
+  .ln-tbl td { vertical-align: top; }
+  .ln-tbl select.input, .ln-tbl input.input { min-width: 0; }
+  .ln-off td { opacity: .55; }
+  .chk-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 8px; align-items: start; }
+</style>
+</head>
+<body>
+<script>
+(function () {
+  const { db, save, esc, icon, $, $$, R, can, toast, audit, me, nowStamp, param } = UI;
+  const P = Pharmacy, T = db.TODAY;
+  const OPT = 'pharmacy.verify';
+  const rxNo = param('rx'), orderId = param('order');
+  if (!UI.page({ opt: OPT, title: 'Review and dispense', subtitle: 'Pharmacist review, verification, substitution and dispensing with labels. Stock is deducted by batch, earliest expiry first.',
+    crumbs: [['Home', 'home.html'], ['Pharmacy', 'pharmacy/index.html'], [orderId ? 'IPD medication orders' : 'OPD prescription queue', orderId ? 'pharmacy/ipd-queue.html' : 'pharmacy/opd-queue.html'], ['Review and dispense', null]] })) return;
+
+  /* ---------- No prescription chosen: pick one ---------- */
+  if (!rxNo && !orderId) {
+    const rx = P.prescriptions().filter(r => r.orderedAt.startsWith(T) && /Pending|Verified|Partially|On hold/.test(r.status));
+    const ipd = P.ipdOrders().filter(o => /To verify|Due for supply/.test(P.ipdState(o)));
+    $('#page').innerHTML = `<div class="banner info" style="margin-bottom:14px">${icon('info')}<span>Choose a prescription or an inpatient order to review. You can also open one from the OPD or IPD queue.</span></div>
+      <div class="grid g2"><div class="card"><div class="card-head"><h3>${icon('list-ordered')} OPD prescriptions waiting</h3><span class="tag">${rx.length}</span></div><div class="card-pad"><div class="list-rows">${rx.map(r => `<div>${Kit.patientCell(Kit.pt(r.patientId), esc(r.rxNo))}<span class="grow"></span>${Kit.status(r.status)}<a class="btn xs" href="${R('pharmacy/dispense.html?rx=' + encodeURIComponent(r.rxNo))}">Open</a></div>`).join('') || '<div class="muted">Nothing waiting.</div>'}</div></div></div>
+      <div class="card"><div class="card-head"><h3>${icon('bed')} IPD orders to work</h3><span class="tag">${ipd.length}</span></div><div class="card-pad"><div class="list-rows">${ipd.slice(0, 12).map(o => `<div>${Kit.patientCell(Kit.pt(o.patientId), esc(o.name))}<span class="grow"></span><span class="badge b-info">${esc(P.ipdState(o))}</span><a class="btn xs" href="${R('pharmacy/dispense.html?order=' + o.id)}">Open</a></div>`).join('') || '<div class="muted">Nothing waiting.</div>'}</div></div></div></div>`;
+    return;
+  }
+
+  /* ---------- Load ---------- */
+  const target = orderId ? db.orders.find(o => o.id === orderId && o.type === 'med') : null;
+  const setting = target ? 'IPD' : 'OPD';
+  const orders = () => target ? db.orders.filter(o => o.type === 'med' && o.encounterId === target.encounterId && o.setting === 'IPD') : db.orders.filter(o => o.type === 'med' && o.rxNo === rxNo);
+  if (!orders().length) {
+    $('#page').innerHTML = `<div class="card"><div class="empty">${icon('search')}<b>Prescription not found</b><span>It may have been removed. Go back to the queue.</span><a class="btn" href="${R('pharmacy/opd-queue.html')}">OPD queue</a></div></div>`;
+    return;
+  }
+  const first = target || orders()[0];
+  const p = Kit.pt(first.patientId), e = Kit.enc(first.encounterId);
+  const WHID = P.WH[setting];
+  const cancelOpt = setting === 'IPD' ? 'pharmacy.ipd' : 'pharmacy.disp.op';
+  const perDay = (f) => /4 hours/.test(f) ? 6 : /6 hours/.test(f) ? 4 : /8 hours|Three/.test(f) ? 3 : /Twice/.test(f) ? 2 : 1;
+  const verifiedState = setting === 'IPD' ? 'Active' : 'Verified';
+  const REASONS = ['Prescribed brand out of stock', 'Formulary preferred generic', 'Patient preference or cost', 'Prescriber requested the change', 'Short expiry on prescribed brand'];
+
+  const state = {};
+  orders().forEach(o => {
+    const subs = P.substitutes(o.itemId);
+    const need = (Kit.item(o.itemId) || {}).uom !== 'Tablet' ? 1 : setting === 'IPD' ? perDay(o.frequency) : o.qty;
+    const outOfStock = P.available(o.itemId, WHID) < need;
+    const alt = outOfStock ? subs.find(s => P.available(s.item.id, WHID) >= need) : null;
+    const unitPack = (Kit.item(o.itemId) || {}).uom !== 'Tablet';
+    state[o.id] = { include: target ? o.id === target.id : !/Dispensed|Cancelled/.test(o.status), itemId: alt ? alt.item.id : o.itemId, reason: alt ? REASONS[0] : '', qty: setting === 'IPD' ? (unitPack ? 1 : perDay(o.frequency)) : (unitPack ? Math.max(1, Math.ceil((o.days || 30) / 30)) : o.qty) };
+  });
+  let witness = '', payMode = 'counter';
+
+  const openFor = (o) => setting === 'IPD' ? o.status !== 'Cancelled' : !/Dispensed|Cancelled/.test(o.status);
+  const included = () => orders().filter(o => openFor(o) && state[o.id].include);
+  const lineAlerts = (o) => { const it = Kit.item(state[o.id].itemId); return P.allergyAlerts(p, it).concat(P.duplicateAlerts(p, it, orders().map(x => x.id))); };
+  const linePrice = (o) => (Kit.item(state[o.id].itemId) || {}).price || 0;
+  const rxStatus = () => setting === 'OPD' ? P.rxStatus(orders()) : P.ipdState(target);
+
+  function lineProblems(o) {
+    const s = state[o.id], out = [];
+    if (!(Number(s.qty) > 0)) out.push('Enter a quantity.');
+    if (s.itemId !== o.itemId && !s.reason) out.push('Choose a substitution reason.');
+    const a = P.allocate(s.itemId, WHID, s.qty); if (a.short) out.push(`Only ${P.available(s.itemId, WHID)} in stock.`);
+    return out;
+  }
+
+  /* ---------- Render ---------- */
+  function draw() {
+    const os = orders(), st = rxStatus();
+    const inc = included();
+    const toVerify = inc.filter(o => o.status === 'Pending verification');
+    const toDispense = inc.filter(o => o.status === verifiedState);
+    const anyCd = toDispense.some(o => P.isControlled(Kit.item(state[o.id].itemId)));
+    const problems = toDispense.reduce((a, o) => a.concat(lineProblems(o).map(x => `${o.name}: ${x}`)), []);
+    if (anyCd && witness.trim().length < 3) problems.push('Controlled drug: enter the witness name.');
+    const allAlerts = os.filter(openFor).map(o => ({ o, list: lineAlerts(o) })).filter(x => x.list.length);
+    const plan = p.planId ? Kit.plan(p.planId) : null;
+    const total = Kit.sumBy(inc, o => state[o.id].qty * linePrice(o));
+    const patPays = plan ? Math.min(total * plan.copayPct / 100, plan.maxCopay || total) : total;
+    const dispensed = db.pharmacyDispenses.filter(d => setting === 'OPD' ? d.rxNo === rxNo : d.encounterId === first.encounterId && d.setting === 'IPD').filter(d => d.status !== 'Voided');
+    const isOnHold = os.some(o => o.status === 'On hold');
+    const canV = can(OPT, 'verify'), canAdd = can(OPT, 'add'), canC = can(cancelOpt, 'cancel'), canP = can(OPT, 'print');
+
+    $('#page').innerHTML = `
+      ${Kit.patientBanner(p, e, Kit.status(st))}
+      <div class="stack" style="margin-top:16px">
+          <div class="card"><div class="card-head"><h3>${icon('shield-alert')} Clinical checks</h3></div><div class="card-pad chk-list">
+            ${allAlerts.length ? allAlerts.map(x => P.alertBox(x.list)).join('') : `<div class="banner ok">${icon('shield-check')}<span>No allergy or duplicate therapy alerts for the selected medicines.</span></div>`}
+            ${(p.allergies || []).length ? `<div class="small muted">Recorded allergies: <b>${esc(p.allergies.join(', '))}</b></div>` : '<div class="small muted">No known allergies recorded.</div>'}
+            ${Kit.age(p) && /mo$/.test(Kit.age(p)) || parseInt(Kit.age(p), 10) < 12 ? `<div class="alert-cdss warn">${icon('baby')}<span>Paediatric patient (${esc(Kit.age(p))}): check the dose against weight.</span></div>` : ''}
+            ${os.some(o => P.isControlled(Kit.item(o.itemId))) ? `<div class="alert-cdss warn">${icon('lock-keyhole')}<span>Contains a controlled drug. A witness is needed and the issue is written to the register.</span></div>` : ''}
+            <div class="small muted">${icon('calendar-clock')} Insurance formulary auto-check is in the SOW V4 2nd phase scope.</div>
+          </div></div>
+          <div class="card"><div class="card-head"><h3>${icon(setting === 'IPD' ? 'bed' : 'file-text')} ${setting === 'IPD' ? 'Inpatient medication orders' : 'Prescription ' + esc(rxNo)}</h3>
+            <div class="actions"><span class="small muted">${esc(P.WH_NAME[WHID])} · ordered ${esc(Kit.when(first.orderedAt))} by ${esc(Kit.docName(first.by))}</span></div></div>
+            <div class="table-wrap"><table class="tbl ln-tbl"><thead><tr><th style="width:34px"></th><th style="min-width:200px">Prescribed</th><th style="min-width:210px">Dispense as</th><th style="width:92px">Quantity</th><th>Batches (earliest expiry first)</th><th class="num">Amount</th><th>Status</th></tr></thead><tbody>
+            ${os.map(o => {
+              const s = state[o.id], open = openFor(o), it = Kit.item(s.itemId) || {}, subs = P.substitutes(o.itemId);
+              const a = P.allocate(s.itemId, WHID, s.qty), sub = s.itemId !== o.itemId;
+              const supplied = setting === 'IPD' && P.suppliedToday(o.id);
+              return `<tr class="${open && s.include ? '' : 'ln-off'}">
+                <td>${open ? `<input type="checkbox" data-inc="${o.id}" ${s.include ? 'checked' : ''} aria-label="Include ${esc(o.name)}">` : ''}</td>
+                <td><b>${esc(o.name)}</b>${it.schedule ? ' <span class="badge b-violet nodot">CD</span>' : ''}<div class="small muted">${esc(o.dose)} · ${esc(o.route)} · ${esc(o.frequency)}${o.days ? ' · ' + o.days + ' days' : ''}</div><div class="xs muted mono">${esc(o.no)}</div>
+                  ${lineAlerts(o).length && open ? `<div style="margin-top:6px">${lineAlerts(o).map(x => `<span class="badge ${x.level === 'err' ? 'b-err' : 'b-warn'}" style="margin:2px 4px 0 0">${x.level === 'err' ? 'Allergy' : /supplied|open order/.test(x.text) ? 'Duplicate' : 'Cross-sensitivity'}</span>`).join('')}</div>` : ''}
+                  ${o.holdReason && o.status === 'On hold' ? `<div class="small" style="color:var(--warning);margin-top:4px">${icon('pause')} ${esc(o.holdReason)}</div>` : ''}${o.cancelReason && o.status === 'Cancelled' ? `<div class="small" style="color:var(--error);margin-top:4px">${esc(o.cancelReason)}</div>` : ''}</td>
+                <td>${open ? `<select class="input" data-item="${o.id}" aria-label="Dispense as">${[Kit.item(o.itemId)].concat(subs.map(x => x.item)).map(x => `<option value="${x.id}" ${x.id === s.itemId ? 'selected' : ''}>${esc(P.itemLabel(x))} · ${P.available(x.id, WHID)} in stock${x.id !== o.itemId ? ' (substitute)' : ''}</option>`).join('')}</select>
+                  ${subs.length ? '' : '<div class="xs muted" style="margin-top:4px">No substitute in the mapping</div>'}
+                  ${sub ? `<select class="input" data-reason="${o.id}" style="margin-top:6px" aria-label="Substitution reason"><option value="">Substitution reason *</option>${REASONS.map(r => `<option ${r === s.reason ? 'selected' : ''}>${r}</option>`).join('')}</select>${(subs.find(x => x.item.id === s.itemId) || {}).map && subs.find(x => x.item.id === s.itemId).map.prescriberOk ? '<div class="xs" style="color:var(--warning);margin-top:4px">Therapeutic switch: prescriber approval needed</div>' : ''}` : ''}`
+                  : `<span class="small">${esc(P.itemLabel(Kit.item(o.itemId)))}</span>`}</td>
+                <td>${open ? `<input class="input" type="number" min="1" step="1" data-qty="${o.id}" value="${esc(s.qty)}" aria-label="Quantity"><div class="xs muted" style="margin-top:4px">${esc(it.uom === 'Tablet' ? (it.form || '').toLowerCase() : (it.uom || '').toLowerCase())}${setting === 'IPD' ? ' · 1 day' : ''}</div>` : `<span class="num">${o.qty}</span>`}</td>
+                <td class="small">${open ? (a.picks.length ? a.picks.map(b => `<div><span class="mono">${esc(b.batch)}</span> · exp ${esc(Kit.day(b.expiry))} · <b>${b.qty}</b>${P.daysTo(b.expiry) <= 90 ? ' <span class="badge b-warn nodot">Short expiry</span>' : ''}</div>`).join('') : '') + (a.short ? `<div style="color:var(--error);font-weight:700">Short by ${a.short}</div>` : '') : '<span class="muted">-</span>'}</td>
+                <td class="num">${open ? Kit.money(s.qty * (it.price || 0), false) : ''}</td>
+                <td>${Kit.status(o.status === verifiedState && setting === 'IPD' ? (supplied ? 'Supplied today' : 'Verified') : o.status, supplied ? 'ok' : null)}${o.verifiedBy ? `<div class="xs muted" style="margin-top:4px">by ${esc(o.verifiedBy)}</div>` : ''}</td></tr>`;
+            }).join('')}
+            </tbody></table></div>
+            <div class="card-pad" style="border-top:1px solid var(--line)">
+              <div class="form-grid c3">
+                ${anyCd ? `<div class="field"><label for="wit">Witness (second staff member)<span class="req">*</span></label><input class="input" id="wit" value="${esc(witness)}" placeholder="Name of the witness"><div class="hint">Needed for controlled drugs. Entered in the register.</div></div>` : ''}
+                ${setting === 'OPD' ? `<div class="field"><label for="pay">Patient share</label><select class="input" id="pay"><option value="counter" ${payMode === 'counter' ? 'selected' : ''}>Bill to invoice, pay at cashier</option><option value="Cash" ${payMode === 'Cash' ? 'selected' : ''}>Collected now: cash</option><option value="KNET" ${payMode === 'KNET' ? 'selected' : ''}>Collected now: KNET</option><option value="Card" ${payMode === 'Card' ? 'selected' : ''}>Collected now: card</option></select></div>` : `<div class="field"><label>Billing</label><div class="small muted" style="padding-top:8px">Charges are added to the admission interim bill.</div></div>`}
+                <div class="field"><label>Amount for selected lines</label><div style="padding-top:6px"><b>${Kit.money(total)}</b><div class="small muted">${plan ? `Patient co-pay ${Kit.money(patPays)} · ${esc((Kit.payer(plan.payerId) || {}).name)} ${Kit.money(total - patPays)}` : 'Cash patient: full amount on the invoice'}</div></div></div>
+              </div>
+              ${problems.length && toDispense.length ? `<div class="err-summary" style="margin-top:12px">Before dispensing:<ul>${problems.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>` : ''}
+            </div>
+            <div class="sticky-foot">
+              ${isOnHold ? `<button class="btn" id="bResume" ${canV ? '' : 'disabled title="Needs Verify permission"'}>${icon('play')} Resume</button>` : `<button class="btn" id="bHold" ${canC ? '' : 'disabled title="Needs Cancel permission"'} ${inc.filter(o => /Pending|Verified|Active/.test(o.status)).length ? '' : 'disabled'}>${icon('pause')} Hold</button>`}
+              <button class="btn danger" id="bCancel" ${canC ? '' : 'disabled title="Needs Cancel permission"'} ${inc.length ? '' : 'disabled'}>${icon('x')} Cancel lines</button>
+              <span class="grow"></span>
+              ${dispensed.length ? `<button class="btn" id="bLabels" ${canP ? '' : 'disabled title="Needs Print permission"'}>${icon('tag')} Reprint labels</button>` : ''}
+              <button class="btn ${toVerify.length ? 'primary' : ''}" id="bVerify" ${canV ? '' : 'disabled title="Needs Verify permission"'} ${toVerify.length ? '' : 'disabled'}>${icon('badge-check')} Verify ${toVerify.length ? toVerify.length + ' line' + (toVerify.length > 1 ? 's' : '') : ''}</button>
+              <button class="btn ${toVerify.length ? '' : 'primary'}" id="bDisp" ${canAdd ? '' : 'disabled title="Needs Add permission"'} ${toDispense.length && !problems.length ? '' : 'disabled'}>${icon('package-check')} ${setting === 'IPD' ? 'Supply' : 'Dispense'} and print labels</button>
+            </div>
+          </div>
+          <div class="card"><div class="card-head"><h3>${icon('history')} Dispensing history</h3></div><div class="card-pad">
+            ${dispensed.length ? `<div class="timeline">${dispensed.slice().reverse().map(d => `<div class="tl-item ok"><b>${esc(d.no)}</b> · ${d.lines.length} item${d.lines.length > 1 ? 's' : ''}<div class="meta">${esc(Kit.when(d.at))} · ${esc(d.by)}${d.witness ? ' · witness ' + esc(d.witness) : ''}</div><div class="small" style="margin-top:4px">${d.lines.map(l => `${esc(Kit.item(l.itemId).name)} x ${l.qty}${l.substituted ? ' <span class="badge b-info nodot">Substituted</span>' : ''}`).join('<br>')}</div>${canP ? `<button class="link-btn" data-lbl="${d.id}">Print labels</button>` : ''}</div>`).join('')}</div>` : `<div class="empty" style="padding:16px">${icon('package')}<b>Not dispensed yet</b></div>`}
+          </div></div>
+      </div>`;
+    wire();
+  }
+
+  function wire() {
+    $$('[data-inc]').forEach(c => c.addEventListener('change', () => { state[c.dataset.inc].include = c.checked; draw(); }));
+    $$('[data-item]').forEach(s => s.addEventListener('change', () => { const st = state[s.dataset.item]; st.itemId = s.value; if (s.value === db.orders.find(o => o.id === s.dataset.item).itemId) st.reason = ''; draw(); }));
+    $$('[data-reason]').forEach(s => s.addEventListener('change', () => { state[s.dataset.reason].reason = s.value; draw(); }));
+    $$('[data-qty]').forEach(i => i.addEventListener('change', () => { state[i.dataset.qty].qty = Math.max(0, Math.round(Number(i.value) || 0)); draw(); }));
+    const w = $('#wit'); if (w) { w.addEventListener('change', () => { witness = w.value; draw(); }); }
+    const pay = $('#pay'); if (pay) pay.addEventListener('change', () => { payMode = pay.value; });
+    const on = (id, f) => { const b = $('#' + id); if (b) b.addEventListener('click', f); };
+    on('bVerify', verify); on('bDisp', dispense); on('bHold', hold); on('bResume', resume); on('bCancel', cancelLines);
+    on('bLabels', () => { const ds = db.pharmacyDispenses.filter(d => setting === 'OPD' ? d.rxNo === rxNo : d.encounterId === first.encounterId); P.printLabels(ds[ds.length - 1]); });
+    $$('[data-lbl]').forEach(b => b.addEventListener('click', () => P.printLabels(db.pharmacyDispenses.find(d => d.id === b.dataset.lbl))));
+  }
+  const ref = () => setting === 'OPD' ? rxNo : first.no;
+  const intervention = (type, detail) => { db.pharmacyInterventions.unshift({ id: UI.uid('pi'), at: nowStamp(), type, ref: ref(), patientId: p.id, detail, by: me().displayName }); };
+
+  function verify() {
+    const list = included().filter(o => o.status === 'Pending verification');
+    const hard = list.reduce((a, o) => a.concat(lineAlerts(o).filter(x => x.level === 'err')), []);
+    const warn = list.reduce((a, o) => a.concat(lineAlerts(o).filter(x => x.level === 'warn')), []);
+    const doIt = (reason) => {
+      list.forEach(o => { const b = o.status; o.status = verifiedState; o.verifiedBy = me().displayName; o.verifiedAt = nowStamp(); audit('Medication order verified', 'Medication order', { id: o.id, label: `${o.no} ${o.name}` }, [['Status', b, o.status]], reason ? { reason } : undefined); });
+      if (hard.length) intervention('Allergy override', `${hard.map(x => x.text).join(' ')} Reason: ${reason}`);
+      else if (warn.length && reason) intervention('Duplicate override', `${warn.map(x => x.text).join(' ')} Note: ${reason}`);
+      save(); toast(`${list.length} line${list.length > 1 ? 's' : ''} verified`); draw();
+    };
+    if (hard.length) {
+      UI.confirm({ title: 'Override allergy alert?', body: 'The patient has a recorded allergy to a selected medicine. Verify only after you have confirmed with the prescriber.', impact: hard.map(x => esc(x.text)), reason: true, confirm: 'Override and verify', onConfirm: doIt });
+    } else if (warn.length) {
+      UI.confirm({ title: 'Verify with warnings?', body: 'Please review these warnings before you verify.', impact: warn.map(x => esc(x.text)), tone: 'warn', reason: true, confirm: 'Verify', onConfirm: doIt });
+    } else {
+      UI.confirm({ title: `Verify ${list.length} line${list.length > 1 ? 's' : ''}?`, body: 'Dose, route, frequency and duration are checked and appropriate for this patient.', tone: 'primary', icon: 'badge-check', confirm: 'Verify', onConfirm: () => doIt('') });
+    }
+  }
+  function hold() {
+    const list = included().filter(o => /Pending|Verified|Active/.test(o.status));
+    UI.confirm({ title: 'Put on hold?', body: 'The prescriber is asked to review. The lines stay in the On hold list until you resume them.', impact: list.map(o => esc(o.name)), tone: 'warn', icon: 'pause', reason: true, confirm: 'Put on hold', onConfirm: (reason) => {
+      list.forEach(o => { const b = o.status; o.prevStatus = b; o.status = 'On hold'; o.holdReason = reason; audit('Medication order on hold', 'Medication order', { id: o.id, label: `${o.no} ${o.name}` }, [['Status', b, 'On hold']], { reason }); });
+      intervention('Hold', reason); save(); toast('Put on hold'); draw();
+    } });
+  }
+  function resume() {
+    const list = orders().filter(o => o.status === 'On hold');
+    UI.confirm({ title: 'Resume?', body: 'The prescriber query is resolved. The lines go back for verification.', tone: 'primary', icon: 'play', confirm: 'Resume', onConfirm: () => {
+      list.forEach(o => { o.status = 'Pending verification'; delete o.holdReason; audit('Medication order resumed', 'Medication order', { id: o.id, label: `${o.no} ${o.name}` }, [['Status', 'On hold', 'Pending verification']]); });
+      save(); toast('Resumed'); draw();
+    } });
+  }
+  function cancelLines() {
+    const list = included();
+    UI.confirm({ title: `Cancel ${list.length} line${list.length > 1 ? 's' : ''}?`, body: 'Cancelled lines are not dispensed. The prescriber is informed. This cannot be undone here.', impact: list.map(o => esc(o.name)), reason: true, confirm: 'Cancel lines', onConfirm: (reason) => {
+      list.forEach(o => { const b = o.status; o.status = 'Cancelled'; o.cancelReason = reason; audit('Medication order cancelled by pharmacy', 'Medication order', { id: o.id, label: `${o.no} ${o.name}` }, [['Status', b, 'Cancelled']], { reason }); });
+      intervention('Rejected', reason); save(); toast('Lines cancelled'); draw();
+    } });
+  }
+  function dispense() {
+    const list = included().filter(o => o.status === verifiedState);
+    const lines = list.map(o => { const s = state[o.id], it = Kit.item(s.itemId); const a = P.allocate(s.itemId, WHID, s.qty);
+      return { orderId: o.id, itemId: s.itemId, prescribedItemId: o.itemId, qty: s.qty, price: it.price, batches: a.picks, short: a.short, substituted: s.itemId !== o.itemId, reason: s.reason, dose: o.dose, route: o.route, frequency: o.frequency, days: setting === 'IPD' ? 1 : o.days }; });
+    if (lines.some(l => l.short)) { toast('Not enough stock for one of the lines.', 'err'); return; }
+    const anyCd = lines.some(l => P.isControlled(Kit.item(l.itemId)));
+    UI.confirm({ title: `${setting === 'IPD' ? 'Supply' : 'Dispense'} ${lines.length} item${lines.length > 1 ? 's' : ''}?`, tone: 'primary', icon: 'package-check', confirm: setting === 'IPD' ? 'Supply' : 'Dispense',
+      body: `Stock is deducted from ${esc(P.WH_NAME[WHID])} by batch, earliest expiry first, and labels are printed.`,
+      impact: lines.map(l => `${esc(Kit.item(l.itemId).name)} x ${l.qty}: ${esc(P.batchText(l.batches))}${l.substituted ? ' (substitute for ' + esc(Kit.item(l.prescribedItemId).name) + ')' : ''}`),
+      onConfirm: () => {
+        lines.forEach(l => { P.deduct(l.batches); delete l.short; });
+        const d = { id: UI.uid('pd'), no: Kit.nextNo('DSP-26-', db.pharmacyDispenses), setting, rxNo: setting === 'OPD' ? rxNo : '', orderIds: list.map(o => o.id), patientId: p.id, encounterId: e ? e.id : '', encNo: e ? e.no : '', at: nowStamp().replace(/^\d{4}-\d\d-\d\d/, T), by: me().displayName, verifiedBy: list.map(o => o.verifiedBy).filter(Boolean)[0] || me().displayName, witness: anyCd ? witness.trim() : '', lines, total: +Kit.sumBy(lines, l => l.qty * l.price).toFixed(3), status: 'Dispensed', invoiceId: '' };
+        // Billing: OPD gets a pharmacy invoice (cash in full, insured with co-pay); IPD charges go to the interim bill.
+        let inv = null;
+        if (setting === 'IPD') {
+          inv = db.invoices.find(x => x.encounterId === (e || {}).id && x.status === 'Interim');
+          if (inv) {
+            const pl = inv.planId ? Kit.plan(inv.planId) : null;
+            lines.forEach(l => inv.lines.push({ code: 'PHM-' + Kit.item(l.itemId).code, desc: Kit.item(l.itemId).name, qty: l.qty, price: l.price }));
+            inv.total = +Kit.sumBy(inv.lines, x => x.qty * x.price).toFixed(3);
+            const pat = pl ? Math.min(inv.total * pl.copayPct / 100 + pl.deductible, pl.maxCopay || inv.total) : inv.total;
+            inv.patientAmount = +pat.toFixed(3); inv.payerAmount = +(inv.total - pat).toFixed(3);
+          } else inv = P.invoiceFor(p, e, lines, 'IPD');
+        } else {
+          inv = P.invoiceFor(p, e, lines, 'OPD');
+          if (payMode !== 'counter') { inv.paid = inv.patientAmount; inv.status = 'Paid'; inv.payMode = payMode; }
+        }
+        d.invoiceId = inv.id; d.invoiceNo = inv.no;
+        db.pharmacyDispenses.push(d);
+        list.forEach(o => { if (setting === 'OPD') { o.status = 'Dispensed'; } o.dispensedAt = d.at; o.dispenseNo = d.no; });
+        lines.filter(l => P.isControlled(Kit.item(l.itemId))).forEach(l => P.cdAdd({ itemId: l.itemId, warehouseId: WHID, type: 'Issue', qty: l.qty, ref: `${d.no}, ${setting === 'OPD' ? rxNo : (e || {}).no}`, patientId: p.id, witness: d.witness }));
+        lines.filter(l => l.substituted).forEach(l => intervention('Substitution', `${Kit.item(l.prescribedItemId).name} replaced by ${P.itemLabel(Kit.item(l.itemId))}: ${l.reason}.`));
+        save();
+        audit(setting === 'IPD' ? 'Inpatient medication supplied' : 'Prescription dispensed', 'Dispense', { id: d.id, label: `${d.no} ${p.name}` }, lines.map(l => [Kit.item(l.itemId).name, '', `${l.qty} from ${P.batchText(l.batches)}`]).concat([['Invoice', '', `${inv.no} ${Kit.money(d.total)}`]]));
+        toast(`${d.no} ${setting === 'IPD' ? 'supplied' : 'dispensed'}. Invoice ${inv.no}.`);
+        draw();
+        if (can(OPT, 'print')) P.printLabels(d);
+      } });
+  }
+  draw();
+})();
+</script>
+</body>
+</html>
