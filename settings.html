@@ -11,7 +11,8 @@
 <script>
 const { db, save, $, $$, icon, esc, page, can, drawer, confirm, toast, audit, me, nowStamp, uid, badge, fmtDate, today, L } = UI;
 const OPT = 'admin.system.settings';
-const canEdit = can(OPT, 'edit'), canApprove = can(OPT, 'approve');
+if ('scrollRestoration' in history) history.scrollRestoration = 'manual';   // after a save the page reloads at the top
+const canEdit = can(OPT, 'edit');
 const S = db.appSettings;
 const clone = (o) => JSON.parse(JSON.stringify(o));
 const who = () => (me() || {}).displayName || 'Unknown';
@@ -30,15 +31,15 @@ const STATUS_BADGE = { Live: 'b-ok', Scheduled: 'b-info', Replaced: 'b-neutral',
 const relBadge = (s) => `<span class="badge ${STATUS_BADGE[s] || 'b-neutral'}">${esc(s)}</span>`;
 
 if (page({ active: 'settings.html', opt: OPT, title: 'App Settings',
-  subtitle: 'Portal colours and logo, release versions for the web portal, patient app and API, and maintenance mode. Changes apply to every user.',
+  subtitle: 'App versions and update prompts, maintenance for the whole system or single apps, and the portal look. Changes apply to every user.',
   crumbs: [['Home', 'home.html'], ['Administration', 'admin.html'], ['App Settings']],
   body: '<div id="tabs" style="margin-bottom:16px"></div><div id="pane"></div>' })) {
 
-  const TABS = [{ id: 'apps', label: 'App control', icon: 'smartphone' }, { id: 'ver', label: 'Releases', icon: 'git-branch' }, { id: 'maint', label: 'Scheduled maintenance', icon: 'calendar-clock' }, { id: 'look', label: 'Appearance', icon: 'palette' }];
+  const TABS = [{ id: 'apps', label: 'App control', icon: 'smartphone' }, { id: 'maint', label: 'Maintenance', icon: 'construction' }, { id: 'look', label: 'Appearance', icon: 'palette' }];
   let relFilter = 'all';
   let tab = TABS.some(t => t.id === UI.param('tab')) ? UI.param('tab') : 'apps';
-  const drawTab = () => { history.replaceState(null, '', 'settings.html?tab=' + tab); ({ apps: drawApps, look: drawLook, ver: drawVersions, maint: drawMaint })[tab](); };
-  Kit.tabs($('#tabs'), TABS, tab, (t) => { if (tab === 'look') UI.applyBrand(); tab = t; drawTab(); });
+  const drawTab = () => { history.replaceState(null, '', 'settings.html?tab=' + tab); ({ apps: drawApps, look: drawLook, maint: drawMaint })[tab](); };
+  const tabsCtl = Kit.tabs($('#tabs'), TABS, tab, (t) => { if (tab === 'look') UI.applyBrand(); tab = t; drawTab(); });
 
   /* =========================== Appearance =========================== */
   function drawLook() {
@@ -150,146 +151,121 @@ if (page({ active: 'settings.html', opt: OPT, title: 'App Settings',
   }
 
   /* =========================== App control =========================== */
-  const PLAT_NAME = { android: 'Android', ios: 'iOS', web: 'Web portal' };
+  const PLAT_NAME = { android: 'Android', ios: 'iOS', web: 'Web portal', api: 'Backend API' };
   const STORE_RE = { android: /^https:\/\/play\.google\.com\/\S+$/, ios: /^https:\/\/apps\.apple\.com\/\S+$/, web: /^https:\/\/\S+$/ };
   const VER_RE = /^\d+\.\d+\.\d+\+\d+$/;
   const pill = (on) => `<span class="badge ${on ? 'b-ok' : 'b-err'} nodot tg-pill">${on ? 'ON' : 'OFF'}</span>`;
   const tog = (key, on, dis) => `<label class="tg"><span class="switch"><input type="checkbox" data-k="${key}" ${on ? 'checked' : ''} ${dis ? 'disabled' : ''}><span></span></span>${pill(on)}</label>`;
-  function chanBadges(c) {
-    const ms = UI.maintState(c.id);
-    const b = [];
+  const syncPill = (inp) => { const p = inp.closest('.tg').querySelector('.tg-pill'); p.className = 'badge ' + (inp.checked ? 'b-ok' : 'b-err') + ' nodot tg-pill'; p.textContent = inp.checked ? 'ON' : 'OFF'; };
+  /* Status badges for a channel: maintenance comes only from the Maintenance tab. */
+  function chanBadges(c, d) {
+    d = d || { live: c.live !== false, force: !!c.force, upd: !!c.updateAvailable };
+    const b = [], ms = UI.maintState(c.id);
     if (ms.status === 'active') b.push('<span class="badge b-err">Maintenance</span>');
+    else if (ms.status === 'scheduled') b.push('<span class="badge b-info">Maintenance planned</span>');
     if (MOBILE.includes(c.id)) {
-      if (c.live === false) b.push('<span class="badge b-neutral">Not live</span>');
-      if (c.force) b.push('<span class="badge b-warn">Force update</span>'); else if (c.updateAvailable) b.push('<span class="badge b-info">Update available</span>');
+      if (!d.live) b.push('<span class="badge b-neutral">Not live</span>');
+      if (d.force) b.push('<span class="badge b-warn">Force update</span>'); else if (d.upd) b.push('<span class="badge b-info">Update available</span>');
     }
-    if (!b.length) b.push('<span class="badge b-ok">Up to date</span>');
+    if (!b.length) b.push('<span class="badge b-ok">Running</span>');
     return b.join(' ');
   }
-  const langNote = (d) => d.msgAr ? `<button type="button" class="link-btn xs" data-ar style="color:var(--success)">Translated in 1 language (Arabic)</button>` : `<button type="button" class="link-btn xs" data-ar style="color:var(--warning)">Not translated · add Arabic</button>`;
 
   function drawApps() {
-    /* Global maintenance (whole system or a scheduled window), separate from single-app switches. */
-    const ms = S.maintenance, pad2 = (n) => String(n).padStart(2, '0'), nd = new Date();
-    const nowL = `${nd.getFullYear()}-${pad2(nd.getMonth() + 1)}-${pad2(nd.getDate())}T${pad2(nd.getHours())}:${pad2(nd.getMinutes())}`;
-    const gState = !ms.on ? 'off' : ms.from && nowL < ms.from ? 'scheduled' : ms.to && nowL > ms.to ? 'ended' : 'active';
-    const sysOn = gState === 'active', sysSched = gState === 'scheduled';
+    const ms = UI.maintState('web').m || S.maintenance, gst = maintGlobal();
     const P = S.push, pct = (n) => Math.round(100 * n / Math.max(1, P.sent));
-    const mob = S.channels.filter(c => MOBILE.includes(c.id)), web = CH('web');
+    const mob = S.channels.filter(c => MOBILE.includes(c.id)), web = CH('web'), api = CH('api');
     const appLive = mob.some(c => c.live !== false);
     const head = (cols) => `<thead><tr>${cols.map(c => `<th>${c}</th>`).join('')}</tr></thead>`;
+    const where = (S.maintenance.scope || []).map(s => PLAT_NAME[s]).join(', ');
 
     $('#pane').innerHTML = `
       ${canEdit ? '' : `<div class="banner info" style="margin-bottom:14px">${icon('lock')}<span>You can view app control. Changing it needs edit rights on App Settings.</span></div>`}
-      <div class="row" style="margin-bottom:14px;gap:10px;flex-wrap:wrap"><div class="grow small muted">Pause an app for maintenance, ask people to update, and mark which apps are launched. Changes apply the next time someone opens the app.</div><button class="btn sm" id="appsRefresh">${icon('refresh-cw')} Refresh</button></div>
+      <div class="row" style="margin-bottom:14px;gap:10px;flex-wrap:wrap"><div class="grow small muted">Mark which apps are live and ask people to update. Release history is at the bottom. Changes apply the next time someone opens the app.</div><button class="btn sm" id="appsRefresh">${icon('refresh-cw')} Refresh</button></div>
 
-      <div class="card sys-card ${sysOn ? 'on' : ''}" style="margin-bottom:14px"><div class="card-pad row" style="gap:16px;align-items:center;flex-wrap:wrap">
-        <span class="tile ${sysOn ? 't-rose' : 't-mint'}" style="width:46px;height:46px;border-radius:12px;display:grid;place-items:center">${icon(sysOn ? 'construction' : 'power')}</span>
-        <div class="grow" style="min-width:240px"><div class="row" style="gap:8px"><b>Whole system maintenance</b>${sysOn ? '<span class="badge b-err">Active</span>' : sysSched ? `<span class="badge b-info">Scheduled ${esc(UI.fmtLocal(ms.from))}</span>` : '<span class="badge b-ok">System running</span>'}</div>
-          <div class="small muted">${sysOn ? `Web portal, Android and iOS show the maintenance screen${ms.to ? ' until ' + esc(UI.fmtLocal(ms.to)) : ' until you turn it off'}. Roles marked as exempt keep working on the web portal.` : 'One switch to pause the web portal and both patient apps together. Use the rows below to pause a single app.'}</div></div>
-        ${tog('sys', sysOn, !canEdit)}
+      <div class="card sys-card ${gst === 'active' ? 'on' : ''}" style="margin-bottom:14px"><div class="card-pad row" style="gap:14px;align-items:center;flex-wrap:wrap">
+        <span class="tile ${gst === 'active' ? 't-rose' : gst === 'scheduled' ? 't-sky' : 't-mint'}" style="width:42px;height:42px;border-radius:12px;display:grid;place-items:center">${icon(gst === 'active' ? 'construction' : gst === 'scheduled' ? 'calendar-clock' : 'circle-check')}</span>
+        <div class="grow" style="min-width:240px"><div class="row" style="gap:8px"><b>Maintenance</b>${gst === 'active' ? '<span class="badge b-err">Active</span>' : gst === 'scheduled' ? '<span class="badge b-info">Scheduled</span>' : '<span class="badge b-ok">Off · everything running</span>'}</div>
+          <div class="small muted">${gst === 'active' ? `${esc(where)} ${S.maintenance.to ? 'until ' + esc(UI.fmtLocal(S.maintenance.to)) : 'until it is ended'}.` : gst === 'scheduled' ? `${esc(where)} from ${esc(UI.fmtLocal(S.maintenance.from))}${S.maintenance.to ? ' to ' + esc(UI.fmtLocal(S.maintenance.to)) : ''}.` : 'Start, schedule or end maintenance for the whole system or for single apps on the Maintenance tab.'}</div></div>
+        <button class="btn ${gst === 'off' ? '' : 'primary'}" id="goMaint">${icon('construction')} ${gst === 'off' ? 'Open maintenance' : 'Manage maintenance'}</button>
       </div></div>
 
       <div class="banner info push-box" style="margin-bottom:14px">${icon('bell-ring')}<span><b>Push notifications:</b> working. ${Kit.num(P.phones)} phones registered for ${Kit.num(P.people)} people. Last 7 days: ${Kit.num(P.sent)} sent to phones — ${Kit.num(P.delivered)} delivered (${pct(P.delivered)}%), ${Kit.num(P.failed)} failed, ${Kit.num(P.notSent)} not sent.
         <b style="display:block;margin-top:8px">Why some were not sent</b><ul style="margin:4px 0 0;padding-inline-start:18px">${P.reasons.map(r => `<li>${Kit.num(r[0])} × ${esc(r[1])}</li>`).join('')}</ul></span></div>
 
       <div class="card" style="margin-bottom:14px"><div class="card-head"><div><h3>${icon('smartphone')} Patient App</h3><div class="small muted" style="margin-top:2px">What patients use to book appointments, see results and pay.</div></div><div class="actions">${tog('app', appLive, !canEdit)}</div></div>
-        <div class="table-wrap"><table class="tbl app-tbl">${head(['Platform', 'Live', 'Latest version and store link', 'Update<br>available', 'Force<br>update', 'Maintenance', 'Maintenance message', ''])}<tbody>
+        <div class="table-wrap"><table class="tbl app-tbl">${head(['Platform', 'Live', 'Latest version and store link', 'Update<br>available', 'Force<br>update', 'Status', ''])}<tbody>
         ${mob.map(c => `<tr data-row="${c.id}">
           <td><b>${PLAT_NAME[c.id]}</b><div class="xs muted">${esc(c.env)}</div></td>
           <td>${tog('live', c.live !== false, !canEdit)}</td>
-          <td><div class="stack tight" style="width:220px"><input class="input sm mono" data-f="ver" value="${esc(c.current + '+' + c.build)}" aria-label="Latest version" style="width:120px" ${canEdit ? '' : 'disabled'}><div class="xs err-t hidden" data-e="ver"></div>
+          <td><div class="stack tight" style="width:250px"><input class="input sm mono" data-f="ver" value="${esc(c.current + '+' + c.build)}" aria-label="Latest version" style="width:130px" ${canEdit ? '' : 'disabled'}><div class="xs err-t hidden" data-e="ver"></div>
             <input class="input sm" data-f="store" value="${esc(c.store || '')}" aria-label="Store link" ${canEdit ? '' : 'disabled'}><div class="xs err-t hidden" data-e="store"></div></div></td>
           <td>${tog('upd', !!(c.updateAvailable || c.force), !canEdit || c.force)}</td>
           <td>${tog('force', !!c.force, !canEdit)}</td>
-          <td>${tog('maint', !!c.maint, !canEdit)}</td>
-          <td><input class="input sm" data-f="msg" maxlength="160" value="${esc(c.msgEn || '')}" aria-label="Maintenance message" style="width:210px" ${canEdit ? '' : 'disabled'}><div data-lang>${langNote(c)}</div></td>
+          <td><div class="row" style="gap:6px;flex-wrap:wrap;max-width:200px" data-status>${chanBadges(c)}</div><div class="xs muted" style="margin-top:6px">Released ${esc(fmtDate(c.releasedAt))}</div></td>
           <td class="actions"><div class="row-acts"><button class="icon-btn" data-prev title="Preview what users see" aria-label="Preview">${icon('eye')}</button>${canEdit ? `<button class="btn sm primary" data-save disabled>Save</button>` : ''}</div></td>
         </tr>`).join('')}
         </tbody></table></div></div>
 
-      <div class="card"><div class="card-head"><div><h3>${icon('monitor')} Staff web portal</h3><div class="small muted" style="margin-top:2px">What hospital staff use. Exempt roles keep working during maintenance.</div></div></div>
-        <div class="table-wrap"><table class="tbl app-tbl">${head(['Platform', 'Live version', 'Address', 'Maintenance', 'Maintenance message', ''])}<tbody>
-        <tr data-row="web">
-          <td style="white-space:nowrap"><b>Web portal</b><div class="xs muted">${esc(web.env)}</div></td>
-          <td><b class="mono">v${esc(web.current)}</b><div class="xs muted mono">build ${esc(web.build)}</div></td>
-          <td><input class="input sm" data-f="store" value="${esc(web.store || '')}" aria-label="Portal address" style="width:220px" ${canEdit ? '' : 'disabled'}><div class="xs err-t hidden" data-e="store"></div></td>
-          <td>${tog('maint', !!web.maint, !canEdit)}</td>
-          <td><input class="input sm" data-f="msg" maxlength="160" value="${esc(web.msgEn || '')}" aria-label="Maintenance message" style="width:320px" ${canEdit ? '' : 'disabled'}><div data-lang>${langNote(web)}</div></td>
-          <td class="actions"><div class="row-acts"><button class="icon-btn" data-prev title="Preview what users see" aria-label="Preview">${icon('eye')}</button>${canEdit ? `<button class="btn sm primary" data-save disabled>Save</button>` : ''}</div></td>
-        </tr></tbody></table></div></div>`;
+      <div class="card" style="margin-bottom:14px"><div class="card-head"><div><h3>${icon('monitor')} Staff web portal and API</h3><div class="small muted" style="margin-top:2px">What hospital staff use, and the service behind both apps.</div></div></div>
+        <div class="table-wrap"><table class="tbl app-tbl">${head(['Platform', 'Live version', 'Address', 'Status', ''])}<tbody>
+        ${[web, api].map(c => `<tr data-row="${c.id}">
+          <td style="white-space:nowrap"><b>${PLAT_NAME[c.id]}</b><div class="xs muted">${esc(c.env)}</div></td>
+          <td><b class="mono">v${esc(c.current)}</b><div class="xs muted mono">build ${esc(c.build)}</div></td>
+          <td>${c.id === 'web' ? `<input class="input sm" data-f="store" value="${esc(c.store || '')}" aria-label="Portal address" style="width:260px" ${canEdit ? '' : 'disabled'}><div class="xs err-t hidden" data-e="store"></div>` : `<span class="mono small">${esc(c.store || '')}</span>`}</td>
+          <td><div class="row" style="gap:6px;flex-wrap:wrap">${chanBadges(c)}</div><div class="xs muted" style="margin-top:6px">Released ${esc(fmtDate(c.releasedAt))}</div></td>
+          <td class="actions"><div class="row-acts">${c.id === 'web' && canEdit ? `<button class="btn sm primary" data-save disabled>Save</button>` : ''}</div></td>
+        </tr>`).join('')}
+        </tbody></table></div></div>
 
-    const syncPill = (inp) => { const p = inp.closest('.tg').querySelector('.tg-pill'); p.className = 'badge ' + (inp.checked ? 'b-ok' : 'b-err') + ' nodot tg-pill'; p.textContent = inp.checked ? 'ON' : 'OFF'; };
+      <div id="relHost"></div>`;
+
     $('#appsRefresh').addEventListener('click', () => { drawApps(); toast('App status refreshed.'); });
+    $('#goMaint').addEventListener('click', () => tabsCtl.set('maint'));
 
-    /* Whole system switch */
-    const sys = $('[data-k="sys"]');
-    sys.addEventListener('change', () => {
-      const turnOn = sys.checked; sys.checked = !turnOn; syncPill(sys);
-      if (turnOn) {
-        const ex = (ms.exemptRoles || []).map(id => (L.role(id) || {}).name).filter(Boolean);
-        confirm({ title: 'Put the whole system under maintenance?', body: 'The web portal and both patient apps show the maintenance message straight away.', reason: true, confirm: 'Start maintenance',
-          impact: ['Patients cannot use the app until you turn this off.', 'Staff are stopped on their next action, except: ' + esc(ex.join(', ') || 'nobody') + '.', 'Message: “' + esc(ms.msgEn) + '”'],
-          onConfirm: (why) => { const b = clone(ms); Object.assign(ms, { on: true, scope: ['web', 'android', 'ios'], from: '', to: '', updatedBy: who(), updatedAt: nowStamp() }); save();
-            audit('Whole system maintenance started', 'App Settings', { id: 'maintenance', label: 'Whole system' }, [['Status', b.on ? 'On (window)' : 'Off', 'On until turned off']], { reason: why }); toast('The whole system is now under maintenance.'); location.reload(); } });
-      } else {
-        confirm({ title: 'End whole system maintenance?', body: 'Everybody can use the web portal and the patient apps again. Single apps you paused below stay paused.', tone: 'primary', icon: 'power', confirm: 'End maintenance',
-          onConfirm: () => { Object.assign(ms, { on: false, updatedBy: who(), updatedAt: nowStamp() }); save(); audit('Whole system maintenance ended', 'App Settings', { id: 'maintenance', label: 'Whole system' }, [['Status', 'On', 'Off']]); toast('Maintenance ended. The system is running.'); location.reload(); } });
-      }
-    });
-
-    /* Patient App launched switch */
+    /* Patient App live switch (both stores) */
     const appT = $('[data-k="app"]');
     appT.addEventListener('change', () => {
       const on = appT.checked; appT.checked = !on; syncPill(appT);
-      confirm({ title: on ? 'Launch the Patient App on both stores?' : 'Mark the Patient App as not live?', body: on ? 'Android and iOS are marked live. The app works for everybody who installs it.' : 'Android and iOS are marked not live. People who open the app see a “coming soon” screen.', tone: on ? 'primary' : 'danger', icon: on ? 'rocket' : 'power', confirm: on ? 'Mark live' : 'Mark not live', reason: !on,
+      confirm({ title: on ? 'Mark the Patient App live on both stores?' : 'Mark the Patient App as not live?', body: on ? 'Android and iOS are marked live. The app works for everybody who installs it.' : 'Android and iOS are marked not live. People who open the app see a “coming soon” screen.', tone: on ? 'primary' : 'danger', icon: on ? 'rocket' : 'power', confirm: on ? 'Mark live' : 'Mark not live', reason: !on,
         onConfirm: (why) => { mob.forEach(c => { c.live = on; }); save(); audit(on ? 'Patient App marked live' : 'Patient App marked not live', 'App Settings', { id: 'patient-app', label: 'Patient App' }, [['Live', on ? 'Off' : 'On', on ? 'On' : 'Off']], why ? { reason: why } : {}); toast(on ? 'Patient App is live on Android and iOS.' : 'Patient App is marked not live.'); drawApps(); } });
     });
 
-    /* Rows */
+    /* Rows: live, version, store link, update prompts */
     $$('tr[data-row]').forEach(tr => {
       const c = CH(tr.dataset.row), isMob = MOBILE.includes(c.id);
-      const d = { live: c.live !== false, ver: c.current + '+' + c.build, store: c.store || '', upd: !!(c.updateAvailable || c.force), force: !!c.force, maint: !!c.maint, msg: c.msgEn || '', ar: c.msgAr || '' };
+      if (!tr.querySelector('[data-save]') && !tr.querySelector('[data-prev]')) return;
+      const d = { live: c.live !== false, ver: c.current + '+' + c.build, store: c.store || '', upd: !!(c.updateAvailable || c.force), force: !!c.force };
       const base = JSON.stringify(d);
       const q = (s) => tr.querySelector(s);
       const read = () => {
         if (isMob) { d.live = q('[data-k="live"]').checked; d.ver = q('[data-f="ver"]').value.trim(); d.upd = q('[data-k="upd"]').checked; d.force = q('[data-k="force"]').checked; }
-        d.store = q('[data-f="store"]').value.trim(); d.maint = q('[data-k="maint"]').checked; d.msg = q('[data-f="msg"]').value.trim();
+        if (q('[data-f="store"]')) d.store = q('[data-f="store"]').value.trim();
       };
       const errs = () => {
         const e = {};
         if (isMob) {
           if (!VER_RE.test(d.ver)) e.ver = 'Use 1.3.0+130';
-          else { const [v, bld] = d.ver.split('+'); const k = cmpVer(v, c.current); if (k < 0) e.ver = 'Lower than live v' + c.current + '. Use Roll back on Releases.'; else if (k === 0 && +bld < +c.build) e.ver = 'Build lower than ' + c.build; }
+          else { const [v, bld] = d.ver.split('+'); const k = cmpVer(v, c.current); if (k < 0) e.ver = 'Lower than live v' + c.current + '.'; else if (k === 0 && +bld < +c.build) e.ver = 'Build lower than ' + c.build; }
         }
-        if (!STORE_RE[c.id].test(d.store)) e.store = c.id === 'android' ? 'Use a play.google.com link' : c.id === 'ios' ? 'Use an apps.apple.com link' : 'Use an https:// address';
-        if (d.maint && d.msg.length < 5) e.msg = true;
+        if (STORE_RE[c.id] && !STORE_RE[c.id].test(d.store)) e.store = c.id === 'android' ? 'Use a play.google.com link' : c.id === 'ios' ? 'Use an apps.apple.com link' : 'Use an https:// address';
         return e;
       };
       const chk = () => {
         read();
-        if (isMob) { const u = q('[data-k="upd"]'); if (d.force) { u.checked = true; d.upd = true; } u.disabled = !canEdit || d.force; syncPill(u); }
+        if (isMob) { const u = q('[data-k="upd"]'); if (d.force) { u.checked = true; d.upd = true; } u.disabled = !canEdit || d.force; syncPill(u); q('[data-status]').innerHTML = chanBadges(c, d); }
         const e = errs();
         ['ver', 'store'].forEach(k => { const el = q(`[data-e="${k}"]`); if (!el) return; el.textContent = e[k] || ''; el.classList.toggle('hidden', !e[k]); });
-        q('[data-f="msg"]').classList.toggle('invalid', !!e.msg);
         tr.classList.toggle('dirty', JSON.stringify(d) !== base);
         const sv = q('[data-save]'); if (sv) sv.disabled = JSON.stringify(d) === base || Object.keys(e).length > 0;
       };
       $$('input', tr).forEach(i => { i.addEventListener('input', chk); i.addEventListener('change', () => { if (i.dataset.k) syncPill(i); chk(); }); });
-      q('[data-ar]') && tr.addEventListener('click', (ev) => {
-        if (!ev.target.closest('[data-ar]')) return;
-        drawer({ title: 'Maintenance message · ' + PLAT_NAME[c.id], sub: 'Shown in the language of the user’s app or browser.', narrow: true,
-          body: `<div class="stack"><div class="field"><label for="tEn">English<span class="req">*</span></label><textarea class="input" id="tEn" rows="3" maxlength="160">${esc(q('[data-f="msg"]').value)}</textarea></div>
-            <div class="field"><label for="tAr">Arabic</label><textarea class="input" id="tAr" rows="3" maxlength="160" dir="rtl" lang="ar">${esc(d.ar)}</textarea><span class="hint">Leave empty to show the English text to Arabic users.</span></div></div>`,
-          foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="tOk" ${canEdit ? '' : 'disabled'}>Done</button>`,
-          onMount: (el, close) => { $('#tOk', el).addEventListener('click', () => { q('[data-f="msg"]').value = $('#tEn', el).value.trim(); d.ar = $('#tAr', el).value.trim(); q('[data-lang]').innerHTML = langNote({ msgAr: d.ar }); close(); chk(); }); } });
-      });
-      q('[data-prev]').addEventListener('click', () => { read(); preview(c, d); });
+      if (q('[data-prev]')) q('[data-prev]').addEventListener('click', () => { read(); preview(c, d); });
       const sv = q('[data-save]');
       if (sv) sv.addEventListener('click', () => {
         read();
         const old = JSON.parse(base), ch = [];
-        const lab = { live: 'Live', ver: 'Latest version', store: 'Store link', upd: 'Update available', force: 'Force update', maint: 'Maintenance', msg: 'Maintenance message', ar: 'Arabic message' };
+        const lab = { live: 'Live', ver: 'Latest version', store: c.id === 'web' ? 'Address' : 'Store link', upd: 'Update available', force: 'Force update' };
         Object.keys(lab).forEach(k => { if (old[k] !== d[k]) ch.push([lab[k], typeof old[k] === 'boolean' ? (old[k] ? 'On' : 'Off') : old[k], typeof d[k] === 'boolean' ? (d[k] ? 'On' : 'Off') : d[k]]); });
         const commit = (why) => {
           if (isMob) {
@@ -302,205 +278,154 @@ if (page({ active: 'settings.html', opt: OPT, title: 'App Settings',
             c.current = v; c.build = bld; c.live = d.live; c.updateAvailable = d.upd; c.force = d.force;
             if (d.force) c.min = v;
           }
-          c.store = d.store; c.maint = d.maint; c.msgEn = d.msg; c.msgAr = d.ar; save();
+          c.store = d.store; save();
           audit('App control updated', 'App Settings', { id: c.id, label: c.name }, ch, why ? { reason: why } : {});
-          toast(c.name + ' saved. ' + (d.maint ? 'Maintenance is on.' : d.force ? 'Force update is on.' : 'Users get it next time they open ' + (isMob ? 'the app.' : 'the portal.')));
-          if (c.id === 'web' && old.maint !== d.maint) location.reload(); else drawApps();
+          toast(c.name + ' saved. ' + (d.force ? 'Force update is on.' : 'Users get it next time they open ' + (isMob ? 'the app.' : 'the portal.')));
+          drawApps();
         };
-        const risky = (d.maint && !old.maint) || (d.force && !old.force) || (isMob && !d.live && old.live);
+        const risky = (d.force && !old.force) || (isMob && !d.live && old.live);
         if (!risky) return commit();
         confirm({ title: 'Save ' + c.name + '?', body: 'Check the impact before you save.', reason: true, confirm: 'Save',
-          impact: [d.maint && !old.maint ? (isMob ? 'People who open the ' + PLAT_NAME[c.id] + ' app see the maintenance message and cannot continue.' : 'Staff without an exempt role see the maintenance screen.') : '', d.force && !old.force ? 'People on a version older than v' + esc(d.ver.split('+')[0]) + ' must update from the store before they continue.' : '', isMob && !d.live && old.live ? 'The app shows a “coming soon” screen on ' + PLAT_NAME[c.id] + '.' : ''].filter(Boolean),
+          impact: [d.force && !old.force ? 'People on a version older than v' + esc(d.ver.split('+')[0]) + ' must update from the store before they continue.' : '', isMob && !d.live && old.live ? 'The app shows a “coming soon” screen on ' + PLAT_NAME[c.id] + '.' : ''].filter(Boolean),
           onConfirm: commit });
       });
       chk();
     });
+
+    drawReleases($('#relHost'));
   }
 
+  /* Phone preview of what a patient sees for the row's unsaved settings. */
   function preview(c, d) {
-    const [v] = (d.ver || c.current).split('+'), col = UI.themeColours(S.theme).primary;
-    const st = d.maint || (S.maintenance.on && UI.maintState(c.id).status === 'active') ? 'maint' : (MOBILE.includes(c.id) && !d.live) ? 'soon' : d.force ? 'force' : d.upd ? 'upd' : 'ok';
+    const [v] = (d.ver || c.current).split('+'), col = UI.themeColours(S.theme).primary, ms = UI.maintState(c.id);
+    const st = ms.status === 'active' ? 'maint' : !d.live ? 'soon' : d.force ? 'force' : d.upd ? 'upd' : 'ok';
     const body = {
-      maint: [icon('construction'), 'Under maintenance', esc(d.msg || S.maintenance.msgEn), '', ''],
+      maint: [icon('construction'), 'Under maintenance', esc(ms.m.msgEn), '', ''],
       soon: [icon('rocket'), 'Coming soon', 'The ' + esc(UI.brandName()) + ' app is not available yet.', '', ''],
       force: [icon('download'), 'Update required', 'A new version (v' + esc(v) + ') is required to continue.', 'Update now', ''],
       upd: [icon('download'), 'Update available', 'Version v' + esc(v) + ' is ready with improvements.', 'Update now', 'Later'],
       ok: [icon('circle-check'), 'App opens normally', 'No prompt is shown.', '', ''],
     }[st];
     drawer({ title: 'What users see · ' + PLAT_NAME[c.id], sub: 'Preview of your unsaved settings.', narrow: true,
-      body: `<div class="phone-prev">${body[0]}<div style="font-weight:800;margin:8px 0 4px">${body[1]}</div><div style="font-size:12px;color:#526075">${body[2]}</div>${d.ar && st === 'maint' ? `<div dir="rtl" lang="ar" style="font-size:12px;color:#526075;margin-top:6px">${esc(d.ar)}</div>` : ''}${body[3] ? `<div style="margin-top:12px;background:${col};color:#fff;border-radius:10px;padding:8px;font-size:12px;font-weight:700">${body[3]}</div>` : ''}${body[4] ? `<div style="margin-top:8px;font-size:12px;color:#526075">${body[4]}</div>` : ''}</div>
-        <div class="hint" style="text-align:center;margin-top:12px">${st === 'upd' ? 'People can skip this and keep using the app.' : st === 'force' ? 'People cannot continue until they update.' : st === 'maint' ? 'People cannot continue until maintenance ends.' : ''}</div>` });
+      body: `<div class="phone-prev">${body[0]}<div style="font-weight:800;margin:8px 0 4px">${body[1]}</div><div style="font-size:12px;color:#526075">${body[2]}</div>${st === 'maint' && ms.m.msgAr ? `<div dir="rtl" lang="ar" style="font-size:12px;color:#526075;margin-top:6px">${esc(ms.m.msgAr)}</div>` : ''}${body[3] ? `<div style="margin-top:12px;background:${col};color:#fff;border-radius:10px;padding:8px;font-size:12px;font-weight:700">${body[3]}</div>` : ''}${body[4] ? `<div style="margin-top:8px;font-size:12px;color:#526075">${body[4]}</div>` : ''}</div>
+        <div class="hint" style="text-align:center;margin-top:12px">${st === 'upd' ? 'People can skip this and keep using the app.' : st === 'force' ? 'People cannot continue until they update.' : st === 'maint' ? 'Maintenance is set on the Maintenance tab.' : ''}</div>` });
   }
 
-  /* =========================== Versions =========================== */
-  function drawVersions() {
-    const sched = S.releases.filter(r => r.status === 'Scheduled').length;
-    $('#pane').innerHTML = `
-      <div class="row" style="margin-bottom:14px;gap:10px;flex-wrap:wrap"><div class="grow small muted">Live version per channel and the full release history. Update prompts, store links and per-app maintenance are on the App control tab.</div>
-        ${canEdit ? `<button class="btn primary" id="newRel">${icon('rocket')} New release</button>` : ''}</div>
-      <div class="grid g4" style="margin-bottom:16px">${S.channels.map(c => `
-        <div class="card"><div class="card-pad chan-card">
-          <div class="row" style="gap:10px"><span class="tile t-sky" style="width:36px;height:36px;border-radius:10px;display:grid;place-items:center">${icon(c.icon)}</span><div class="grow"><b class="small">${esc(c.name)}</b><div class="xs muted">${esc(c.env)}</div></div></div>
-          <div><span class="ver">v${esc(c.current)}</span> <span class="xs muted mono">build ${esc(c.build)}</span></div>
-          <div class="xs muted">Released ${esc(fmtDate(c.releasedAt))}</div>
-          <div class="row" style="gap:6px;flex-wrap:wrap">${chanBadges(c)}</div>
-        </div></div>`).join('')}</div>
-      <div class="card"><div class="card-head"><h3>${icon('history')} Release history</h3><div class="actions"><div id="relSeg"></div></div></div>
-        <div class="table-wrap"><table class="tbl"><thead><tr><th>Version</th><th>Channel</th><th>Release date</th><th>Status</th><th>Notes</th><th>Released by</th><th></th></tr></thead><tbody id="relBody"></tbody></table></div></div>
-      ${sched ? `<div class="hint" style="margin-top:8px">${sched} scheduled release${sched === 1 ? '' : 's'}. Publish now makes it the live version straight away.</div>` : ''}`;
-
-    Kit.seg($('#relSeg'), [['all', 'All']].concat(S.channels.map(c => [c.id, c.id === 'web' ? 'Web' : c.id === 'api' ? 'API' : c.id === 'ios' ? 'iOS' : 'Android'])), relFilter, (v) => { relFilter = v; body(); });
+  /* ---------- Release history (read-only, part of App control) ----------
+   * Web portal and API entries come from the deployment pipeline; a Patient App entry is added
+   * when the latest version is raised on App control. Nothing is released or rolled back here. */
+  function drawReleases(host) {
+    const n = S.releases.length;
+    host.innerHTML = `<details class="card rel-card"><summary class="card-head"><div><h3>${icon('history')} Release history <span class="tag">${n}</span></h3><div class="small muted" style="margin-top:2px">For reference only. Click to show or hide.</div></div><span class="rel-chev">${icon('chevron-down')}</span></summary>
+      <div class="card-pad" style="padding-bottom:0"><div class="banner info" style="margin-bottom:12px">${icon('info')}<span>Web portal and Backend API entries are added automatically by each deployment. A Patient App entry is added when you raise the latest version above. To undo a bad app release, turn Force update off and set the latest version back; store builds cannot be withdrawn from here.</span></div>
+        <div id="relSeg"></div></div>
+      <div class="table-wrap" style="margin-top:12px"><table class="tbl"><thead><tr><th>Version</th><th>Channel</th><th>Release date</th><th>Status</th><th>Notes</th><th>Source</th></tr></thead><tbody id="relBody"></tbody></table></div></details>`;
+    Kit.seg($('#relSeg'), [['all', 'All'], ['web', 'Web'], ['android', 'Android'], ['ios', 'iOS'], ['api', 'API']], relFilter, (v) => { relFilter = v; body(); });
+    const src = (r) => MOBILE.includes(r.channel) ? esc(r.by) : 'Deployment pipeline';
     const body = () => {
       const rows = S.releases.filter(r => relFilter === 'all' || r.channel === relFilter).sort((a, b) => b.date.localeCompare(a.date) || cmpVer(b.version, a.version));
-      $('#relBody').innerHTML = rows.length ? rows.map(r => {
-        const c = CH(r.channel), live = r.status === 'Live' && c.current === r.version;
-        const prev = S.releases.filter(x => x.channel === r.channel && x.status === 'Replaced' && cmpVer(x.version, r.version) < 0).sort((a, b) => cmpVer(b.version, a.version))[0];
-        const acts = [];
-        if (canApprove && r.status === 'Scheduled') acts.push(`<button class="btn sm primary" data-pub="${r.id}">${icon('rocket')} Publish now</button>`, `<button class="btn sm" data-cancel="${r.id}">Cancel</button>`);
-        if (canApprove && live && prev) acts.push(`<button class="btn sm destructive" data-rb="${r.id}">${icon('undo-2')} Roll back to v${esc(prev.version)}</button>`);
-        return `<tr><td><b class="mono">v${esc(r.version)}</b></td><td>${esc(c.name)}</td><td>${esc(fmtDate(r.date))}</td><td>${relBadge(r.status)}</td><td style="max-width:360px">${esc(r.notes)}</td><td>${esc(r.by)}</td><td class="actions">${acts.join(' ')}</td></tr>`;
-      }).join('') : `<tr><td colspan="7"><div class="empty">${icon('git-branch')}<b>No releases for this channel</b></div></td></tr>`;
-      $$('[data-pub]').forEach(b => b.addEventListener('click', () => publish(S.releases.find(r => r.id === b.dataset.pub))));
-      $$('[data-cancel]').forEach(b => b.addEventListener('click', () => { const r = S.releases.find(x => x.id === b.dataset.cancel); confirm({ title: 'Cancel release v' + r.version + '?', body: esc(CH(r.channel).name) + ' stays on v' + esc(CH(r.channel).current) + '.', confirm: 'Cancel release', cancel: 'Keep', reason: true, onConfirm: (why) => { r.status = 'Cancelled'; save(); audit('Release cancelled', 'App Settings', { id: r.id, label: CH(r.channel).name + ' v' + r.version }, [], { reason: why }); toast('Release cancelled.'); drawVersions(); } }); }));
-      $$('[data-rb]').forEach(b => b.addEventListener('click', () => rollback(S.releases.find(r => r.id === b.dataset.rb))));
+      $('#relBody').innerHTML = rows.length ? rows.map(r => `<tr><td><b class="mono">v${esc(r.version)}</b></td><td>${esc(CH(r.channel).name)}</td><td>${esc(fmtDate(r.date))}</td><td>${relBadge(r.status)}</td><td style="max-width:380px">${esc(r.notes)}</td><td>${src(r)}</td></tr>`).join('')
+        : `<tr><td colspan="6"><div class="empty">${icon('git-branch')}<b>No releases for this channel</b></div></td></tr>`;
     };
     body();
-    if ($('#newRel')) $('#newRel').addEventListener('click', newRelease);
   }
 
-  function publish(r) {
-    const c = CH(r.channel);
-    confirm({ title: 'Publish ' + c.name + ' v' + r.version + '?', body: 'It becomes the live version now. The current version v' + esc(c.current) + ' is marked as replaced.', tone: 'primary', icon: 'rocket', confirm: 'Publish now',
-      onConfirm: () => {
-        S.releases.filter(x => x.channel === r.channel && x.status === 'Live').forEach(x => { x.status = 'Replaced'; });
-        const from = c.current; r.status = 'Live'; r.date = today(); c.current = r.version; c.releasedAt = today(); c.build = r.build || c.build; save();
-        audit('Release published', 'App Settings', { id: r.id, label: c.name + ' v' + r.version }, [['Version', from, r.version]]);
-        toast(c.name + ' is now on v' + r.version + '.'); drawVersions();
-      } });
-  }
-  function rollback(r) {
-    const c = CH(r.channel);
-    const prev = S.releases.filter(x => x.channel === r.channel && x.status === 'Replaced' && cmpVer(x.version, r.version) < 0).sort((a, b) => cmpVer(b.version, a.version))[0];
-    confirm({ title: 'Roll back ' + c.name + ' to v' + prev.version + '?', body: 'v' + esc(r.version) + ' is withdrawn and v' + esc(prev.version) + ' becomes live again.',
-      impact: ['Users get v' + esc(prev.version) + ' on their next load.', MOBILE.includes(c.id) ? 'Store builds are not withdrawn automatically; this changes the version the app checks against.' : 'Scheduled releases stay scheduled.'], reason: true, confirm: 'Roll back',
-      onConfirm: (why) => {
-        r.status = 'Rolled back'; prev.status = 'Live'; c.current = prev.version; c.releasedAt = today();
-        if (MOBILE.includes(c.id) && c.min && cmpVer(c.min, prev.version) > 0) c.min = prev.version;
-        save(); audit('Release rolled back', 'App Settings', { id: r.id, label: c.name + ' v' + r.version }, [['Version', r.version, prev.version]], { reason: why });
-        toast(c.name + ' rolled back to v' + prev.version + '.'); drawVersions();
-      } });
-  }
-  function newRelease() {
-    drawer({ title: 'New release', sub: 'Record a version for a channel. A future date schedules it.',
-      body: `<div class="form-grid">
-        <div class="field"><label for="rCh">Channel<span class="req">*</span></label><select class="input" id="rCh">${S.channels.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></div>
-        <div class="field"><label for="rVer">Version<span class="req">*</span></label><input class="input mono" id="rVer" placeholder="1.5.0"><span class="hint" id="rVerHint"></span><span class="err-msg hidden" id="rVerErr" style="color:var(--error);font-size:12px;font-weight:600"></span></div>
-        <div class="field"><label for="rBuild">Build number</label><input class="input mono" id="rBuild" maxlength="20"></div>
-        <div class="field"><label for="rDate">Release date<span class="req">*</span></label><input class="input" type="date" id="rDate" value="${today()}" min="${today()}"><span class="hint">Today publishes now; a later date schedules it.</span></div>
-        <div class="field full"><label for="rNotes">Release notes<span class="req">*</span></label><textarea class="input" id="rNotes" maxlength="500" rows="3" placeholder="What changed for users"></textarea></div>
-        <label class="check full hidden" id="rMinBox"><input type="checkbox" id="rMin"> Force update: people on older versions must update before they continue</label>
-      </div>`,
-      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="rSave" disabled>${icon('rocket')} Save release</button>`,
-      onMount: (el, close) => {
-        const chk = () => {
-          const c = CH($('#rCh', el).value), v = $('#rVer', el).value.trim(), err = $('#rVerErr', el);
-          const latest = S.releases.filter(r => r.channel === c.id && r.status !== 'Cancelled').map(r => r.version).concat([c.current]).sort(cmpVer).pop();
-          $('#rVerHint', el).textContent = 'Current v' + c.current + (latest !== c.current ? ' · latest planned v' + latest : '');
-          $('#rMinBox', el).classList.toggle('hidden', !MOBILE.includes(c.id));
-          let msg = '';
-          if (v && !SEMVER.test(v)) msg = 'Use the format 1.5.0.'; else if (v && cmpVer(v, latest) <= 0) msg = 'Must be higher than v' + latest + '.';
-          err.textContent = msg; err.classList.toggle('hidden', !msg);
-          $('#rSave', el).disabled = !v || !!msg || !$('#rDate', el).value || $('#rNotes', el).value.trim().length < 5;
-        };
-        $$('input, select, textarea', el).forEach(i => i.addEventListener('input', chk)); $('#rCh', el).addEventListener('change', chk); chk();
-        $('#rSave', el).addEventListener('click', () => {
-          const c = CH($('#rCh', el).value), v = $('#rVer', el).value.trim(), d = $('#rDate', el).value, now = d <= today();
-          const r = { id: uid('rl'), channel: c.id, version: v, build: $('#rBuild', el).value.trim(), date: d, status: now ? 'Live' : 'Scheduled', notes: $('#rNotes', el).value.trim(), by: who() };
-          if (now) { S.releases.filter(x => x.channel === c.id && x.status === 'Live').forEach(x => { x.status = 'Replaced'; }); c.current = v; c.releasedAt = d; if (r.build) c.build = r.build; }
-          if (MOBILE.includes(c.id) && now) { c.updateAvailable = true; if ($('#rMin', el).checked) { c.min = v; c.force = true; } }
-          S.releases.unshift(r); save();
-          audit(now ? 'Release published' : 'Release scheduled', 'App Settings', { id: r.id, label: c.name + ' v' + v }, [['Version', now ? '' : c.current, v]]);
-          toast(now ? c.name + ' is now on v' + v + '.' : c.name + ' v' + v + ' scheduled for ' + fmtDate(d) + '.'); close(); drawVersions();
-        });
-      } });
-  }
+  /* =========================== Maintenance (single place) =========================== */
+  const SC = [['web', 'Staff web portal', 'monitor'], ['android', 'Patient app · Android', 'smartphone'], ['ios', 'Patient app · iOS', 'tablet-smartphone']];
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const locNow = (ms) => { const d = new Date(Date.now() + (ms || 0)); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
+  /* off | scheduled | active | ended for the single maintenance setting */
+  function maintGlobal() { const m = S.maintenance; if (!m.on) return 'off'; const n = locNow(); if (m.from && n < m.from) return 'scheduled'; if (m.to && n > m.to) return 'ended'; return 'active'; }
 
-  /* =========================== Maintenance =========================== */
   function drawMaint() {
-    const m = S.maintenance, st = UI.maintState('web');
-    const any = ['web', 'android', 'ios'].map(ch => UI.maintState(ch).status);
-    const stat = any.includes('active') ? ['active', 'b-err', 'Active now'] : any.includes('scheduled') ? ['scheduled', 'b-info', 'Scheduled'] : m.on && any.includes('ended') ? ['ended', 'b-neutral', 'Window ended'] : ['off', 'b-ok', 'Off'];
+    const m = S.maintenance, st = maintGlobal() === 'ended' ? 'off' : maintGlobal();
     const roles = db.roles.filter(r => r.status === 'Active');
-    const SC = [['web', 'Staff web portal', 'monitor'], ['android', 'Patient app · Android', 'smartphone'], ['ios', 'Patient app · iOS', 'tablet-smartphone']];
+    let when = st === 'scheduled' ? 'later' : 'now', scopeMode = (m.scope || []).length === 3 ? 'all' : 'some';
+    const where = (m.scope || []).map(s => SC.find(x => x[0] === s)[1]).join(', ');
     $('#pane').innerHTML = `
+      ${canEdit ? '' : `<div class="banner info" style="margin-bottom:14px">${icon('lock')}<span>You can view maintenance. Changing it needs edit rights on App Settings.</span></div>`}
       <div class="grid g-side" style="align-items:start">
         <div class="stack">
-          <div class="card"><div class="card-pad row" style="gap:16px;align-items:center;flex-wrap:wrap">
-            <span class="tile ${stat[0] === 'active' ? 't-rose' : stat[0] === 'scheduled' ? 't-sky' : 't-mint'}" style="width:46px;height:46px;border-radius:12px;display:grid;place-items:center">${icon('construction')}</span>
-            <div class="grow"><div class="row" style="gap:8px"><b>Maintenance mode</b><span class="badge ${stat[1]}">${stat[2]}</span></div>
-              <div class="small muted">${m.on ? `From ${esc(UI.fmtLocal(m.from))} to ${esc(UI.fmtLocal(m.to))}` : 'Everybody can sign in and work normally.'} · Last changed by ${esc(m.updatedBy || '-')}${m.updatedAt ? ', ' + esc(fmtDate(m.updatedAt)) : ''}</div></div>
-            ${canEdit ? (m.on ? `<button class="btn destructive" id="mOff">${icon('power')} Turn off</button>` : `<button class="btn" id="mNow">${icon('zap')} Start now for 1 hour</button>`) : ''}
+          <div class="card sys-card ${st === 'active' ? 'on' : ''}"><div class="card-pad row" style="gap:16px;align-items:center;flex-wrap:wrap">
+            <span class="tile ${st === 'active' ? 't-rose' : st === 'scheduled' ? 't-sky' : 't-mint'}" style="width:46px;height:46px;border-radius:12px;display:grid;place-items:center">${icon(st === 'active' ? 'construction' : st === 'scheduled' ? 'calendar-clock' : 'circle-check')}</span>
+            <div class="grow" style="min-width:240px"><div class="row" style="gap:8px"><b>Maintenance</b>${st === 'active' ? '<span class="badge b-err">Active now</span>' : st === 'scheduled' ? '<span class="badge b-info">Scheduled</span>' : '<span class="badge b-ok">Off</span>'}</div>
+              <div class="small muted">${st === 'active' ? `${esc(where)} ${m.to ? 'until ' + esc(UI.fmtLocal(m.to)) : 'until you end it'}.` : st === 'scheduled' ? `${esc(where)} from ${esc(UI.fmtLocal(m.from))}${m.to ? ' to ' + esc(UI.fmtLocal(m.to)) : ''}.` : 'Everything is running. Set up maintenance below.'}
+                ${m.updatedBy ? `<br>Last changed by ${esc(m.updatedBy)}${m.updatedAt ? ', ' + esc(fmtDate(m.updatedAt)) : ''}.` : ''}</div></div>
+            ${canEdit && st === 'active' ? `<button class="btn primary" id="mEnd">${icon('power')} End maintenance</button>` : ''}
+            ${canEdit && st === 'scheduled' ? `<button class="btn" id="mCancel">Cancel schedule</button>` : ''}
           </div></div>
 
-          <div class="card"><div class="card-head"><h3>${icon('settings-2')} Settings</h3></div><div class="card-pad">
+          <div class="card"><div class="card-head"><h3>${icon('settings-2')} ${st === 'off' ? 'Set up maintenance' : 'Maintenance details'}</h3></div><div class="card-pad">
             <div class="form-grid">
-              <label class="row full" style="gap:12px;align-items:flex-start"><span class="grow"><b class="small">Maintenance mode on</b><div class="xs muted">With a start time in the future it is scheduled; users see a notice until it starts.</div></span><span class="switch"><input type="checkbox" id="mOn" ${m.on ? 'checked' : ''} ${canEdit ? '' : 'disabled'}><span></span></span></label>
-              <div class="field full"><label>Applies to<span class="req">*</span></label><div class="row" style="gap:16px;flex-wrap:wrap">${SC.map(([id, n]) => `<label class="check"><input type="checkbox" data-sc="${id}" ${(m.scope || []).includes(id) ? 'checked' : ''} ${canEdit ? '' : 'disabled'}> ${esc(n)}</label>`).join('')}</div></div>
-              <div class="field"><label for="mFrom">Starts<span class="req">*</span></label><input class="input" type="datetime-local" id="mFrom" value="${esc(m.from || '')}" ${canEdit ? '' : 'disabled'}></div>
-              <div class="field"><label for="mTo">Expected end<span class="req">*</span></label><input class="input" type="datetime-local" id="mTo" value="${esc(m.to || '')}" ${canEdit ? '' : 'disabled'}><span class="err-msg hidden" id="mToErr" style="color:var(--error);font-size:12px;font-weight:600">The end must be after the start.</span></div>
+              <div class="field full"><label>What goes into maintenance<span class="req">*</span></label><div id="mScopeSeg"></div>
+                <div class="row" id="mScopeBox" style="gap:16px;flex-wrap:wrap;margin-top:10px">${SC.map(([id, n]) => `<label class="check"><input type="checkbox" data-sc="${id}" ${(m.scope || []).includes(id) ? 'checked' : ''} ${canEdit ? '' : 'disabled'}> ${esc(n)}</label>`).join('')}</div></div>
+              <div class="field full"><label>When<span class="req">*</span></label><div id="mWhenSeg"></div></div>
+              <div class="field" id="mFromBox"><label for="mFrom">Starts<span class="req">*</span></label><input class="input" type="datetime-local" id="mFrom" value="${esc(m.from || '')}" min="${locNow()}" ${canEdit ? '' : 'disabled'}></div>
+              <div class="field"><label for="mTo">Expected end</label><input class="input" type="datetime-local" id="mTo" value="${esc(m.to || '')}" ${canEdit ? '' : 'disabled'}><span class="hint">Leave empty to keep it on until you end it.</span><span class="err-msg hidden" id="mToErr" style="color:var(--error);font-size:12px;font-weight:600"></span></div>
               <div class="field full"><label for="mEn">Message (English)<span class="req">*</span></label><textarea class="input" id="mEn" rows="2" maxlength="240" ${canEdit ? '' : 'disabled'}>${esc(m.msgEn)}</textarea></div>
-              <div class="field full"><label for="mAr">Message (Arabic)</label><textarea class="input" id="mAr" rows="2" maxlength="240" dir="rtl" lang="ar" ${canEdit ? '' : 'disabled'}>${esc(m.msgAr)}</textarea></div>
-              <div class="field full"><label>Roles that keep working during maintenance</label><div class="row" style="gap:8px 16px;flex-wrap:wrap">${roles.map(r => `<label class="check"><input type="checkbox" data-ex="${r.id}" ${(m.exemptRoles || []).includes(r.id) ? 'checked' : ''} ${canEdit ? '' : 'disabled'}> ${esc(r.name)}</label>`).join('')}</div><span class="hint">Users without one of these roles see the maintenance screen on the web portal. Keep at least one administrator role.</span></div>
+              <div class="field full"><label for="mAr">Message (Arabic)</label><textarea class="input" id="mAr" rows="2" maxlength="240" dir="rtl" lang="ar" ${canEdit ? '' : 'disabled'}>${esc(m.msgAr)}</textarea><span class="hint">Shown to users whose app or browser is in Arabic. Leave empty to show the English text.</span></div>
+              <div class="field full"><label>Roles that keep working on the web portal</label><div class="row" style="gap:8px 16px;flex-wrap:wrap">${roles.map(r => `<label class="check"><input type="checkbox" data-ex="${r.id}" ${(m.exemptRoles || []).includes(r.id) ? 'checked' : ''} ${canEdit ? '' : 'disabled'}> ${esc(r.name)}</label>`).join('')}</div><span class="hint">Everybody else sees the maintenance screen. Keep at least one administrator role so you can end maintenance.</span></div>
             </div>
-            ${canEdit ? `<div class="row" style="justify-content:flex-end;gap:8px;margin-top:16px;border-top:1px solid var(--line);padding-top:14px"><span class="grow small muted" id="mLeft"></span><button class="btn" id="mReset" disabled>Discard</button><button class="btn primary" id="mSave" disabled>${icon('save')} Save</button></div>` : ''}
+            ${canEdit ? `<div class="row" style="justify-content:flex-end;gap:8px;margin-top:16px;border-top:1px solid var(--line);padding-top:14px;flex-wrap:wrap"><span class="grow small muted" id="mLeft"></span>
+              ${st === 'off' ? `<button class="btn primary" id="mGo" disabled></button>` : `<button class="btn" id="mReset" disabled>Discard</button><button class="btn primary" id="mSave" disabled>${icon('save')} Save changes</button>${st === 'scheduled' ? `<button class="btn" id="mNowBtn">${icon('zap')} Start now</button>` : ''}`}</div>` : ''}
           </div></div>
         </div>
 
-        <div class="card" style="position:sticky;top:76px"><div class="card-head"><h3>${icon('eye')} What users see</h3></div><div class="card-pad stack">
-          <div class="maint-card" style="box-shadow:none;padding:20px 16px"><img src="${esc(UI.brandLogo())}" alt="" class="maint-logo" style="width:40px;height:40px;margin-bottom:10px"><div class="m-ico b-warn" style="width:40px;height:40px">${icon('construction')}</div><h1 style="font-size:18px">Under maintenance</h1><p class="small" id="pvEn"></p><p class="small maint-ar" dir="rtl" lang="ar" id="pvAr"></p><div class="maint-when" style="margin:6px 0 0">${icon('clock')}<span>Back: <b id="pvTo"></b></span></div></div>
-          <div class="xs muted" style="text-align:center">Web portal. The patient app shows the same message in the user's language.</div>
-        </div></div>
+        <div class="card" style="position:sticky;top:76px"><div class="card-head"><h3>${icon('eye')} What users see</h3></div><div class="card-pad stack"><div id="pvSeg"></div><div class="stack" id="pvBox"></div></div></div>
       </div>`;
 
-    const read = () => ({ on: $('#mOn').checked, scope: $$('[data-sc]').filter(i => i.checked).map(i => i.dataset.sc), from: $('#mFrom').value, to: $('#mTo').value, msgEn: $('#mEn').value.trim(), msgAr: $('#mAr').value.trim(), exemptRoles: $$('[data-ex]').filter(i => i.checked).map(i => i.dataset.ex) });
-    const keyOf = (x) => JSON.stringify([x.on, x.scope, x.from, x.to, x.msgEn, x.msgAr, x.exemptRoles]);
+    const read = () => ({ scope: $$('[data-sc]').filter(i => i.checked).map(i => i.dataset.sc), from: when === 'later' ? $('#mFrom').value : (st === 'active' ? m.from : ''), to: $('#mTo').value, msgEn: $('#mEn').value.trim(), msgAr: $('#mAr').value.trim(), exemptRoles: $$('[data-ex]').filter(i => i.checked).map(i => i.dataset.ex) });
+    const keyOf = (x) => JSON.stringify([x.scope, x.from || '', x.to || '', x.msgEn, x.msgAr, x.exemptRoles]);
+    let pv = 'web';
+    const drawPreview = () => {
+      const v = read();
+      const on = v.scope.includes(pv);
+      $('#pvBox').innerHTML = !on ? `<div class="empty" style="padding:24px 10px">${icon('circle-check')}<b>Not affected</b><span>${esc(SC.find(x => x[0] === pv)[1])} keeps working.</span></div>`
+        : pv === 'web' ? `<div class="maint-card" style="box-shadow:none;padding:20px 16px"><img src="${esc(UI.brandLogo())}" alt="" class="maint-logo" style="width:40px;height:40px;margin-bottom:10px"><div class="m-ico b-warn" style="width:40px;height:40px">${icon('construction')}</div><h1 style="font-size:18px">Under maintenance</h1><p class="small">${esc(v.msgEn || '—')}</p>${v.msgAr ? `<p class="small maint-ar" dir="rtl" lang="ar">${esc(v.msgAr)}</p>` : ''}<div class="maint-when" style="margin:6px 0 0">${icon('clock')}<span>Back: <b>${esc(UI.fmtLocal(v.to))}</b></span></div></div><div class="xs muted" style="text-align:center">Staff without an exempt role.</div>`
+        : `<div class="phone-prev">${icon('construction')}<div style="font-weight:800;margin:8px 0 4px">Under maintenance</div><div style="font-size:12px;color:#526075">${esc(v.msgEn || '—')}</div>${v.msgAr ? `<div dir="rtl" lang="ar" style="font-size:12px;color:#526075;margin-top:6px">${esc(v.msgAr)}</div>` : ''}<div style="font-size:11px;color:#8794A7;margin-top:10px">Back: ${esc(UI.fmtLocal(v.to))}</div></div><div class="xs muted" style="text-align:center">Patients who open the app.</div>`;
+    };
+    Kit.seg($('#pvSeg'), [['web', 'Web'], ['android', 'Android'], ['ios', 'iOS']], pv, (x) => { pv = x; drawPreview(); });
+    const setScopeMode = () => { $$('[data-sc]').forEach(i => { if (scopeMode === 'all') i.checked = true; i.disabled = !canEdit || scopeMode === 'all'; }); };
+    Kit.seg($('#mScopeSeg'), [['all', 'Whole system', 'globe'], ['some', 'Choose apps', 'list-checks']], scopeMode, (x) => { scopeMode = x; setScopeMode(); chk(); });
+    const whenOpts = st === 'active' ? [['now', 'Running now', 'zap']] : [['now', 'Start now', 'zap'], ['later', 'Schedule', 'calendar-clock']];
+    Kit.seg($('#mWhenSeg'), whenOpts, when, (x) => { when = x; chk(); });
+    setScopeMode();
+
     const chk = () => {
       const v = read();
-      $('#pvEn').textContent = v.msgEn || '—'; $('#pvAr').textContent = v.msgAr; $('#pvTo').textContent = UI.fmtLocal(v.to);
-      if (!$('#mSave')) return;
-      const badTime = v.from && v.to && v.to <= v.from;
-      $('#mToErr').classList.toggle('hidden', !badTime);
-      const missing = [!v.scope.length && 'where it applies', !v.from && 'start', !v.to && 'end', !v.msgEn && 'English message', !v.exemptRoles.length && 'an exempt role'].filter(Boolean);
+      $('#mFromBox').classList.toggle('hidden', when !== 'later');
+      let toErr = '';
+      if (v.to && v.to <= locNow()) toErr = 'The end must be in the future.';
+      else if (when === 'later' && v.from && v.to && v.to <= v.from) toErr = 'The end must be after the start.';
+      $('#mToErr').textContent = toErr; $('#mToErr').classList.toggle('hidden', !toErr);
+      drawPreview();
+      if (!canEdit) return;
+      const missing = [!v.scope.length && 'what goes into maintenance', when === 'later' && !v.from && 'start time', when === 'later' && v.from && v.from <= locNow() && 'a start time in the future', !v.msgEn && 'English message', !v.exemptRoles.length && 'an exempt role'].filter(Boolean);
       $('#mLeft').textContent = missing.length ? 'Still needed: ' + missing.join(', ') + '.' : '';
-      const dirty = keyOf(v) !== keyOf(m);
-      $('#mSave').disabled = !dirty || !!missing.length || badTime; $('#mReset').disabled = !dirty;
+      const ok = !missing.length && !toErr;
+      if ($('#mGo')) { $('#mGo').disabled = !ok; $('#mGo').innerHTML = when === 'later' ? `${icon('calendar-clock')} Schedule maintenance` : `${icon('construction')} Start maintenance now`; $('#mGo').className = 'btn ' + (when === 'later' ? 'primary' : 'destructive'); }
+      if ($('#mSave')) { const dirty = keyOf(v) !== keyOf(m); $('#mSave').disabled = !dirty || !ok; $('#mReset').disabled = !dirty; }
     };
     $$('#pane input, #pane textarea').forEach(i => { i.addEventListener('input', chk); i.addEventListener('change', chk); });
     chk();
-    const commit = (v, why) => {
+
+    const names = (v) => v.scope.map(s => SC.find(x => x[0] === s)[1]).join(', ');
+    const commit = (v, action, why) => {
       const before = clone(m);
       Object.assign(m, v, { updatedBy: who(), updatedAt: nowStamp() }); save();
-      const ch = [['Status', before.on ? 'On' : 'Off', v.on ? 'On' : 'Off'], ['Window', UI.fmtLocal(before.from) + ' – ' + UI.fmtLocal(before.to), UI.fmtLocal(v.from) + ' – ' + UI.fmtLocal(v.to)], ['Applies to', (before.scope || []).join(', '), v.scope.join(', ')]].filter(x => x[1] !== x[2]);
-      audit(v.on ? 'Maintenance mode set' : 'Maintenance mode turned off', 'App Settings', { id: 'maintenance', label: 'Maintenance mode' }, ch, why ? { reason: why } : {});
-      const s2 = UI.maintState('web').status;
-      toast(!v.on ? 'Maintenance mode is off.' : s2 === 'active' ? 'Maintenance mode is active. Users without an exempt role see the maintenance screen.' : 'Maintenance scheduled for ' + UI.fmtLocal(v.from) + '.');
+      const ch = [['Status', before.on ? 'On' : 'Off', m.on ? 'On' : 'Off'], ['Applies to', (before.scope || []).join(', '), (m.scope || []).join(', ')], ['Window', UI.fmtLocal(before.from) + ' – ' + UI.fmtLocal(before.to), UI.fmtLocal(m.from) + ' – ' + UI.fmtLocal(m.to)]].filter(x => x[1] !== x[2]);
+      audit(action, 'App Settings', { id: 'maintenance', label: 'Maintenance' }, ch, why ? { reason: why } : {});
       location.reload();
     };
-    const askAndSave = (v) => {
-      const startsNow = v.on && (!v.from || v.from <= new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16));
-      if (!startsNow) return commit(v);
-      const exemptNames = v.exemptRoles.map(id => (L.role(id) || {}).name).filter(Boolean);
-      confirm({ title: 'Start maintenance now?', body: 'People who are working now are stopped on their next action.', reason: true, confirm: 'Start maintenance',
-        impact: ['Applies to: ' + v.scope.map(s => SC.find(x => x[0] === s)[1]).join(', ') + '.', 'Only these roles keep working: ' + esc(exemptNames.join(', ')) + '.', 'Expected end: ' + esc(UI.fmtLocal(v.to)) + '.'],
-        onConfirm: (why) => commit(v, why) });
-    };
-    if ($('#mSave')) {
-      $('#mSave').addEventListener('click', () => askAndSave(read()));
-      $('#mReset').addEventListener('click', drawMaint);
-    }
-    const pad = (n) => String(n).padStart(2, '0'), loc = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-    if ($('#mNow')) $('#mNow').addEventListener('click', () => { const n = new Date(); askAndSave(Object.assign(read(), { on: true, from: loc(n), to: loc(new Date(n.getTime() + 3600000)) })); });
-    if ($('#mOff')) $('#mOff').addEventListener('click', () => confirm({ title: 'Turn off maintenance mode?', body: 'Everybody can sign in and work again.', tone: 'primary', icon: 'power', confirm: 'Turn off', onConfirm: () => commit(Object.assign(read(), { on: false })) }));
+    const startNow = (v) => confirm({ title: 'Start maintenance now?', body: 'It starts straight away.', reason: true, confirm: 'Start maintenance',
+      impact: ['Goes into maintenance: ' + esc(names(v)) + '.', v.scope.includes('web') ? 'Staff are stopped on their next action, except: ' + esc(v.exemptRoles.map(id => (L.role(id) || {}).name).join(', ')) + '.' : 'The staff web portal keeps working.', v.scope.some(s => MOBILE.includes(s)) ? 'Patients who open the app see the maintenance message.' : '', 'Ends: ' + esc(UI.fmtLocal(v.to)) + '.'].filter(Boolean),
+      onConfirm: (why) => commit(Object.assign(v, { on: true, from: '' }), 'Maintenance started', why) });
+    if ($('#mGo')) $('#mGo').addEventListener('click', () => { const v = read(); if (when === 'later') commit(Object.assign(v, { on: true }), 'Maintenance scheduled'); else startNow(v); });
+    if ($('#mSave')) $('#mSave').addEventListener('click', () => commit(Object.assign(read(), { on: true }), 'Maintenance changed'));
+    if ($('#mReset')) $('#mReset').addEventListener('click', drawMaint);
+    if ($('#mNowBtn')) $('#mNowBtn').addEventListener('click', () => { when = 'now'; startNow(read()); });
+    if ($('#mEnd')) $('#mEnd').addEventListener('click', () => confirm({ title: 'End maintenance?', body: 'Everybody can use ' + esc(where) + ' again.', tone: 'primary', icon: 'power', confirm: 'End maintenance', onConfirm: () => commit({ on: false }, 'Maintenance ended') }));
+    if ($('#mCancel')) $('#mCancel').addEventListener('click', () => confirm({ title: 'Cancel the scheduled maintenance?', body: 'Nothing goes into maintenance.', confirm: 'Cancel schedule', cancel: 'Keep', onConfirm: () => commit({ on: false }, 'Maintenance schedule cancelled') }));
   }
 
   drawTab();   // last, after every helper above is defined

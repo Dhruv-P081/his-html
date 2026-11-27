@@ -4,7 +4,7 @@
 (function () {
   const S = window.SEED;
   S.appSettings = {
-    schema: 2,
+    schema: 3,
     theme: { preset: 'navy', primary: '', rail: '', radius: 'default', updatedBy: 'Sara Al-Mutairi', updatedAt: '2026-11-02 10:15' },
     channels: [
       { id: 'web', name: 'Staff web portal', icon: 'monitor', current: '1.4.2', build: '2026.11.24.1', min: '', force: false, releasedAt: '2026-11-24', env: 'Production',
@@ -13,7 +13,7 @@
         live: true, store: 'https://play.google.com/store/apps/details?id=com.tibbihealth.orbit', updateAvailable: false, maint: false, msgEn: "We're currently performing maintenance. Please check back shortly.", msgAr: 'نقوم حالياً بأعمال الصيانة. يرجى العودة بعد قليل.' },
       { id: 'ios', name: 'Patient app · iOS', icon: 'tablet-smartphone', current: '1.3.0', build: '130', min: '1.2.0', force: false, releasedAt: '2026-11-19', env: 'App Store',
         live: true, store: 'https://apps.apple.com/app/tibbi-orbit/id6741234567', updateAvailable: true, maint: false, msgEn: 'Back shortly — we are upgrading the app.', msgAr: '' },
-      { id: 'api', name: 'Backend API', icon: 'server', current: '2.6.0', build: '2026.11.24.2', min: '', force: false, releasedAt: '2026-11-24', env: 'Production' },
+      { id: 'api', name: 'Backend API', icon: 'server', current: '2.6.0', build: '2026.11.24.2', min: '', force: false, releasedAt: '2026-11-24', env: 'Production', store: 'https://api.tibbihealth.example' },
     ],
     releases: [
       { id: 'rl_12', channel: 'web', version: '1.5.0', date: '2026-12-08', status: 'Scheduled', notes: 'Insurance e-claims batch export and Arabic print layouts.', by: 'Sara Al-Mutairi' },
@@ -30,9 +30,9 @@
     push: { phones: 1284, people: 1102, sent: 9620, delivered: 9410, failed: 38, notSent: 172,
       reasons: [[124, 'the person has not signed in to the app on any phone yet (or signed out). The message waits in their in-app list.'], [48, 'notifications are turned off on the phone.']] },
     maintenance: {
-      on: false, scope: ['web', 'android', 'ios'], from: '2026-11-29T01:00', to: '2026-11-29T03:00',
-      msgEn: 'Tibbi Orbit is under planned maintenance. Please try again after 3:00 AM.',
-      msgAr: 'نظام طبي أوربت تحت الصيانة المجدولة. يرجى المحاولة مرة أخرى بعد الساعة 3:00 صباحاً.',
+      on: false, scope: ['web', 'android', 'ios'], from: '', to: '',
+      msgEn: 'Tibbi Orbit is under maintenance. We will be back shortly.',
+      msgAr: 'نظام طبي أوربت تحت الصيانة. سنعود قريباً.',
       exemptRoles: ['ro_sys', 'ro_demo'], updatedBy: 'Sara Al-Mutairi', updatedAt: '2026-11-20 09:30',
     },
   };

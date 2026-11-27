@@ -21,6 +21,12 @@
         let added = false;
         Object.keys(window.SEED).forEach(k => { if (!(k in saved)) { saved[k] = clone(window.SEED[k]); added = true; } });
         saved.modules = clone(window.SEED.modules);   // the screen catalogue always follows the code
+        // Screens added after the data was saved: give seed roles their default rights on them.
+        const known = new Set(); saved.roles.forEach(r => Object.keys(r.perms || {}).forEach(k => known.add(k)));
+        (window.SEED.roles || []).forEach(sr => {
+          const r = saved.roles.find(x => x.id === sr.id); if (!r) return;
+          Object.entries(sr.perms || {}).forEach(([opt, acts]) => { if (!known.has(opt) && !(opt in (r.perms || {}))) { r.perms = r.perms || {}; r.perms[opt] = acts.slice(); added = true; } });
+        });
         // App Settings changed shape: take the new seed but keep the saved appearance.
         if (window.SEED.appSettings && (saved.appSettings || {}).schema !== window.SEED.appSettings.schema) {
           const theme = (saved.appSettings || {}).theme;
@@ -79,8 +85,6 @@
   /* { status: 'off' | 'scheduled' | 'active' | 'ended', m } for the web portal channel. */
   function maintState(channel) {
     const m = (db.appSettings || {}).maintenance;
-    const ch = ((db.appSettings || {}).channels || []).find(c => c.id === (channel || 'web'));
-    if (ch && ch.maint) return { status: 'active', m: Object.assign({}, m, { msgEn: ch.msgEn || (m || {}).msgEn, msgAr: ch.msgAr || '', from: '', to: '' }), channel: true };
     if (!m || !m.on || !(m.scope || []).includes(channel || 'web')) return { status: 'off', m };
     const now = localStamp();
     if (m.from && now < m.from) return { status: 'scheduled', m };

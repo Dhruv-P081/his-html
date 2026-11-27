@@ -777,3 +777,9 @@ table.tbl { width: 100%; border-collapse: separate; border-spacing: 0; }
 .input.invalid { border-color: var(--error); }
 .sys-card.on { border-color: color-mix(in srgb, var(--error) 35%, transparent); background: color-mix(in srgb, var(--error-bg) 45%, var(--card)); }
 .push-box ul { font-weight: 600; }
+/* Release history (collapsible, read-only) */
+.rel-card > summary { cursor: pointer; list-style: none; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.rel-card > summary::-webkit-details-marker { display: none; }
+.rel-card > summary .rel-chev .ico { width: 18px; height: 18px; color: var(--mute); transition: transform .2s; }
+.rel-card[open] > summary .rel-chev .ico { transform: rotate(180deg); }
+.rel-card:not([open]) > summary { border-bottom: 0; }
