@@ -762,3 +762,18 @@ table.tbl { width: 100%; border-collapse: separate; border-spacing: 0; }
 .chan-card .ver { font-size: 26px; font-weight: 800; letter-spacing: -.02em; }
 .phone-prev { width: 230px; border-radius: 28px; border: 8px solid #111827; background: #fff; padding: 26px 16px; text-align: center; color: #0F1B2D; margin: 0 auto; }
 .phone-prev .ico { width: 30px; height: 30px; color: #A55A06; }
+/* App control */
+.tg { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; white-space: nowrap; }
+.tg-pill { min-width: 38px; justify-content: center; font-size: 11px; letter-spacing: .03em; }
+.app-tbl td { vertical-align: top; padding: 14px 10px; }
+.app-tbl th { padding-inline: 10px; line-height: 1.35; }
+.app-tbl td:first-child, .app-tbl th:first-child { padding-inline-start: 18px; }
+.app-tbl .tg { flex-direction: column; align-items: flex-start; gap: 5px; }
+.app-tbl [data-lang] .link-btn { font-size: 11.5px; font-weight: 600; margin-top: 4px; text-align: start; }
+.app-tbl td .tg, .app-tbl td.actions { padding-top: 6px; }
+.app-tbl tr.dirty td { background: color-mix(in srgb, var(--sel) 55%, transparent); }
+.app-tbl .row-acts { display: flex; gap: 6px; justify-content: flex-end; align-items: center; }
+.err-t { color: var(--error); font-weight: 600; margin-top: 4px; max-width: 230px; }
+.input.invalid { border-color: var(--error); }
+.sys-card.on { border-color: color-mix(in srgb, var(--error) 35%, transparent); background: color-mix(in srgb, var(--error-bg) 45%, var(--card)); }
+.push-box ul { font-weight: 600; }

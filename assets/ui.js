@@ -21,6 +21,13 @@
         let added = false;
         Object.keys(window.SEED).forEach(k => { if (!(k in saved)) { saved[k] = clone(window.SEED[k]); added = true; } });
         saved.modules = clone(window.SEED.modules);   // the screen catalogue always follows the code
+        // App Settings changed shape: take the new seed but keep the saved appearance.
+        if (window.SEED.appSettings && (saved.appSettings || {}).schema !== window.SEED.appSettings.schema) {
+          const theme = (saved.appSettings || {}).theme;
+          saved.appSettings = clone(window.SEED.appSettings);
+          if (theme) saved.appSettings.theme = theme;
+          added = true;
+        }
         if (added) localStorage.setItem(STORE_KEY, JSON.stringify(saved));
         return saved;
       }
@@ -72,6 +79,8 @@
   /* { status: 'off' | 'scheduled' | 'active' | 'ended', m } for the web portal channel. */
   function maintState(channel) {
     const m = (db.appSettings || {}).maintenance;
+    const ch = ((db.appSettings || {}).channels || []).find(c => c.id === (channel || 'web'));
+    if (ch && ch.maint) return { status: 'active', m: Object.assign({}, m, { msgEn: ch.msgEn || (m || {}).msgEn, msgAr: ch.msgAr || '', from: '', to: '' }), channel: true };
     if (!m || !m.on || !(m.scope || []).includes(channel || 'web')) return { status: 'off', m };
     const now = localStamp();
     if (m.from && now < m.from) return { status: 'scheduled', m };
