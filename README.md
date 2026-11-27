@@ -4,7 +4,10 @@ A clickable design prototype of the Tibbi Orbit Hospital Information System staf
 
 - Plain HTML, CSS and JavaScript. No build step and no backend.
 - Demo data is generated in the browser and saved in `localStorage`. Clear the site data to reset it.
-- Sign in with any password using the demo user (`demo`).
+- Sign in as `demo` with the password `Orbit@2026!` to see every module. The sign-in page lists the other demo accounts.
+- English and Arabic: the EN / ع button switches language; Arabic shows every screen right-to-left.
+- Administration > App Settings: patient app versions and update prompts, maintenance mode, colours and logo, and language.
+- Documents print on A4, with signatures at the bottom of the page.
 
 ## Open it
 
