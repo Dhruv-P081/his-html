@@ -70,6 +70,12 @@
       }).join('');
       if (!changed) v = null;
     }
+    // "Good evening, Sara Al-Mutairi": translate the known part, keep the name.
+    if (v == null && core.indexOf(', ') > 0) {
+      let changed = false;
+      v = core.split(', ').map((p) => { const x = lookup(p.trim()); if (x != null) { changed = true; return x; } return p; }).join('، ');
+      if (!changed) v = null;
+    }
     if (v == null && /:$/.test(core)) { const x = lookup(core.slice(0, -1).trim()); if (x != null) v = x + ':'; }
     return v == null ? null : m[1] + v + m[3];
   }
