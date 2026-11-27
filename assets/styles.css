@@ -6,6 +6,10 @@
 @font-face { font-family: "Manrope"; src: url("fonts/Manrope-SemiBold.ttf"); font-weight: 600; }
 @font-face { font-family: "Manrope"; src: url("fonts/Manrope-Bold.ttf"); font-weight: 700; }
 @font-face { font-family: "Manrope"; src: url("fonts/Manrope-ExtraBold.ttf"); font-weight: 800; }
+@font-face { font-family: "IBM Plex Sans Arabic"; src: url("fonts/IBMPlexSansArabic-Regular.ttf"); font-weight: 400; unicode-range: U+0600-06FF, U+0750-077F, U+08A0-08FF, U+FB50-FDFF, U+FE70-FEFF, U+200C-200F; }
+@font-face { font-family: "IBM Plex Sans Arabic"; src: url("fonts/IBMPlexSansArabic-Medium.ttf"); font-weight: 500; unicode-range: U+0600-06FF, U+0750-077F, U+08A0-08FF, U+FB50-FDFF, U+FE70-FEFF, U+200C-200F; }
+@font-face { font-family: "IBM Plex Sans Arabic"; src: url("fonts/IBMPlexSansArabic-SemiBold.ttf"); font-weight: 600; unicode-range: U+0600-06FF, U+0750-077F, U+08A0-08FF, U+FB50-FDFF, U+FE70-FEFF, U+200C-200F; }
+@font-face { font-family: "IBM Plex Sans Arabic"; src: url("fonts/IBMPlexSansArabic-Bold.ttf"); font-weight: 700; unicode-range: U+0600-06FF, U+0750-077F, U+08A0-08FF, U+FB50-FDFF, U+FE70-FEFF, U+200C-200F; }
 
 :root {
   --primary: #16325C;
@@ -783,3 +787,18 @@ table.tbl { width: 100%; border-collapse: separate; border-spacing: 0; }
 .rel-card > summary .rel-chev .ico { width: 18px; height: 18px; color: var(--mute); transition: transform .2s; }
 .rel-card[open] > summary .rel-chev .ico { transform: rotate(180deg); }
 .rel-card:not([open]) > summary { border-bottom: 0; }
+
+/* ---------- Arabic and right-to-left (html[dir="rtl"], set by assets/i18n.js) ---------- */
+.lang-btn { min-width: 36px; height: 36px; padding: 0 8px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--ink); font: inherit; font-weight: 800; font-size: 13px; cursor: pointer; display: inline-grid; place-items: center; }
+.lang-btn:hover { background: var(--soft); }
+.lang-btn:focus-visible { outline: 3px solid var(--focus); outline-offset: 1px; }
+.auth-lang { position: absolute; top: 18px; inset-inline-end: 18px; z-index: 2; }
+[dir="rtl"] body { font-family: "Manrope", "IBM Plex Sans Arabic", system-ui, sans-serif; font-size: 14px; }
+[dir="rtl"] * { letter-spacing: 0 !important; }               /* letter spacing breaks joined Arabic letters */
+[dir="rtl"] .rail a.on::before { border-radius: 3px 0 0 3px; }
+[dir="rtl"] .qitem.on { box-shadow: inset -3px 0 0 var(--primary-light); }
+[dir="rtl"] .ico.flip-rtl svg { transform: scaleX(-1); }       /* arrows and chevrons point the reading way */
+[dir="rtl"] svg text { direction: ltr; unicode-bidi: plaintext; } /* chart axes keep their drawn positions */
+[dir="rtl"] .mono, [dir="rtl"] kbd { unicode-bidi: isolate; }
+[dir="rtl"] input[type="email"], [dir="rtl"] input[type="tel"], [dir="rtl"] input[type="url"], [dir="rtl"] input[type="number"] { direction: ltr; text-align: right; }
+@media (max-width: 1100px) { [dir="rtl"] .side { transform: translateX(120%); } [dir="rtl"] body.nav-open .side { transform: none; } }

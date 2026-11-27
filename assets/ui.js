@@ -40,6 +40,11 @@
           if (theme) saved.appSettings.theme = theme;
           added = true;
         }
+        // Language settings were added later: add them without touching the rest.
+        if (window.SEED.appSettings && saved.appSettings && !saved.appSettings.language) {
+          saved.appSettings.language = clone(window.SEED.appSettings.language);
+          added = true;
+        }
         if (added) localStorage.setItem(STORE_KEY, JSON.stringify(saved));
         return saved;
       }
@@ -117,7 +122,8 @@
   function icon(name, cls) {
     const I = window.ICONS || {}, A = window.ICON_ALIAS || {};
     const inner = I[ALIAS[name] || name] || I[A[name]] || I['circle'] || '';
-    return `<span class="ico ${cls || ''}" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${inner}</svg></span>`;
+    const flip = /^(chevrons?|arrow|arrow-big|move|corner-down|corner-up|step)-(left|right)$/.test(name) || /^(undo|redo|undo-2|redo-2|log-in|log-out|reply|forward)$/.test(name) ? ' flip-rtl' : '';
+    return `<span class="ico ${cls || ''}${flip}" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${inner}</svg></span>`;
   }
   function $(sel, root) { return (root || document).querySelector(sel); }
   function $$(sel, root) { return Array.from((root || document).querySelectorAll(sel)); }
@@ -404,6 +410,7 @@
             <span class="ctx-txt"><b>${esc(co.code)} · ${esc(br.name)}</b><span>${esc(L.dName(ctx.deptId))}${ctx.clinicId ? ' · ' + esc(L.clName(ctx.clinicId)) : ''} · ${ctx.warehouseId ? esc(L.wName(ctx.warehouseId)) : 'No warehouse'}</span></span>
             ${icon('chevron-down', 'mute')}
           </button>
+          ${window.I18N ? I18N.switchHtml() : ''}
           <button class="icon-btn" id="themeBtn" aria-label="Switch light or dark">${icon(prefs.theme === 'dark' ? 'sun' : 'moon')}</button>
           <button class="icon-btn" aria-label="Notifications" id="bellBtn">${icon('bell')}${prefs.notifSeen ? '' : '<span class="dot"></span>'}</button>
           <button class="me" id="meBtn" aria-haspopup="menu"><span class="avatar">${initials(u.displayName)}</span><span class="me-txt"><b>${esc(u.displayName)}</b><span>${esc(rolesLabel(u.id, ctx))}</span></span>${icon('chevron-down', 'mute')}</button>

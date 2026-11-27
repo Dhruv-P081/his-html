@@ -35,5 +35,13 @@
       msgAr: 'نظام طبي أوربت تحت الصيانة. سنعود قريباً.',
       exemptRoles: ['ro_sys', 'ro_demo'], updatedBy: 'Sara Al-Mutairi', updatedAt: '2026-11-20 09:30',
     },
+    /* Language defaults and translation overrides (SOW V4, operational configuration).
+     * default: language a new browser opens in; arabic: show the EN / AR switch;
+     * overrides: English text -> Arabic text that replaces the standard translation. */
+    language: {
+      default: 'en', arabic: true,
+      overrides: { 'Tibbi Orbit': 'طبي أوربت' },
+      updatedBy: 'Sara Al-Mutairi', updatedAt: '2026-11-20 09:30',
+    },
   };
 })();

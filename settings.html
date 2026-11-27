@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>App Settings · Tibbi Orbit</title>
-<link rel="stylesheet" href="assets/styles.css?v=1139e431b2">
-<script src="assets/icons.js?v=1139e431b2"></script><script src="assets/data.js?v=1139e431b2"></script><script src="assets/data-core.js?v=1139e431b2"></script><script src="assets/data-settings.js?v=1139e431b2"></script><script src="assets/ui.js?v=1139e431b2"></script><script src="assets/kit.js?v=1139e431b2"></script>
+<link rel="stylesheet" href="assets/styles.css?v=4b09138480">
+<script src="assets/icons.js?v=4b09138480"></script><script src="assets/data.js?v=4b09138480"></script><script src="assets/data-core.js?v=4b09138480"></script><script src="assets/data-settings.js?v=4b09138480"></script><script src="assets/i18n-ar.js?v=4b09138480"></script><script src="assets/i18n.js?v=4b09138480"></script><script src="assets/ui.js?v=4b09138480"></script><script src="assets/kit.js?v=4b09138480"></script>
 </head>
 <body>
 <script>
@@ -31,14 +31,14 @@ const STATUS_BADGE = { Live: 'b-ok', Scheduled: 'b-info', Replaced: 'b-neutral',
 const relBadge = (s) => `<span class="badge ${STATUS_BADGE[s] || 'b-neutral'}">${esc(s)}</span>`;
 
 if (page({ active: 'settings.html', opt: OPT, title: 'App Settings',
-  subtitle: 'App versions and update prompts, maintenance for the whole system or single apps, and the portal look. Changes apply to every user.',
+  subtitle: 'App versions and update prompts, maintenance for the whole system or single apps, the portal look and language. Changes apply to every user.',
   crumbs: [['Home', 'home.html'], ['Administration', 'admin.html'], ['App Settings']],
   body: '<div id="tabs" style="margin-bottom:16px"></div><div id="pane"></div>' })) {
 
-  const TABS = [{ id: 'apps', label: 'App control', icon: 'smartphone' }, { id: 'maint', label: 'Maintenance', icon: 'construction' }, { id: 'look', label: 'Appearance', icon: 'palette' }];
+  const TABS = [{ id: 'apps', label: 'App control', icon: 'smartphone' }, { id: 'maint', label: 'Maintenance', icon: 'construction' }, { id: 'look', label: 'Appearance', icon: 'palette' }, { id: 'lang', label: 'Language', icon: 'languages' }];
   let relFilter = 'all';
   let tab = TABS.some(t => t.id === UI.param('tab')) ? UI.param('tab') : 'apps';
-  const drawTab = () => { history.replaceState(null, '', 'settings.html?tab=' + tab); ({ apps: drawApps, look: drawLook, maint: drawMaint })[tab](); };
+  const drawTab = () => { history.replaceState(null, '', 'settings.html?tab=' + tab); ({ apps: drawApps, look: drawLook, maint: drawMaint, lang: drawLang })[tab](); };
   const tabsCtl = Kit.tabs($('#tabs'), TABS, tab, (t) => { if (tab === 'look') UI.applyBrand(); tab = t; drawTab(); });
 
   /* =========================== Appearance =========================== */
@@ -148,6 +148,100 @@ if (page({ active: 'settings.html', opt: OPT, title: 'App Settings',
       drawLook();
     });
     refresh();
+  }
+
+  /* =========================== Language =========================== */
+  /* SOW V4: "maintain language defaults and translation overrides". English and Arabic;
+   * Arabic turns the whole portal right-to-left. Overrides replace the standard Arabic
+   * text for one English phrase (for example the hospital's own word for a ward). */
+  function drawLang() {
+    if (!S.language) S.language = clone(window.SEED.appSettings.language);
+    const draft = clone(S.language);
+    draft.overrides = draft.overrides || {};
+    const DICT = (window.I18N && I18N.dict) || {};
+    const total = Object.keys(DICT).length, done = Object.values(DICT).filter(Boolean).length;
+    const dirty = () => JSON.stringify(draft) !== JSON.stringify(S.language);
+    const cur = (window.I18N && I18N.lang) || 'en';
+
+    $('#pane').innerHTML = `
+      ${canEdit ? '' : `<div class="banner info" style="margin-bottom:14px">${icon('lock')}<span>You can view these settings. Changing them needs edit rights on App Settings.</span></div>`}
+      <div class="grid g-side" style="align-items:start">
+        <div class="stack">
+          <div class="card"><div class="card-head"><h3>${icon('languages')} Languages</h3><span class="small muted">English and Arabic. Arabic shows every screen right-to-left.</span></div><div class="card-pad stack">
+            <div class="field"><label>Default language</label><div id="defSeg"></div><span class="hint">Used the first time someone opens the portal in a browser. After that, each person's own choice is remembered.</span></div>
+            <div class="row" style="justify-content:space-between;gap:16px;border-top:1px solid var(--line);padding-top:14px">
+              <div><b>Let users switch language</b><div class="small muted">Shows the language button in the top bar and on the sign-in page.</div></div>
+              <label class="switch"><input type="checkbox" id="arOn" ${draft.arabic ? 'checked' : ''} ${canEdit ? '' : 'disabled'}><span></span></label>
+            </div>
+          </div></div>
+
+          <div class="card"><div class="card-head"><h3>${icon('type')} Translation overrides</h3><span class="small muted">Replace the standard Arabic text for a phrase</span></div>
+            ${canEdit ? `<div class="card-pad" style="border-bottom:1px solid var(--line)">
+              <div class="form-grid c3" style="align-items:end">
+                <div class="field"><label for="ovEn">English text<span class="req">*</span></label><input class="input" id="ovEn" list="ovList" placeholder="For example: Ward" autocomplete="off"><datalist id="ovList"></datalist></div>
+                <div class="field"><label for="ovAr">Arabic text<span class="req">*</span></label><input class="input" id="ovAr" dir="rtl" lang="ar" autocomplete="off"></div>
+                <div class="field"><button class="btn" id="ovAdd" type="button" disabled>${icon('plus')} Add override</button></div>
+              </div>
+              <div class="hint" id="ovStd" translate="no" style="margin-top:6px"></div>
+            </div>` : ''}
+            <div id="ovTbl"></div>
+          </div>
+        </div>
+
+        <div class="card" style="position:sticky;top:76px"><div class="card-head"><h3>${icon('globe')} Status</h3></div><div class="card-pad stack">
+          <dl class="kv tight">
+            <dt>Your language</dt><dd>${cur === 'ar' ? 'Arabic (right-to-left)' : 'English'}</dd>
+            <dt>Translated phrases</dt><dd translate="no">${done.toLocaleString('en')} / ${total.toLocaleString('en')}</dd>
+            <dt>Overrides</dt><dd id="ovCount" translate="no"></dd>
+            <dt>Last saved</dt><dd>${esc(S.language.updatedBy || '-')}<div class="xs muted">${esc(S.language.updatedAt ? fmtDate(S.language.updatedAt) : '')}</div></dd>
+          </dl>
+          <div class="banner info">${icon('info')}<span>Names, notes and other data people type stay in the language they were entered in. Codes, MRNs and numbers keep Western digits.</span></div>
+          ${S.language.arabic ? `<button class="btn" type="button" data-lang-switch="${cur === 'ar' ? 'en' : 'ar'}">${icon('languages')} <span>${cur === 'ar' ? 'Switch to English' : 'Switch to Arabic'}</span></button>` : ''}
+          ${canEdit ? `<div class="row" style="gap:8px;justify-content:flex-end;border-top:1px solid var(--line);padding-top:12px"><button class="btn" id="lDiscard" disabled>Discard</button><button class="btn primary" id="lSave" disabled>${icon('save')} Save language settings</button></div>` : ''}
+        </div></div>
+      </div>`;
+
+    const drawOv = () => {
+      const rows = Object.entries(draft.overrides);
+      $('#ovCount').textContent = rows.length;
+      $('#ovTbl').innerHTML = rows.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>English</th><th>Standard Arabic</th><th>Override</th>${canEdit ? '<th></th>' : ''}</tr></thead><tbody>
+        ${rows.map(([en, ar]) => `<tr><td translate="no">${esc(en)}</td><td translate="no" dir="rtl" class="muted">${esc(DICT[en] || '-')}</td><td translate="no" dir="rtl"><b>${esc(ar)}</b></td>${canEdit ? `<td class="actions"><button class="icon-btn" data-del="${esc(en)}" aria-label="Remove override" title="Remove">${icon('trash-2')}</button></td>` : ''}</tr>`).join('')}
+        </tbody></table></div>` : `<div class="empty">No overrides. The standard Arabic text is used everywhere.</div>`;
+      $$('[data-del]').forEach(b => b.addEventListener('click', () => { delete draft.overrides[b.dataset.del]; drawOv(); refresh(); }));
+    };
+    const refresh = () => { if ($('#lSave')) { $('#lSave').disabled = !dirty(); $('#lDiscard').disabled = !dirty(); } };
+    Kit.seg($('#defSeg'), [['en', 'English'], ['ar', 'Arabic']], draft.default, (v) => { draft.default = v; refresh(); });
+    if (!canEdit) $$('#defSeg button').forEach(b => { b.disabled = true; });
+    $('#arOn').addEventListener('change', (e) => { draft.arabic = e.target.checked; refresh(); });
+    if (canEdit) {
+      const en = $('#ovEn'), ar = $('#ovAr'), add = $('#ovAdd');
+      const check = () => {
+        const k = en.value.trim(), std = DICT[k];
+        $('#ovStd').textContent = k ? (std ? (cur === 'ar' ? 'الترجمة القياسية: ' : 'Standard Arabic: ') + std : (cur === 'ar' ? 'غير موجودة في القاموس القياسي. سيضيفها هذا التجاوز.' : 'Not in the standard dictionary yet. The override adds it.')) : '';
+        add.disabled = !(k.length >= 2 && /[؀-ۿ]/.test(ar.value));
+      };
+      en.addEventListener('input', () => {
+        const q = en.value.trim().toLowerCase();
+        $('#ovList').innerHTML = q.length < 2 ? '' : Object.keys(DICT).filter(k => DICT[k] && k.toLowerCase().includes(q)).slice(0, 12).map(k => `<option value="${esc(k)}"></option>`).join('');
+        check();
+      });
+      ar.addEventListener('input', check);
+      add.addEventListener('click', () => { draft.overrides[en.value.trim()] = ar.value.trim(); en.value = ''; ar.value = ''; check(); drawOv(); refresh(); });
+      $('#lDiscard').addEventListener('click', () => drawLang());
+      $('#lSave').addEventListener('click', () => {
+        const before = S.language, changes = [];
+        if (before.default !== draft.default) changes.push(['Default language', before.default === 'ar' ? 'Arabic' : 'English', draft.default === 'ar' ? 'Arabic' : 'English']);
+        if (!!before.arabic !== !!draft.arabic) changes.push(['Language switch', before.arabic ? 'On' : 'Off', draft.arabic ? 'On' : 'Off']);
+        const bo = before.overrides || {}, ao = draft.overrides;
+        new Set([...Object.keys(bo), ...Object.keys(ao)]).forEach(k => { if (bo[k] !== ao[k]) changes.push(['Override: ' + k, bo[k] || '-', ao[k] || 'Removed']); });
+        S.language = Object.assign(clone(draft), { updatedBy: who(), updatedAt: nowStamp() });
+        save();
+        audit('Language settings updated', 'App Settings', { id: 'language', label: 'Language' }, changes);
+        toast('Language settings saved.');
+        setTimeout(() => location.reload(), 400);
+      });
+    }
+    drawOv(); refresh();
   }
 
   /* =========================== App control =========================== */
