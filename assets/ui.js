@@ -21,6 +21,12 @@
         let added = false;
         Object.keys(window.SEED).forEach(k => { if (!(k in saved)) { saved[k] = clone(window.SEED[k]); added = true; } });
         saved.modules = clone(window.SEED.modules);   // the screen catalogue always follows the code
+        // Protected roles (system administrator, demo) cannot be edited, so they always follow the code.
+        (window.SEED.roles || []).filter(sr => sr.protected).forEach(sr => {
+          const i = saved.roles.findIndex(x => x.id === sr.id);
+          if (i < 0) { saved.roles.push(clone(sr)); added = true; }
+          else if (JSON.stringify(saved.roles[i].perms) !== JSON.stringify(sr.perms)) { saved.roles[i].perms = clone(sr.perms); added = true; }
+        });
         // Screens added after the data was saved: give seed roles their default rights on them.
         const known = new Set(); saved.roles.forEach(r => Object.keys(r.perms || {}).forEach(k => known.add(k)));
         (window.SEED.roles || []).forEach(sr => {
