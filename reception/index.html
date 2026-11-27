@@ -4,7 +4,7 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Reception overview · Tibbi Orbit</title>
 <link rel="stylesheet" href="../assets/styles.css">
-<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-reception.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/reception.js"></script>
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-settings.js"></script><script src="../assets/data-reception.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/reception.js"></script>
 </head>
 <body>
 <script>
@@ -35,7 +35,7 @@
       <div class="card"><div class="card-head"><h3>${icon('chart-column')} OPD arrivals by hour</h3><div class="actions"><span class="small muted">Today</span></div></div><div class="card-pad">
         ${Kit.barChart({ labels: hours.map(h => h + ':00'), values: hours.map(h => opd.filter(e => +e.start.slice(11, 13) === h).length), color: '#2F6BC5', height: 220, title: 'OPD arrivals by hour' })}</div></div>
       <div class="card"><div class="card-head"><h3>${icon('bed-double')} Beds by status</h3><div class="actions"><a class="btn sm" href="${R('reception/beds.html')}">Bed board ${icon('arrow-right')}</a></div></div><div class="card-pad">
-        <div class="grid g2" style="align-items:center;gap:24px">
+        <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(230px,1fr));align-items:center;gap:24px">
           ${Kit.donut([['Occupied', beds.filter(b => b.status === 'Occupied').length, '#2F6BC5'], ['Vacant', vac, '#0E9F6E'], ['Cleaning', beds.filter(b => b.status === 'Cleaning').length, '#E0A100'], ['Reserved', beds.filter(b => b.status === 'Reserved').length, '#7C4DDB'], ['Blocked', beds.filter(b => b.status === 'Blocked').length, '#8794A7']], { centerLabel: 'Beds' })}
           <div><div class="section-t" style="margin:0 0 10px">Occupancy by ward</div>${Kit.barList(db.wards.map(w => { const a = beds.filter(b => b.wardId === w.id); const pct = a.length ? Math.round(100 * a.filter(b => b.status === 'Occupied').length / a.length) : 0; return [w.name, pct, pct > 85 ? 'err' : pct > 60 ? 'warn' : 'ok']; }), { max: 100, fmt: (v) => v + '%' })}</div>
         </div>
@@ -43,8 +43,8 @@
     </div>
     <div class="grid g-side">
       <div class="card"><div class="card-head"><h3>${icon('users')} Waiting for the doctor</h3><div class="actions"><a class="btn sm" href="${R('reception/opd.html')}">Open OPD queue ${icon('arrow-right')}</a></div></div>
-        <div class="table-wrap"><table class="tbl"><thead><tr><th>Token</th><th>Patient</th><th>Doctor</th><th>Arrived</th><th>Waiting</th><th>Status</th></tr></thead><tbody>
-        ${waiting.length ? waiting.slice().sort((a, b) => a.start.localeCompare(b.start)).slice(0, 6).map(e => { const w = Rc.mins(Rc.qStart(e)); return `<tr class="click" data-href="${R('reception/patient.html?id=' + e.patientId)}"><td><span class="token">${esc(e.token)}</span></td><td>${Kit.patientCell(Kit.pt(e.patientId))}</td><td>${esc(Kit.docName(e.doctorId))}<div class="small muted">${esc(UI.L.clName(e.clinicId))}</div></td><td>${Kit.time(e.start)}</td><td><span class="badge ${w > 60 ? 'b-err' : w > 30 ? 'b-warn' : 'b-ok'} nodot">${Rc.dur(w)}</span></td><td>${Kit.status(e.status)}</td></tr>`; }).join('') : `<tr><td colspan="6"><div class="empty">${icon('circle-check')}<b>Nobody waiting</b></div></td></tr>`}
+        <div class="table-wrap"><table class="tbl"><thead><tr><th>Token</th><th>Patient</th><th>Doctor</th><th>Waiting</th><th>Status</th></tr></thead><tbody>
+        ${waiting.length ? waiting.slice().sort((a, b) => a.start.localeCompare(b.start)).slice(0, 6).map(e => { const w = Rc.mins(Rc.qStart(e)); return `<tr class="click" data-href="${R('reception/patient.html?id=' + e.patientId)}"><td><span class="token">${esc(e.token)}</span></td><td>${Kit.patientCell(Kit.pt(e.patientId))}</td><td><span style="white-space:nowrap">${esc(Kit.docName(e.doctorId))}</span><div class="small muted">${esc(UI.L.clName(e.clinicId))}</div></td><td><span class="badge ${w > 60 ? 'b-err' : w > 30 ? 'b-warn' : 'b-ok'} nodot">${Rc.dur(w)}</span><div class="small muted" style="margin-top:3px">since ${Kit.time(e.start)}</div></td><td>${Kit.status(e.status)}</td></tr>`; }).join('') : `<tr><td colspan="5"><div class="empty">${icon('circle-check')}<b>Nobody waiting</b></div></td></tr>`}
         </tbody></table></div></div>
       <div class="card"><div class="card-head"><h3>${icon('inbox')} Admission requests</h3><div class="actions"><a class="btn sm" href="${R('reception/admissions.html')}">Open ${icon('arrow-right')}</a></div></div>
         ${reqs.length ? `<div class="list-rows pad">${reqs.slice(0, 5).map(r => { const p = Kit.pt(r.patientId) || {}; return `<div class="click" data-href="${R('reception/admissions.html?req=' + r.id)}" style="cursor:pointer;align-items:flex-start"><div class="grow" style="min-width:0"><b class="small">${esc(p.name || 'Unknown patient')}</b><div class="xs muted"><span class="mono">${esc(p.mrn || '')}</span> · ${esc(r.bedType)}</div></div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex:none">${Kit.status(r.status === 'Cleared' ? 'Cleared' : 'Pending', r.status === 'Cleared' ? 'ok' : 'warn')}${r.type === 'Emergency' ? '<span class="badge b-err nodot">Emergency</span>' : ''}</div></div>`; }).join('')}</div>` : `<div class="empty" style="padding:24px">${icon('circle-check')}<b>No open requests</b></div>`}</div>

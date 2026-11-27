@@ -31,6 +31,54 @@
   }
   const db = loadDb();
   function save() { localStorage.setItem(STORE_KEY, JSON.stringify(db)); }
+
+  /* ---------- Branding: colours, corners, logo (Administration > App Settings) ---------- */
+  const THEMES = {
+    navy: { name: 'Tibbi Navy', primary: '#16325C', light: '#24508F', hover: '#1E4378', rail: '#0E2141', rail2: '#13294F', railInk: '#A9BCD8', sel: '#EAF2FD' },
+    teal: { name: 'Clinical Teal', primary: '#0F5E63', light: '#17828A', hover: '#0C4F53', rail: '#0A3B3F', rail2: '#0E4A4F', railInk: '#9FCFD2', sel: '#E3F4F4' },
+    indigo: { name: 'Royal Indigo', primary: '#3730A3', light: '#4F46E5', hover: '#312E81', rail: '#1E1B4B', rail2: '#272465', railInk: '#B4B2E6', sel: '#EEF0FF' },
+    emerald: { name: 'Care Green', primary: '#116149', light: '#16805F', hover: '#0D4F3B', rail: '#0B3B2D', rail2: '#0F4A39', railInk: '#A3D3C1', sel: '#E4F5EE' },
+    maroon: { name: 'Desert Maroon', primary: '#7A1F3D', light: '#9E2A52', hover: '#651933', rail: '#3D0F1F', rail2: '#4D1428', railInk: '#DDB0BF', sel: '#FBEAF0' },
+    graphite: { name: 'Graphite', primary: '#1F2937', light: '#374151', hover: '#111827', rail: '#111827', rail2: '#1F2937', railInk: '#A5AFBE', sel: '#EEF1F5' },
+  };
+  const RADII = { sharp: ['8px', '6px', '6px'], default: ['14px', '9px', '9px'], rounded: ['20px', '12px', '12px'] };
+  const hexMix = (a, b, t) => { const p = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16)); const x = p(a), y = p(b); return '#' + x.map((v, i) => Math.round(v + (y[i] - v) * t).toString(16).padStart(2, '0')).join(''); };
+  /* Colours for a theme setting: a preset, or a custom primary and sidebar colour. */
+  function themeColours(t) {
+    t = t || {};
+    if (t.preset === 'custom' && /^#[0-9a-f]{6}$/i.test(t.primary || '') && /^#[0-9a-f]{6}$/i.test(t.rail || '')) {
+      return { primary: t.primary, light: hexMix(t.primary, '#ffffff', 0.22), hover: hexMix(t.primary, '#000000', 0.15), rail: t.rail, rail2: hexMix(t.rail, '#ffffff', 0.07), railInk: hexMix(t.rail, '#ffffff', 0.62), sel: hexMix(t.primary, '#ffffff', 0.9) };
+    }
+    return THEMES[t.preset] || THEMES.navy;
+  }
+  function applyBrand(t) {
+    t = t || (db.appSettings || {}).theme || {};
+    const st = document.documentElement.style, c = themeColours(t), r = RADII[t.radius] || RADII.default;
+    st.setProperty('--r-card', r[0]); st.setProperty('--r-ctl', r[1]); st.setProperty('--r-btn', r[2]);
+    const vars = { '--primary': c.primary, '--primary-light': c.light, '--primary-hover': c.hover, '--btn-start': c.primary, '--btn-end': c.primary, '--sel': c.sel, '--sel-ink': c.primary, '--rail': c.rail, '--rail-2': c.rail2, '--rail-ink': c.railInk, '--focus': c.light + '38' };
+    const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+    Object.entries(vars).forEach(([k, v]) => {
+      if (!dark) st.setProperty(k, v);
+      else if (/rail/.test(k)) st.setProperty(k, k === '--rail-ink' ? v : hexMix(v, '#000000', 0.45));   // dark mode keeps its own palette, only the sidebar follows the brand
+      else st.removeProperty(k);
+    });
+  }
+  /* Logo and product name shown in the sidebar, login and print headers. */
+  const brandLogo = () => ((db.appSettings || {}).theme || {}).logo || R('assets/brand/app_icon.png');
+  const brandName = () => ((db.appSettings || {}).theme || {}).name || 'Tibbi Orbit';
+
+  /* ---------- Maintenance mode ---------- */
+  const localStamp = () => { const d = new Date(), p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; };
+  /* { status: 'off' | 'scheduled' | 'active' | 'ended', m } for the web portal channel. */
+  function maintState(channel) {
+    const m = (db.appSettings || {}).maintenance;
+    if (!m || !m.on || !(m.scope || []).includes(channel || 'web')) return { status: 'off', m };
+    const now = localStamp();
+    if (m.from && now < m.from) return { status: 'scheduled', m };
+    if (m.to && now > m.to) return { status: 'ended', m };
+    return { status: 'active', m };
+  }
+  const fmtLocal = (v) => v ? fmtDate(v.replace('T', ' ')) : 'further notice';
   function resetDb() { localStorage.removeItem(STORE_KEY); localStorage.removeItem(SESSION_KEY); location.href = R('login.html'); }
   const by = (list, id) => (db[list] || []).find(x => x.id === id);
   const nowStamp = () => { const d = new Date(); const p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`; };
@@ -41,6 +89,8 @@
   const prefs = (() => { try { return JSON.parse(localStorage.getItem(PREF_KEY)) || {}; } catch (e) { return {}; } })();
   function savePrefs() { localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); }
   document.documentElement.setAttribute('data-theme', prefs.theme || 'light');
+  applyBrand();
+  new MutationObserver(() => applyBrand()).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 
   /* ---------- Helpers ---------- */
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -236,7 +286,7 @@
   }
 
   /* ---------- Shell ---------- */
-  const ADMIN_OPTS = ['admin.org.company', 'admin.org.rules', 'admin.masters.dept', 'admin.masters.wh', 'admin.security.roles', 'admin.security.users', 'admin.security.mapping', 'admin.reports.view', 'admin.reports.audit'];
+  const ADMIN_OPTS = ['admin.org.company', 'admin.org.rules', 'admin.masters.dept', 'admin.masters.wh', 'admin.security.roles', 'admin.security.users', 'admin.security.mapping', 'admin.reports.view', 'admin.reports.audit', 'admin.system.settings'];
   function hasAnyAdmin() { return ADMIN_OPTS.some(o => can(o, 'view')); }
   /* Screens of a module the user may open (HOM-01: built from permissions, default deny). */
   function moduleScreens(m) {
@@ -250,6 +300,21 @@
     return null;
   }
 
+  function maintenanceScreen(m) {
+    document.body.innerHTML = `<div class="maint-screen"><div class="maint-card">
+      <img src="${esc(brandLogo())}" alt="" class="maint-logo">
+      <div class="m-ico b-warn">${icon('construction')}</div>
+      <h1>Under maintenance</h1>
+      <p>${esc(m.msgEn || 'The system is under maintenance.')}</p>
+      ${m.msgAr ? `<p dir="rtl" lang="ar" class="maint-ar">${esc(m.msgAr)}</p>` : ''}
+      <div class="maint-when">${icon('clock')}<span>Expected back: <b>${esc(fmtLocal(m.to))}</b></span></div>
+      <div><button class="btn" id="maintOut">${icon('log-out')} Sign out</button></div>
+      <div class="xs muted" style="margin-top:14px">${esc(brandName())} · Contact the IT helpdesk if this is urgent.</div>
+    </div></div>`;
+    document.title = 'Under maintenance · ' + brandName();
+    $('#maintOut').addEventListener('click', () => { clearSession(); location.href = R('login.html'); });
+  }
+
   /* page({ title, subtitle, opt (required option id), module, active, crumbs, actions (html), body (html), wide, noSide }) */
   function page(o) {
     const s = session();
@@ -261,6 +326,14 @@
     // HOM-06: context may have become invalid during the session.
     const valid = contextsFor(u.id).some(c => ctxKey(c) === ctxKey(s.ctx));
     if (!valid) { s.ctx = null; setSession(s); location.replace(R('context.html?invalid=1')); return false; }
+    // Maintenance mode: only exempt roles keep working; everybody else sees the maintenance screen.
+    const ms = maintState('web');
+    const myRoles = (contextsFor(u.id).find(c => ctxKey(c) === ctxKey(s.ctx)) || {}).roles || [];
+    const exempt = myRoles.some(r => (ms.m && ms.m.exemptRoles || []).includes(r));
+    if (ms.status === 'active' && !exempt) { maintenanceScreen(ms.m); return false; }
+    const maintBanner = ms.status === 'active'
+      ? `<div class="banner warn" style="margin-bottom:14px">${icon('construction')}<span><b>Maintenance mode is on</b> until ${esc(fmtLocal(ms.m.to))}. Other users see the maintenance screen; your role is exempt.</span>${can('admin.system.settings', 'view') ? `<a class="btn sm" href="${R('settings.html?tab=maint')}">Manage</a>` : ''}</div>`
+      : ms.status === 'scheduled' ? `<div class="banner info" style="margin-bottom:14px">${icon('calendar-clock')}<span><b>Planned maintenance</b> from ${esc(fmtLocal(ms.m.from))} to ${esc(fmtLocal(ms.m.to))}. Save your work before it starts.</span></div>` : '';
     const mod = moduleOf(o);
     // HOM-05: never rely on a hidden menu; check the option on the page itself.
     if (o.opt && !can(o.opt, 'view')) { location.replace(R('access-denied.html?from=' + encodeURIComponent(o.title))); return false; }
@@ -271,7 +344,7 @@
     const mods = visibleModules();
     const onHome = !mod;
     const rail = `<nav class="rail" aria-label="Modules">
-        <a class="logo" href="${R('home.html')}" title="Tibbi Orbit home"><img src="${R('assets/brand/app_icon.png')}" alt="Tibbi Orbit"></a>
+        <a class="logo" href="${R('home.html')}" title="${esc(brandName())} home"><img src="${esc(brandLogo())}" alt="${esc(brandName())}"></a>
         <a href="${R('home.html')}" class="${onHome && /home\.html$/.test(here) ? 'on' : ''}" data-tip="Home">${icon('house')}</a>
         <div class="sep"></div>
         ${mods.map(m => `<a href="${R(m.home || 'module.html?m=' + m.id)}" class="${mod && mod.id === m.id ? 'on' : ''}" data-tip="${esc(m.name)}">${icon(m.icon)}</a>`).join('')}
@@ -292,7 +365,7 @@
           if (!opts.length) return '';
           return `<div class="nav-label">${esc(g.sub.name)}</div><nav class="nav">${opts.map(x => `<a href="${R(x.page)}" class="${x.page === activeKey || x.id === o.opt ? 'on' : ''}">${icon(x.icon || 'circle')}<span>${esc(x.name)}</span></a>`).join('')}</nav>`;
         }).join('')}
-        <div class="side-foot">Prototype · dummy data only<br><button class="link-btn" id="resetDb">Reset demo data</button></div>
+        <div class="side-foot">Prototype · dummy data only${(() => { const w = ((db.appSettings || {}).channels || []).find(c => c.id === 'web'); return w ? ' · v' + esc(w.current) : ''; })()}<br><button class="link-btn" id="resetDb">Reset demo data</button></div>
       </aside>`;
     }
     const co = L.company(ctx.companyId) || {}, br = L.branch(ctx.branchId) || {};
@@ -321,7 +394,7 @@
             <div class="crumbs">${crumbs.map(([t, h]) => h ? `<a href="${h}">${esc(t)}</a>` : `<span>${esc(t)}</span>`).join(icon('chevron-right', 'mute'))}</div>
             <h1>${esc(o.title)}</h1>${o.subtitle ? `<div class="muted" style="margin-top:3px">${o.subtitle}</div>` : ''}</div>
             <div class="actions">${o.actions || ''}</div></div>
-          <div id="page">${o.body || ''}</div>
+          ${maintBanner}<div id="page">${o.body || ''}</div>
         </main>
       </div>
     </div>`;
@@ -687,7 +760,7 @@
   function lastUpdated(r) { return `<span class="small muted">${esc(r.updatedBy || '')}<br>${fmtDate(r.updatedAt)}</span>`; }
   function codeName(code, name, sub) { return `<div class="cell-main"><b>${esc(name)}</b><span class="mono">${esc(code)}</span>${sub ? ` · <span>${sub}</span>` : ''}</div>`; }
 
-  window.UI = { ROOT, R, relPath, ageOf, moduleScreens, visibleModules, openPalette, db, save, resetDb, by, L, uid, today, nowStamp, esc, icon, $, $$, initials, param, fmtDate, badge, tupleText, ctxKey, contextsFor, permsFor, optionById, can, assignmentUsable, isActiveOn,
+  window.UI = { THEMES, themeColours, applyBrand, brandLogo, brandName, maintState, fmtLocal, ROOT, R, relPath, ageOf, moduleScreens, visibleModules, openPalette, db, save, resetDb, by, L, uid, today, nowStamp, esc, icon, $, $$, initials, param, fmtDate, badge, tupleText, ctxKey, contextsFor, permsFor, optionById, can, assignmentUsable, isActiveOn,
     session, setSession, clearSession, me, audit, toast, drawer, confirm, page, table, field, showErrors, CODE_RE, normCode, validUrl, EMAIL_RE, PHONE_RE,
     historyDrawer, statusToggle, lastUpdated, codeName, prefs, savePrefs, contextPicker, effectiveRule, passwordRules, pwField, bindEyes, hasAnyAdmin, ADMIN_OPTS, rolesLabel };
 })();

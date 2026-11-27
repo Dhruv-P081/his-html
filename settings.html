@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>App Settings · Tibbi Orbit</title>
+<link rel="stylesheet" href="assets/styles.css">
+<script src="assets/icons.js"></script><script src="assets/data.js"></script><script src="assets/data-core.js"></script><script src="assets/data-settings.js"></script><script src="assets/ui.js"></script><script src="assets/kit.js"></script>
+</head>
+<body>
+<script>
+const { db, save, $, $$, icon, esc, page, can, drawer, confirm, toast, audit, me, nowStamp, uid, badge, fmtDate, today, L } = UI;
+const OPT = 'admin.system.settings';
+const canEdit = can(OPT, 'edit'), canApprove = can(OPT, 'approve');
+const S = db.appSettings;
+const clone = (o) => JSON.parse(JSON.stringify(o));
+const who = () => (me() || {}).displayName || 'Unknown';
+const CH = (id) => S.channels.find(c => c.id === id);
+const MOBILE = ['android', 'ios'];
+
+/* Semantic versions: 1.4.2 > 1.4.1 > 1.3.9 */
+const SEMVER = /^\d+\.\d+\.\d+$/;
+const cmpVer = (a, b) => { const x = a.split('.').map(Number), y = b.split('.').map(Number); for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] - y[i]; return 0; };
+
+/* WCAG contrast of white text on a colour. */
+const lum = (h) => { const c = [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16) / 255).map(v => v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)); return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; };
+const contrastWhite = (h) => 1.05 / (lum(h) + 0.05);
+
+const STATUS_BADGE = { Live: 'b-ok', Scheduled: 'b-info', Replaced: 'b-neutral', 'Rolled back': 'b-err', Cancelled: 'b-neutral' };
+const relBadge = (s) => `<span class="badge ${STATUS_BADGE[s] || 'b-neutral'}">${esc(s)}</span>`;
+
+if (page({ active: 'settings.html', opt: OPT, title: 'App Settings',
+  subtitle: 'Portal colours and logo, release versions for the web portal, patient app and API, and maintenance mode. Changes apply to every user.',
+  crumbs: [['Home', 'home.html'], ['Administration', 'admin.html'], ['App Settings']],
+  body: '<div id="tabs" style="margin-bottom:16px"></div><div id="pane"></div>' })) {
+
+  const TABS = [{ id: 'look', label: 'Appearance', icon: 'palette' }, { id: 'ver', label: 'Versions', icon: 'git-branch' }, { id: 'maint', label: 'Maintenance mode', icon: 'construction' }];
+  let relFilter = 'all';
+  let tab = TABS.some(t => t.id === UI.param('tab')) ? UI.param('tab') : 'look';
+  const drawTab = () => { history.replaceState(null, '', 'settings.html?tab=' + tab); ({ look: drawLook, ver: drawVersions, maint: drawMaint })[tab](); };
+  Kit.tabs($('#tabs'), TABS, tab, (t) => { if (tab === 'look') UI.applyBrand(); tab = t; drawTab(); });
+  drawTab();
+
+  /* =========================== Appearance =========================== */
+  function drawLook() {
+    const draft = clone(S.theme);
+    if (!draft.primary) draft.primary = UI.THEMES.navy.primary;
+    if (!draft.rail) draft.rail = UI.THEMES.navy.rail;
+    const dirty = () => JSON.stringify(draft) !== JSON.stringify(Object.assign(clone(S.theme), { primary: S.theme.primary || UI.THEMES.navy.primary, rail: S.theme.rail || UI.THEMES.navy.rail }));
+    const swatch = (id, t) => `<button type="button" class="swatch ${draft.preset === id ? 'on' : ''}" data-p="${id}" ${canEdit ? '' : 'disabled'}>
+        <div class="sw-prev"><div class="sw-rail" style="background:${t.rail}"></div><div class="sw-body"><div class="sw-sel" style="background:${t.sel}"></div><div class="sw-line"></div><div class="sw-line" style="width:45%"></div><div class="sw-btn" style="background:${t.primary}"></div></div></div>
+        <div class="sw-name"><span>${esc(t.name)}</span>${draft.preset === id ? icon('circle-check') : ''}</div></button>`;
+
+    $('#pane').innerHTML = `
+      ${canEdit ? '' : `<div class="banner info" style="margin-bottom:14px">${icon('lock')}<span>You can view these settings. Changing them needs edit rights on App Settings.</span></div>`}
+      <div class="grid g-side" style="align-items:start">
+        <div class="stack">
+          <div class="card"><div class="card-head"><h3>${icon('palette')} Colour combination</h3><span class="small muted">Sidebar, buttons, links and selection</span></div><div class="card-pad">
+            <div class="swatches">${Object.entries(UI.THEMES).map(([id, t]) => swatch(id, t)).join('')}${swatch('custom', Object.assign({ name: 'Custom colours' }, UI.themeColours({ preset: 'custom', primary: draft.primary, rail: draft.rail })))}</div>
+            <div id="customBox" class="${draft.preset === 'custom' ? '' : 'hidden'}" style="margin-top:16px">
+              <div class="form-grid c3">
+                <div class="field"><label for="cPrim">Primary colour</label><div class="row" style="gap:8px"><input type="color" id="cPrim" value="${esc(draft.primary)}" style="width:44px;height:38px;border:1px solid var(--line);border-radius:8px;padding:2px;background:var(--card)"><input class="input mono" id="cPrimT" value="${esc(draft.primary)}" maxlength="7"></div></div>
+                <div class="field"><label for="cRail">Sidebar colour</label><div class="row" style="gap:8px"><input type="color" id="cRail" value="${esc(draft.rail)}" style="width:44px;height:38px;border:1px solid var(--line);border-radius:8px;padding:2px;background:var(--card)"><input class="input mono" id="cRailT" value="${esc(draft.rail)}" maxlength="7"></div></div>
+                <div class="field"><label>Readability</label><div id="contrast" style="padding-top:8px"></div></div>
+              </div>
+            </div>
+          </div></div>
+
+          <div class="card"><div class="card-head"><h3>${icon('square-round-corner')} Corners</h3></div><div class="card-pad">
+            <div id="radius"></div><div class="hint" style="margin-top:8px">Rounding of cards, fields and buttons.</div>
+          </div></div>
+
+          <div class="card"><div class="card-head"><h3>${icon('image')} Logo and name</h3><span class="small muted">Sidebar, sign-in page, maintenance screen and printouts</span></div><div class="card-pad">
+            <div class="row" style="gap:18px;align-items:flex-start;flex-wrap:wrap">
+              <div class="logo-box" id="logoBox"><img src="${esc(draft.logo || UI.brandLogo())}" alt="Current logo"></div>
+              <div class="stack tight" style="flex:1;min-width:220px">
+                <div class="row" style="gap:8px;flex-wrap:wrap">
+                  <label class="btn sm ${canEdit ? '' : 'disabled'}" style="cursor:pointer">${icon('upload')} Upload logo<input type="file" id="logoFile" accept="image/png,image/jpeg,image/svg+xml,image/webp" hidden ${canEdit ? '' : 'disabled'}></label>
+                  <button class="btn sm" id="logoReset" type="button" ${canEdit && draft.logo ? '' : 'disabled'}>${icon('rotate-ccw')} Use default logo</button>
+                </div>
+                <div class="hint">PNG, JPEG, SVG or WebP, up to 300 KB. A square image of at least 128 × 128 px looks best.</div>
+                <div class="err-msg hidden" id="logoErr" style="color:var(--error);font-size:12px;font-weight:600"></div>
+                <div class="field" style="margin-top:6px;max-width:360px"><label for="bName">Product name<span class="req">*</span></label><input class="input" id="bName" maxlength="40" value="${esc(draft.name || 'Tibbi Orbit')}" ${canEdit ? '' : 'disabled'}><span class="hint">Shown on the sign-in page and printouts.</span></div>
+              </div>
+            </div>
+          </div></div>
+        </div>
+
+        <div class="card" style="position:sticky;top:76px"><div class="card-head"><h3>${icon('eye')} Live preview</h3></div><div class="card-pad stack">
+          <div class="small muted">The portal around this page already shows your changes. Save to apply them for everybody, or discard.</div>
+          <dl class="kv tight"><dt>Colours</dt><dd id="pvName"></dd><dt>Corners</dt><dd id="pvRad"></dd><dt>Last saved</dt><dd>${esc(S.theme.updatedBy || '-')}<div class="xs muted">${esc(S.theme.updatedAt ? fmtDate(S.theme.updatedAt) : '')}</div></dd></dl>
+          <div class="row" style="gap:8px;flex-wrap:wrap"><button class="btn primary" type="button">${icon('check')} Primary</button><button class="btn" type="button">Secondary</button><label class="switch"><input type="checkbox" checked><span></span></label></div>
+          <div class="banner info">${icon('moon')}<span>Dark mode keeps its own palette; the sidebar follows the brand colour.</span></div>
+          ${canEdit ? `<div class="row" style="gap:8px;justify-content:flex-end;border-top:1px solid var(--line);padding-top:12px"><button class="btn" id="discard" disabled>Discard</button><button class="btn primary" id="saveLook" disabled>${icon('save')} Save appearance</button></div>` : ''}
+        </div></div>
+      </div>`;
+
+    const RAD = [['sharp', 'Sharp'], ['default', 'Standard'], ['rounded', 'Rounded']];
+    const refresh = () => {
+      UI.applyBrand(draft);
+      $$('.shell .rail .logo img').forEach(i => { i.src = draft.logo || UI.brandLogo(); });
+      $('#logoBox img').src = draft.logo || UI.R('assets/brand/app_icon.png');
+      $('#logoReset').disabled = !canEdit || !draft.logo;
+      $('#pvName').textContent = draft.preset === 'custom' ? 'Custom (' + draft.primary + ', ' + draft.rail + ')' : UI.THEMES[draft.preset].name;
+      $('#pvRad').textContent = (RAD.find(r => r[0] === draft.radius) || RAD[1])[1];
+      const c = UI.themeColours(draft).primary, k = contrastWhite(c);
+      if ($('#contrast')) $('#contrast').innerHTML = k >= 4.5 ? `<span class="badge b-ok">${k.toFixed(1)} : 1 · Good</span>` : `<span class="badge b-err">${k.toFixed(1)} : 1 · Too light for white text</span>`;
+      const nameOk = ($('#bName').value || '').trim().length >= 2;
+      if ($('#saveLook')) { $('#saveLook').disabled = !dirty() || !nameOk || (draft.preset === 'custom' && k < 4.5); $('#discard').disabled = !dirty(); }
+    };
+    Kit.seg($('#radius'), RAD, draft.radius || 'default', (v) => { draft.radius = v; refresh(); });
+    $$('.swatch').forEach(b => b.addEventListener('click', () => {
+      draft.preset = b.dataset.p;
+      $$('.swatch').forEach(x => { x.classList.toggle('on', x === b); const ic = x.querySelector('.sw-name .ico'); if (ic) ic.remove(); });
+      b.querySelector('.sw-name').insertAdjacentHTML('beforeend', icon('circle-check'));
+      $('#customBox').classList.toggle('hidden', draft.preset !== 'custom');
+      refresh();
+    }));
+    const bindColour = (pick, text, key) => {
+      if (!$(pick)) return;
+      $(pick).addEventListener('input', () => { draft[key] = $(pick).value.toUpperCase(); $(text).value = draft[key]; updateCustomSwatch(); refresh(); });
+      $(text).addEventListener('input', () => { const v = $(text).value.trim(); if (/^#[0-9a-f]{6}$/i.test(v)) { draft[key] = v.toUpperCase(); $(pick).value = v; updateCustomSwatch(); refresh(); } });
+    };
+    const updateCustomSwatch = () => { const t = UI.themeColours({ preset: 'custom', primary: draft.primary, rail: draft.rail }), sw = $('.swatch[data-p="custom"]'); sw.querySelector('.sw-rail').style.background = t.rail; sw.querySelector('.sw-btn').style.background = t.primary; sw.querySelector('.sw-sel').style.background = t.sel; };
+    bindColour('#cPrim', '#cPrimT', 'primary'); bindColour('#cRail', '#cRailT', 'rail');
+    $('#bName').addEventListener('input', () => { draft.name = $('#bName').value.trim(); refresh(); });
+    $('#logoFile').addEventListener('change', (e) => {
+      const f = e.target.files[0]; e.target.value = ''; const err = $('#logoErr'); err.classList.add('hidden');
+      if (!f) return;
+      if (!/^image\/(png|jpeg|svg\+xml|webp)$/.test(f.type)) { err.textContent = 'Choose a PNG, JPEG, SVG or WebP image.'; err.classList.remove('hidden'); return; }
+      if (f.size > 300 * 1024) { err.textContent = 'The image is ' + Math.round(f.size / 1024) + ' KB. Use an image up to 300 KB.'; err.classList.remove('hidden'); return; }
+      const rd = new FileReader(); rd.onload = () => { draft.logo = rd.result; refresh(); }; rd.readAsDataURL(f);
+    });
+    $('#logoReset').addEventListener('click', () => { delete draft.logo; refresh(); });
+    if ($('#discard')) $('#discard').addEventListener('click', () => drawLook());
+    if ($('#saveLook')) $('#saveLook').addEventListener('click', () => {
+      const before = S.theme, after = Object.assign(clone(draft), { name: draft.name || 'Tibbi Orbit', updatedBy: who(), updatedAt: nowStamp() });
+      if (after.preset !== 'custom') { after.primary = ''; after.rail = ''; }
+      const changes = [];
+      if (before.preset !== after.preset || before.primary !== after.primary || before.rail !== after.rail) changes.push(['Colours', before.preset === 'custom' ? 'Custom' : (UI.THEMES[before.preset] || {}).name, after.preset === 'custom' ? 'Custom ' + after.primary + ' / ' + after.rail : UI.THEMES[after.preset].name]);
+      if ((before.radius || 'default') !== after.radius) changes.push(['Corners', before.radius || 'default', after.radius]);
+      if ((before.logo || '') !== (after.logo || '')) changes.push(['Logo', before.logo ? 'Custom' : 'Default', after.logo ? 'Custom upload' : 'Default']);
+      if ((before.name || 'Tibbi Orbit') !== after.name) changes.push(['Product name', before.name || 'Tibbi Orbit', after.name]);
+      S.theme = after;
+      try { save(); } catch (e) { S.theme = before; toast('The logo is too large to store in this browser. Use a smaller image.', 'err'); return; }
+      audit('Appearance updated', 'App Settings', { id: 'appearance', label: 'Appearance' }, changes);
+      toast('Appearance saved. Every user sees it on their next page load.');
+      drawLook();
+    });
+    refresh();
+  }
+
+  /* =========================== Versions =========================== */
+  function drawVersions() {
+    const sched = S.releases.filter(r => r.status === 'Scheduled').length;
+    $('#pane').innerHTML = `
+      <div class="row" style="margin-bottom:14px;gap:10px;flex-wrap:wrap"><div class="grow small muted">Current version per channel. A minimum version with force update makes older patient apps ask the user to update before they continue.</div>
+        ${canEdit ? `<button class="btn primary" id="newRel">${icon('rocket')} New release</button>` : ''}</div>
+      <div class="grid g4" style="margin-bottom:16px">${S.channels.map(c => `
+        <div class="card"><div class="card-pad chan-card">
+          <div class="row" style="gap:10px"><span class="tile t-sky" style="width:36px;height:36px;border-radius:10px;display:grid;place-items:center">${icon(c.icon)}</span><div class="grow"><b class="small">${esc(c.name)}</b><div class="xs muted">${esc(c.env)}</div></div></div>
+          <div><span class="ver">v${esc(c.current)}</span> <span class="xs muted mono">build ${esc(c.build)}</span></div>
+          <div class="xs muted">Released ${esc(fmtDate(c.releasedAt))}</div>
+          ${MOBILE.includes(c.id) ? `<div class="row" style="gap:6px;flex-wrap:wrap"><span class="tag">Minimum v${esc(c.min || '-')}</span>${c.force ? '<span class="badge b-warn">Force update on</span>' : '<span class="badge b-neutral">Optional update</span>'}</div>` : `<div class="row" style="gap:6px"><span class="badge b-ok">Up to date</span></div>`}
+          ${canEdit && MOBILE.includes(c.id) ? `<button class="btn sm" data-upd="${c.id}">${icon('settings-2')} Update policy</button>` : ''}
+        </div></div>`).join('')}</div>
+      <div class="card"><div class="card-head"><h3>${icon('history')} Release history</h3><div class="actions"><div id="relSeg"></div></div></div>
+        <div class="table-wrap"><table class="tbl"><thead><tr><th>Version</th><th>Channel</th><th>Release date</th><th>Status</th><th>Notes</th><th>Released by</th><th></th></tr></thead><tbody id="relBody"></tbody></table></div></div>
+      ${sched ? `<div class="hint" style="margin-top:8px">${sched} scheduled release${sched === 1 ? '' : 's'}. Publish now makes it the live version straight away.</div>` : ''}`;
+
+    Kit.seg($('#relSeg'), [['all', 'All']].concat(S.channels.map(c => [c.id, c.id === 'web' ? 'Web' : c.id === 'api' ? 'API' : c.id === 'ios' ? 'iOS' : 'Android'])), relFilter, (v) => { relFilter = v; body(); });
+    const body = () => {
+      const rows = S.releases.filter(r => relFilter === 'all' || r.channel === relFilter).sort((a, b) => b.date.localeCompare(a.date) || cmpVer(b.version, a.version));
+      $('#relBody').innerHTML = rows.length ? rows.map(r => {
+        const c = CH(r.channel), live = r.status === 'Live' && c.current === r.version;
+        const prev = S.releases.filter(x => x.channel === r.channel && x.status === 'Replaced' && cmpVer(x.version, r.version) < 0).sort((a, b) => cmpVer(b.version, a.version))[0];
+        const acts = [];
+        if (canApprove && r.status === 'Scheduled') acts.push(`<button class="btn sm primary" data-pub="${r.id}">${icon('rocket')} Publish now</button>`, `<button class="btn sm" data-cancel="${r.id}">Cancel</button>`);
+        if (canApprove && live && prev) acts.push(`<button class="btn sm destructive" data-rb="${r.id}">${icon('undo-2')} Roll back to v${esc(prev.version)}</button>`);
+        return `<tr><td><b class="mono">v${esc(r.version)}</b></td><td>${esc(c.name)}</td><td>${esc(fmtDate(r.date))}</td><td>${relBadge(r.status)}</td><td style="max-width:360px">${esc(r.notes)}</td><td>${esc(r.by)}</td><td class="actions">${acts.join(' ')}</td></tr>`;
+      }).join('') : `<tr><td colspan="7"><div class="empty">${icon('git-branch')}<b>No releases for this channel</b></div></td></tr>`;
+      $$('[data-pub]').forEach(b => b.addEventListener('click', () => publish(S.releases.find(r => r.id === b.dataset.pub))));
+      $$('[data-cancel]').forEach(b => b.addEventListener('click', () => { const r = S.releases.find(x => x.id === b.dataset.cancel); confirm({ title: 'Cancel release v' + r.version + '?', body: esc(CH(r.channel).name) + ' stays on v' + esc(CH(r.channel).current) + '.', confirm: 'Cancel release', cancel: 'Keep', reason: true, onConfirm: (why) => { r.status = 'Cancelled'; save(); audit('Release cancelled', 'App Settings', { id: r.id, label: CH(r.channel).name + ' v' + r.version }, [], { reason: why }); toast('Release cancelled.'); drawVersions(); } }); }));
+      $$('[data-rb]').forEach(b => b.addEventListener('click', () => rollback(S.releases.find(r => r.id === b.dataset.rb))));
+    };
+    body();
+    $$('[data-upd]').forEach(b => b.addEventListener('click', () => policy(CH(b.dataset.upd))));
+    if ($('#newRel')) $('#newRel').addEventListener('click', newRelease);
+  }
+
+  function publish(r) {
+    const c = CH(r.channel);
+    confirm({ title: 'Publish ' + c.name + ' v' + r.version + '?', body: 'It becomes the live version now. The current version v' + esc(c.current) + ' is marked as replaced.', tone: 'primary', icon: 'rocket', confirm: 'Publish now',
+      onConfirm: () => {
+        S.releases.filter(x => x.channel === r.channel && x.status === 'Live').forEach(x => { x.status = 'Replaced'; });
+        const from = c.current; r.status = 'Live'; r.date = today(); c.current = r.version; c.releasedAt = today(); c.build = r.build || c.build; save();
+        audit('Release published', 'App Settings', { id: r.id, label: c.name + ' v' + r.version }, [['Version', from, r.version]]);
+        toast(c.name + ' is now on v' + r.version + '.'); drawVersions();
+      } });
+  }
+  function rollback(r) {
+    const c = CH(r.channel);
+    const prev = S.releases.filter(x => x.channel === r.channel && x.status === 'Replaced' && cmpVer(x.version, r.version) < 0).sort((a, b) => cmpVer(b.version, a.version))[0];
+    confirm({ title: 'Roll back ' + c.name + ' to v' + prev.version + '?', body: 'v' + esc(r.version) + ' is withdrawn and v' + esc(prev.version) + ' becomes live again.',
+      impact: ['Users get v' + esc(prev.version) + ' on their next load.', MOBILE.includes(c.id) ? 'Store builds are not withdrawn automatically; this changes the version the app checks against.' : 'Scheduled releases stay scheduled.'], reason: true, confirm: 'Roll back',
+      onConfirm: (why) => {
+        r.status = 'Rolled back'; prev.status = 'Live'; c.current = prev.version; c.releasedAt = today();
+        if (MOBILE.includes(c.id) && c.min && cmpVer(c.min, prev.version) > 0) c.min = prev.version;
+        save(); audit('Release rolled back', 'App Settings', { id: r.id, label: c.name + ' v' + r.version }, [['Version', r.version, prev.version]], { reason: why });
+        toast(c.name + ' rolled back to v' + prev.version + '.'); drawVersions();
+      } });
+  }
+  function policy(c) {
+    drawer({ title: 'Update policy · ' + c.name, sub: 'Current version v' + esc(c.current), narrow: true,
+      body: `<div class="stack">
+        <div class="field"><label for="pMin">Minimum supported version<span class="req">*</span></label><input class="input mono" id="pMin" value="${esc(c.min)}" placeholder="1.2.0"><span class="hint">Apps older than this see the update screen. Cannot be higher than v${esc(c.current)}.</span><span class="err-msg hidden" id="pMinErr" style="color:var(--error);font-size:12px;font-weight:600"></span></div>
+        <label class="row" style="gap:12px;align-items:flex-start"><span class="grow"><b class="small">Force update</b><div class="xs muted">On: users below the minimum must update before they continue. Off: they can skip the reminder.</div></span><span class="switch"><input type="checkbox" id="pForce" ${c.force ? 'checked' : ''}><span></span></span></label>
+        <div class="phone-prev">${icon('download')}<div style="font-weight:800;margin:8px 0 4px">Update available</div><div style="font-size:12px;color:#526075">A new version of ${esc(UI.brandName())} is ready. Update to continue.</div><div style="margin-top:12px;background:${UI.themeColours(S.theme).primary};color:#fff;border-radius:10px;padding:8px;font-size:12px;font-weight:700">Update now</div><div id="pvSkip" style="margin-top:8px;font-size:12px;color:#526075">Later</div></div>
+      </div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="pSave" disabled>${icon('save')} Save policy</button>`,
+      onMount: (el, close) => {
+        const chk = () => {
+          const v = $('#pMin', el).value.trim(), err = $('#pMinErr', el);
+          let msg = '';
+          if (!SEMVER.test(v)) msg = 'Use the format 1.2.0.'; else if (cmpVer(v, c.current) > 0) msg = 'Cannot be higher than the current version v' + c.current + '.';
+          err.textContent = msg; err.classList.toggle('hidden', !msg);
+          $('#pvSkip', el).style.display = $('#pForce', el).checked ? 'none' : '';
+          $('#pSave', el).disabled = !!msg || (v === c.min && $('#pForce', el).checked === c.force);
+        };
+        $('#pMin', el).addEventListener('input', chk); $('#pForce', el).addEventListener('change', chk); chk();
+        $('#pSave', el).addEventListener('click', () => {
+          const ch = [['Minimum version', c.min, $('#pMin', el).value.trim()], ['Force update', c.force ? 'On' : 'Off', $('#pForce', el).checked ? 'On' : 'Off']].filter(x => x[1] !== x[2]);
+          c.min = $('#pMin', el).value.trim(); c.force = $('#pForce', el).checked; save();
+          audit('Update policy changed', 'App Settings', { id: c.id, label: c.name }, ch);
+          toast('Update policy saved for ' + c.name + '.'); close(); drawVersions();
+        });
+      } });
+  }
+  function newRelease() {
+    drawer({ title: 'New release', sub: 'Record a version for a channel. A future date schedules it.',
+      body: `<div class="form-grid">
+        <div class="field"><label for="rCh">Channel<span class="req">*</span></label><select class="input" id="rCh">${S.channels.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></div>
+        <div class="field"><label for="rVer">Version<span class="req">*</span></label><input class="input mono" id="rVer" placeholder="1.5.0"><span class="hint" id="rVerHint"></span><span class="err-msg hidden" id="rVerErr" style="color:var(--error);font-size:12px;font-weight:600"></span></div>
+        <div class="field"><label for="rBuild">Build number</label><input class="input mono" id="rBuild" maxlength="20"></div>
+        <div class="field"><label for="rDate">Release date<span class="req">*</span></label><input class="input" type="date" id="rDate" value="${today()}" min="${today()}"><span class="hint">Today publishes now; a later date schedules it.</span></div>
+        <div class="field full"><label for="rNotes">Release notes<span class="req">*</span></label><textarea class="input" id="rNotes" maxlength="500" rows="3" placeholder="What changed for users"></textarea></div>
+        <label class="check full hidden" id="rMinBox"><input type="checkbox" id="rMin"> Make this the minimum supported version (older apps must update)</label>
+      </div>`,
+      foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="rSave" disabled>${icon('rocket')} Save release</button>`,
+      onMount: (el, close) => {
+        const chk = () => {
+          const c = CH($('#rCh', el).value), v = $('#rVer', el).value.trim(), err = $('#rVerErr', el);
+          const latest = S.releases.filter(r => r.channel === c.id && r.status !== 'Cancelled').map(r => r.version).concat([c.current]).sort(cmpVer).pop();
+          $('#rVerHint', el).textContent = 'Current v' + c.current + (latest !== c.current ? ' · latest planned v' + latest : '');
+          $('#rMinBox', el).classList.toggle('hidden', !MOBILE.includes(c.id));
+          let msg = '';
+          if (v && !SEMVER.test(v)) msg = 'Use the format 1.5.0.'; else if (v && cmpVer(v, latest) <= 0) msg = 'Must be higher than v' + latest + '.';
+          err.textContent = msg; err.classList.toggle('hidden', !msg);
+          $('#rSave', el).disabled = !v || !!msg || !$('#rDate', el).value || $('#rNotes', el).value.trim().length < 5;
+        };
+        $$('input, select, textarea', el).forEach(i => i.addEventListener('input', chk)); $('#rCh', el).addEventListener('change', chk); chk();
+        $('#rSave', el).addEventListener('click', () => {
+          const c = CH($('#rCh', el).value), v = $('#rVer', el).value.trim(), d = $('#rDate', el).value, now = d <= today();
+          const r = { id: uid('rl'), channel: c.id, version: v, build: $('#rBuild', el).value.trim(), date: d, status: now ? 'Live' : 'Scheduled', notes: $('#rNotes', el).value.trim(), by: who() };
+          if (now) { S.releases.filter(x => x.channel === c.id && x.status === 'Live').forEach(x => { x.status = 'Replaced'; }); c.current = v; c.releasedAt = d; if (r.build) c.build = r.build; }
+          if (MOBILE.includes(c.id) && $('#rMin', el).checked) { c.min = v; c.force = true; }
+          S.releases.unshift(r); save();
+          audit(now ? 'Release published' : 'Release scheduled', 'App Settings', { id: r.id, label: c.name + ' v' + v }, [['Version', now ? '' : c.current, v]]);
+          toast(now ? c.name + ' is now on v' + v + '.' : c.name + ' v' + v + ' scheduled for ' + fmtDate(d) + '.'); close(); drawVersions();
+        });
+      } });
+  }
+
+  /* =========================== Maintenance =========================== */
+  function drawMaint() {
+    const m = S.maintenance, st = UI.maintState('web');
+    const any = ['web', 'android', 'ios'].map(ch => UI.maintState(ch).status);
+    const stat = any.includes('active') ? ['active', 'b-err', 'Active now'] : any.includes('scheduled') ? ['scheduled', 'b-info', 'Scheduled'] : m.on && any.includes('ended') ? ['ended', 'b-neutral', 'Window ended'] : ['off', 'b-ok', 'Off'];
+    const roles = db.roles.filter(r => r.status === 'Active');
+    const SC = [['web', 'Staff web portal', 'monitor'], ['android', 'Patient app · Android', 'smartphone'], ['ios', 'Patient app · iOS', 'tablet-smartphone']];
+    $('#pane').innerHTML = `
+      <div class="grid g-side" style="align-items:start">
+        <div class="stack">
+          <div class="card"><div class="card-pad row" style="gap:16px;align-items:center;flex-wrap:wrap">
+            <span class="tile ${stat[0] === 'active' ? 't-rose' : stat[0] === 'scheduled' ? 't-sky' : 't-mint'}" style="width:46px;height:46px;border-radius:12px;display:grid;place-items:center">${icon('construction')}</span>
+            <div class="grow"><div class="row" style="gap:8px"><b>Maintenance mode</b><span class="badge ${stat[1]}">${stat[2]}</span></div>
+              <div class="small muted">${m.on ? `From ${esc(UI.fmtLocal(m.from))} to ${esc(UI.fmtLocal(m.to))}` : 'Everybody can sign in and work normally.'} · Last changed by ${esc(m.updatedBy || '-')}${m.updatedAt ? ', ' + esc(fmtDate(m.updatedAt)) : ''}</div></div>
+            ${canEdit ? (m.on ? `<button class="btn destructive" id="mOff">${icon('power')} Turn off</button>` : `<button class="btn" id="mNow">${icon('zap')} Start now for 1 hour</button>`) : ''}
+          </div></div>
+
+          <div class="card"><div class="card-head"><h3>${icon('settings-2')} Settings</h3></div><div class="card-pad">
+            <div class="form-grid">
+              <label class="row full" style="gap:12px;align-items:flex-start"><span class="grow"><b class="small">Maintenance mode on</b><div class="xs muted">With a start time in the future it is scheduled; users see a notice until it starts.</div></span><span class="switch"><input type="checkbox" id="mOn" ${m.on ? 'checked' : ''} ${canEdit ? '' : 'disabled'}><span></span></span></label>
+              <div class="field full"><label>Applies to<span class="req">*</span></label><div class="row" style="gap:16px;flex-wrap:wrap">${SC.map(([id, n]) => `<label class="check"><input type="checkbox" data-sc="${id}" ${(m.scope || []).includes(id) ? 'checked' : ''} ${canEdit ? '' : 'disabled'}> ${esc(n)}</label>`).join('')}</div></div>
+              <div class="field"><label for="mFrom">Starts<span class="req">*</span></label><input class="input" type="datetime-local" id="mFrom" value="${esc(m.from || '')}" ${canEdit ? '' : 'disabled'}></div>
+              <div class="field"><label for="mTo">Expected end<span class="req">*</span></label><input class="input" type="datetime-local" id="mTo" value="${esc(m.to || '')}" ${canEdit ? '' : 'disabled'}><span class="err-msg hidden" id="mToErr" style="color:var(--error);font-size:12px;font-weight:600">The end must be after the start.</span></div>
+              <div class="field full"><label for="mEn">Message (English)<span class="req">*</span></label><textarea class="input" id="mEn" rows="2" maxlength="240" ${canEdit ? '' : 'disabled'}>${esc(m.msgEn)}</textarea></div>
+              <div class="field full"><label for="mAr">Message (Arabic)</label><textarea class="input" id="mAr" rows="2" maxlength="240" dir="rtl" lang="ar" ${canEdit ? '' : 'disabled'}>${esc(m.msgAr)}</textarea></div>
+              <div class="field full"><label>Roles that keep working during maintenance</label><div class="row" style="gap:8px 16px;flex-wrap:wrap">${roles.map(r => `<label class="check"><input type="checkbox" data-ex="${r.id}" ${(m.exemptRoles || []).includes(r.id) ? 'checked' : ''} ${canEdit ? '' : 'disabled'}> ${esc(r.name)}</label>`).join('')}</div><span class="hint">Users without one of these roles see the maintenance screen on the web portal. Keep at least one administrator role.</span></div>
+            </div>
+            ${canEdit ? `<div class="row" style="justify-content:flex-end;gap:8px;margin-top:16px;border-top:1px solid var(--line);padding-top:14px"><span class="grow small muted" id="mLeft"></span><button class="btn" id="mReset" disabled>Discard</button><button class="btn primary" id="mSave" disabled>${icon('save')} Save</button></div>` : ''}
+          </div></div>
+        </div>
+
+        <div class="card" style="position:sticky;top:76px"><div class="card-head"><h3>${icon('eye')} What users see</h3></div><div class="card-pad stack">
+          <div class="maint-card" style="box-shadow:none;padding:20px 16px"><img src="${esc(UI.brandLogo())}" alt="" class="maint-logo" style="width:40px;height:40px;margin-bottom:10px"><div class="m-ico b-warn" style="width:40px;height:40px">${icon('construction')}</div><h1 style="font-size:18px">Under maintenance</h1><p class="small" id="pvEn"></p><p class="small maint-ar" dir="rtl" lang="ar" id="pvAr"></p><div class="maint-when" style="margin:6px 0 0">${icon('clock')}<span>Back: <b id="pvTo"></b></span></div></div>
+          <div class="xs muted" style="text-align:center">Web portal. The patient app shows the same message in the user's language.</div>
+        </div></div>
+      </div>`;
+
+    const read = () => ({ on: $('#mOn').checked, scope: $$('[data-sc]').filter(i => i.checked).map(i => i.dataset.sc), from: $('#mFrom').value, to: $('#mTo').value, msgEn: $('#mEn').value.trim(), msgAr: $('#mAr').value.trim(), exemptRoles: $$('[data-ex]').filter(i => i.checked).map(i => i.dataset.ex) });
+    const keyOf = (x) => JSON.stringify([x.on, x.scope, x.from, x.to, x.msgEn, x.msgAr, x.exemptRoles]);
+    const chk = () => {
+      const v = read();
+      $('#pvEn').textContent = v.msgEn || '—'; $('#pvAr').textContent = v.msgAr; $('#pvTo').textContent = UI.fmtLocal(v.to);
+      if (!$('#mSave')) return;
+      const badTime = v.from && v.to && v.to <= v.from;
+      $('#mToErr').classList.toggle('hidden', !badTime);
+      const missing = [!v.scope.length && 'where it applies', !v.from && 'start', !v.to && 'end', !v.msgEn && 'English message', !v.exemptRoles.length && 'an exempt role'].filter(Boolean);
+      $('#mLeft').textContent = missing.length ? 'Still needed: ' + missing.join(', ') + '.' : '';
+      const dirty = keyOf(v) !== keyOf(m);
+      $('#mSave').disabled = !dirty || !!missing.length || badTime; $('#mReset').disabled = !dirty;
+    };
+    $$('#pane input, #pane textarea').forEach(i => { i.addEventListener('input', chk); i.addEventListener('change', chk); });
+    chk();
+    const commit = (v, why) => {
+      const before = clone(m);
+      Object.assign(m, v, { updatedBy: who(), updatedAt: nowStamp() }); save();
+      const ch = [['Status', before.on ? 'On' : 'Off', v.on ? 'On' : 'Off'], ['Window', UI.fmtLocal(before.from) + ' – ' + UI.fmtLocal(before.to), UI.fmtLocal(v.from) + ' – ' + UI.fmtLocal(v.to)], ['Applies to', (before.scope || []).join(', '), v.scope.join(', ')]].filter(x => x[1] !== x[2]);
+      audit(v.on ? 'Maintenance mode set' : 'Maintenance mode turned off', 'App Settings', { id: 'maintenance', label: 'Maintenance mode' }, ch, why ? { reason: why } : {});
+      const s2 = UI.maintState('web').status;
+      toast(!v.on ? 'Maintenance mode is off.' : s2 === 'active' ? 'Maintenance mode is active. Users without an exempt role see the maintenance screen.' : 'Maintenance scheduled for ' + UI.fmtLocal(v.from) + '.');
+      location.reload();
+    };
+    const askAndSave = (v) => {
+      const startsNow = v.on && (!v.from || v.from <= new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16));
+      if (!startsNow) return commit(v);
+      const exemptNames = v.exemptRoles.map(id => (L.role(id) || {}).name).filter(Boolean);
+      confirm({ title: 'Start maintenance now?', body: 'People who are working now are stopped on their next action.', reason: true, confirm: 'Start maintenance',
+        impact: ['Applies to: ' + v.scope.map(s => SC.find(x => x[0] === s)[1]).join(', ') + '.', 'Only these roles keep working: ' + esc(exemptNames.join(', ')) + '.', 'Expected end: ' + esc(UI.fmtLocal(v.to)) + '.'],
+        onConfirm: (why) => commit(v, why) });
+    };
+    if ($('#mSave')) {
+      $('#mSave').addEventListener('click', () => askAndSave(read()));
+      $('#mReset').addEventListener('click', drawMaint);
+    }
+    const pad = (n) => String(n).padStart(2, '0'), loc = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    if ($('#mNow')) $('#mNow').addEventListener('click', () => { const n = new Date(); askAndSave(Object.assign(read(), { on: true, from: loc(n), to: loc(new Date(n.getTime() + 3600000)) })); });
+    if ($('#mOff')) $('#mOff').addEventListener('click', () => confirm({ title: 'Turn off maintenance mode?', body: 'Everybody can sign in and work again.', tone: 'primary', icon: 'power', confirm: 'Turn off', onConfirm: () => commit(Object.assign(read(), { on: false })) }));
+  }
+}
+</script>
+</body>
+</html>

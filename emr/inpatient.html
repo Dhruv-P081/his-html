@@ -4,7 +4,7 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Rounds and discharge · Tibbi Orbit</title>
 <link rel="stylesheet" href="../assets/styles.css">
-<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-emr.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/emr.js"></script>
+<script src="../assets/icons.js"></script><script src="../assets/data.js"></script><script src="../assets/data-core.js"></script><script src="../assets/data-settings.js"></script><script src="../assets/data-emr.js"></script><script src="../assets/ui.js"></script><script src="../assets/kit.js"></script><script src="../assets/emr.js"></script>
 </head>
 <body>
 <script>
@@ -53,7 +53,7 @@
   function tRounds(tb, p) {
     const notes = db.emrProgressNotes.filter(n => n.encounterId === cur.id).sort((a, b) => b.at.localeCompare(a.at));
     const v = EMR.vitalsOf(p.id).slice(-1)[0];
-    tb.innerHTML = `<div class="grid g2" style="align-items:start"><div>
+    tb.innerHTML = `<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(340px,1fr));align-items:start"><div>
         <div class="row" style="margin-bottom:8px"><b class="grow">${icon('notebook-pen')} New progress note</b><select class="input sm" id="pnTpl" style="width:auto" aria-label="Insert template"><option value="">Insert template</option>${db.emrNoteTemplates.filter(t => t.type === 'Progress').map(t => `<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select></div>
         <div class="soap">${[['s', 'S · Subjective'], ['o', 'O · Objective'], ['a', 'A · Assessment'], ['p', 'P · Plan']].map(([k, l]) => `<div><div class="s-l">${l}</div><textarea class="input" id="pn_${k}" aria-label="${l}" style="min-height:64px">${k === 'o' && v ? esc(`BP ${v.sbp}/${v.dbp}, HR ${v.hr}, T ${v.temp}, SpO2 ${v.spo2}%. `) : ''}</textarea></div>`).join('')}</div>
         <div class="row" style="margin-top:10px"><span class="small muted grow" id="pnHint">Assessment and plan are required.</span><button class="btn" id="pnDraft" disabled>Save draft</button><button class="btn primary" id="pnSign" disabled>${icon('file-signature')} Sign note</button></div></div>

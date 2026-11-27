@@ -95,14 +95,44 @@
 
   /* ---------- Cards and charts ---------- */
   /* kpi(label, value, { icon, foot, delta: '+4%' | '-2%' | '0', unit, tone }) */
+  const kLen = (v, u) => String(v).replace(/<[^>]*>/g, '').length + (u ? String(u).length * 0.55 : 0);
   function kpi(label, value, o) {
     o = o || {};
     const d = o.delta != null ? `<span class="delta ${String(o.delta).startsWith('-') ? (o.goodDown ? 'up' : 'down') : String(o.delta) === '0' ? 'flat' : (o.goodDown ? 'down' : 'up')}">${esc(o.delta)}</span>` : '';
-    return `<div class="card kpi"${o.href ? ` onclick="location.href='${o.href}'" style="cursor:pointer"` : ''}><div class="k-label">${o.icon ? icon(o.icon) : ''}${esc(label)}</div><div class="k-value">${value}${o.unit ? `<small>${esc(o.unit)}</small>` : ''}</div>${o.foot || d ? `<div class="k-foot">${d}${o.foot ? esc(o.foot) : ''}</div>` : ''}</div>`;
+    return `<div class="card kpi"${o.href ? ` onclick="location.href='${o.href}'" style="cursor:pointer"` : ''}><div class="k-label">${o.icon ? icon(o.icon) : ''}${esc(label)}</div><div class="k-value${kLen(value, o.unit) > 13 ? ' xl' : kLen(value, o.unit) > 9 ? ' l' : ''}">${value}${o.unit ? `<small>${esc(o.unit)}</small>` : ''}</div>${o.foot || d ? `<div class="k-foot">${d}${o.foot ? esc(o.foot) : ''}</div>` : ''}</div>`;
   }
   const PALETTE = ['#2F6BC5', '#0E9F6E', '#E0670E', '#7C4DDB', '#D23F6A', '#0891B2', '#B98900'];
   /* lineChart({ labels: [...], series: [{ name, color, values: [...] }], height, band: [lo, hi], min, max, unit }) */
+  /* Charts are drawn at the card's real width (see fitCharts below), so labels keep their
+   * normal size instead of shrinking with a fixed 820-unit viewBox. */
+  const CHARTS = [];
+  function fitWrap(render, o, svg, after) {
+    if (o.width) return svg + (after || '');
+    CHARTS.push({ render, o });
+    return `<div class="chart-fit" data-ck="${CHARTS.length - 1}">${svg}</div>${after || ''}`;
+  }
+  function fitCharts() {
+    document.querySelectorAll('.chart-fit').forEach(el => {
+      const c = CHARTS[+el.dataset.ck], w = Math.round(el.clientWidth);
+      if (!c || !w || +el.dataset.w === w) return;
+      el.dataset.w = w;
+      const o = Object.assign({}, c.o, { width: Math.max(260, w) });
+      el.innerHTML = c.render(o);
+    });
+  }
+  if (typeof ResizeObserver !== 'undefined') {
+    const ro = new ResizeObserver(() => fitCharts());
+    new MutationObserver(() => { document.querySelectorAll('.chart-fit:not([data-ro])').forEach(el => { el.dataset.ro = 1; ro.observe(el); }); fitCharts(); })
+      .observe(document.documentElement, { childList: true, subtree: true });
+  }
   function lineChart(o) {
+    const legend = o.series.length > 1 ? `<div class="legend" style="margin-top:6px">${o.series.map((s, si) => `<span><i style="background:${s.color || PALETTE[si % PALETTE.length]}"></i>${esc(s.name)}</span>`).join('')}</div>` : '';
+    return fitWrap(lineSvg, o, lineSvg(o), legend);
+  }
+  function barChart(o) { return fitWrap(barSvg, o, barSvg(o)); }
+  /* fitChart(render, o): any module chart drawn by render(o) at o.width follows the card width. */
+  function fitChart(render, o, after) { return fitWrap(render, o, render(o), after); }
+  function lineSvg(o) {
     const W = o.width || 820, H = o.height || 200, L = 36, Rr = 10, T = 12, B = 26;
     const all = o.series.reduce((a, s) => a.concat(s.values.filter(v => v != null)), []).concat(o.band || []);
     let min = o.min != null ? o.min : Math.min.apply(null, all), max = o.max != null ? o.max : Math.max.apply(null, all);
@@ -110,22 +140,22 @@
     const span = max - min; if (o.min == null) min -= span * 0.08; if (o.max == null) max += span * 0.08;
     const n = o.labels.length, x = (i) => L + (n <= 1 ? 0 : i * (W - L - Rr) / (n - 1)), y = (v) => T + (H - T - B) * (1 - (v - min) / (max - min));
     const ticks = 4, grid = Array.from({ length: ticks + 1 }, (_, i) => min + (max - min) * i / ticks);
-    const step = Math.max(1, Math.ceil(n / 8));
+    const step = Math.max(1, Math.ceil(n / Math.max(2, Math.min(8, Math.floor((W - L) / 64)))));
     return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(o.title || 'Trend chart')}">
       ${o.band ? `<rect x="${L}" y="${y(o.band[1])}" width="${W - L - Rr}" height="${Math.max(0, y(o.band[0]) - y(o.band[1]))}" fill="#0E9F6E" opacity=".07"/>` : ''}
       ${grid.map(g => `<line class="grid-l" x1="${L}" x2="${W - Rr}" y1="${y(g)}" y2="${y(g)}"/><text class="axis-t" x="${L - 6}" y="${y(g) + 3}" text-anchor="end">${Math.round(g * 10) / 10}</text>`).join('')}
       ${o.labels.map((lb, i) => i % step === 0 || i === n - 1 ? `<text class="axis-t" x="${x(i)}" y="${H - 8}" text-anchor="${i === 0 ? 'start' : i === n - 1 ? 'end' : 'middle'}">${esc(lb)}</text>` : '').join('')}
       ${o.series.map((s, si) => { const c = s.color || PALETTE[si % PALETTE.length]; const pts = s.values.map((v, i) => v == null ? null : [x(i), y(v)]).filter(Boolean);
         return `<path class="ln" stroke="${c}" d="${pts.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ')}"/>${pts.map(p => `<circle class="dot" cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="3.2" fill="${c}"/>`).join('')}`; }).join('')}
-    </svg>${o.series.length > 1 ? `<div class="legend" style="margin-top:6px">${o.series.map((s, si) => `<span><i style="background:${s.color || PALETTE[si % PALETTE.length]}"></i>${esc(s.name)}</span>`).join('')}</div>` : ''}`;
+    </svg>`;
   }
   /* barChart({ labels, values, height, color, unit }) vertical bars */
-  function barChart(o) {
+  function barSvg(o) {
     const W = o.width || 820, H = o.height || 190, L = 30, T = 10, B = 26, n = o.labels.length;
-    const raw = Math.max.apply(null, o.values.concat([1])) * 1.05, mag = Math.pow(10, Math.floor(Math.log10(raw))), max = [1, 2, 2.5, 5, 10].map(f => f * mag).find(v => v >= raw) || raw, bw = (W - L - 10) / n;
+    const raw = Math.max.apply(null, o.values.concat([1])) * 1.05, mag = Math.pow(10, Math.floor(Math.log10(raw))), max = [1, 2, 2.5, 5, 10].map(f => f * mag).find(v => v >= raw) || raw, bw = (W - L - 10) / n, bstep = Math.max(1, Math.ceil(n / Math.max(2, Math.floor((W - L) / 46))));
     return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(o.title || 'Bar chart')}">
       ${[0, 0.5, 1].map(f => `<line class="grid-l" x1="${L}" x2="${W - 10}" y1="${T + (H - T - B) * (1 - f)}" y2="${T + (H - T - B) * (1 - f)}"/><text class="axis-t" x="${L - 6}" y="${T + (H - T - B) * (1 - f) + 3}" text-anchor="end">${Math.round(max * f)}</text>`).join('')}
-      ${o.values.map((v, i) => { const h = (H - T - B) * v / max; return `<rect x="${L + i * bw + bw * 0.18}" y="${T + (H - T - B) - h}" width="${bw * 0.64}" height="${h}" rx="4" fill="${(o.colors && o.colors[i]) || o.color || '#2F6BC5'}"><title>${esc(o.labels[i])}: ${v}</title></rect><text class="axis-t" x="${L + i * bw + bw / 2}" y="${H - 8}" text-anchor="middle">${esc(o.labels[i])}</text>`; }).join('')}
+      ${o.values.map((v, i) => { const h = (H - T - B) * v / max; return `<rect x="${L + i * bw + bw * 0.18}" y="${T + (H - T - B) - h}" width="${bw * 0.64}" height="${h}" rx="4" fill="${(o.colors && o.colors[i]) || o.color || '#2F6BC5'}"><title>${esc(o.labels[i])}: ${v}</title></rect>${i % bstep === 0 ? `<text class="axis-t" x="${L + i * bw + bw / 2}" y="${H - 8}" text-anchor="middle">${esc(o.labels[i])}</text>` : ''}`; }).join('')}
     </svg>`;
   }
   /* barList([[label, value, tone?]], { max, fmt }) horizontal bars */
@@ -170,7 +200,7 @@
     const el = document.createElement('div');
     el.className = 'modal wide';
     el.innerHTML = `<div class="row" style="margin-bottom:12px"><h2 class="grow" style="margin:0">${esc(o.title)}</h2><button class="icon-btn" data-x aria-label="Close">${icon('x')}</button></div>
-      <div class="print-sheet" id="printArea"><div class="row" style="border-bottom:2px solid #16325C;padding-bottom:8px;margin-bottom:12px"><img src="${R('assets/brand/app_icon.png')}" alt="" style="width:34px;height:34px"><div class="grow"><b style="font-size:14px">${esc(br.name || 'Tibbi Orbit')}</b><div style="font-size:11px;color:#555">${esc(o.sub || '')}</div></div><div style="font-size:11px;color:#555;text-align:end">Printed ${esc(fmtDate(nowStamp()))}<br>by ${esc((me() || {}).displayName || '')}</div></div>${o.html}</div>
+      <div class="print-sheet" id="printArea"><div class="row" style="border-bottom:2px solid ${UI.themeColours((db.appSettings || {}).theme).primary};padding-bottom:8px;margin-bottom:12px"><img src="${esc(UI.brandLogo())}" alt="" style="width:34px;height:34px;object-fit:contain"><div class="grow"><b style="font-size:14px">${esc(br.name || UI.brandName())}</b><div style="font-size:11px;color:#555">${esc(o.sub || '')}</div></div><div style="font-size:11px;color:#555;text-align:end">Printed ${esc(fmtDate(nowStamp()))}<br>by ${esc((me() || {}).displayName || '')}</div></div>${o.html}</div>
       <div class="m-foot"><button class="btn" data-x>Close</button>${o.extra || ''}<button class="btn primary" data-p>${icon('printer')} Print</button></div>`;
     const scrim = document.createElement('div'); scrim.className = 'scrim';
     document.body.appendChild(scrim); document.body.appendChild(el);
@@ -279,6 +309,6 @@
   function groupBy(list, f) { return list.reduce((m, x) => { const k = f(x); (m[k] = m[k] || []).push(x); return m; }, {}); }
 
   window.Kit = { money, num, time, dt, day, when, minsSince, addDays, nextNo, by, pt, doc, enc, item, bed, ward, payer, plan, vendor, docName, ptName, age, sexAge, payerLabel, stockOf,
-    status, triage, priority, avatar, patientCell, patientBanner, pickPatient, kpi, lineChart, barChart, barList, donut, PALETTE, tabs, seg, scopeNote, phase2, printDoc, csv,
+    status, triage, priority, avatar, patientCell, patientBanner, pickPatient, kpi, lineChart, barChart, fitChart, barList, donut, PALETTE, tabs, seg, scopeNote, phase2, printDoc, csv,
     reportCatalog, masters, opts, sumBy, groupBy };
 })();

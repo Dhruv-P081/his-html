@@ -227,7 +227,7 @@
       foot: `<span class="small muted" id="rHint"></span><span class="grow"></span><button class="btn" data-close>Cancel</button><button class="btn primary" id="rSave" disabled>${icon('check')} ${isNew ? 'Register patient' : 'Save changes'}</button>`,
       onMount: (el, close) => {
         const g = (id) => $('#' + id, el);
-        const drawPhoto = () => { g('photo').innerHTML = v.hasPhoto ? `<div class="stack tight" style="text-align:center">${Kit.avatar({ name: g('rName').value || 'New', gender: g('rGender').value }, 'lg')}<span class="xs muted">Photo captured</span></div>` : `<div style="text-align:center" class="mute">${icon('user-round')}<div class="xs">No photo</div></div>`; $('#phBtn span', el).textContent = v.hasPhoto ? 'Retake photo' : 'Capture photo'; };
+        const drawPhoto = () => { g('photo').innerHTML = v.hasPhoto ? `<div class="stack tight" style="text-align:center">${Kit.avatar({ name: g('rName').value || 'New', gender: g('rGender').value }, 'lg')}<span class="xs muted">Photo captured</span></div>` : `<div style="text-align:center" class="mute">${icon('user-round')}<div class="xs">No photo</div></div>`; $('#phBtn span:not(.ico)', el).textContent = v.hasPhoto ? 'Retake photo' : 'Capture photo'; };
         g('phBtn').addEventListener('click', () => { v.hasPhoto = true; drawPhoto(); toast('Photo captured from the desk camera'); });
         const drawCov = () => {
           g('covBox').innerHTML = cov.length ? `<div class="table-wrap"><table class="tbl compact"><thead><tr><th>Rank</th><th>Payer</th><th>Plan</th><th>Policy no.</th><th>Member no.</th><th>Valid from</th><th>Valid to</th><th>Eligibility</th><th></th></tr></thead><tbody>

@@ -5,14 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Role editor · Tibbi Orbit</title>
 <link rel="stylesheet" href="assets/styles.css">
-<script src="assets/icons.js"></script><script src="assets/data.js"></script><script src="assets/data-core.js"></script><script src="assets/ui.js"></script>
+<script src="assets/icons.js"></script><script src="assets/data.js"></script><script src="assets/data-core.js"></script><script src="assets/data-settings.js"></script><script src="assets/ui.js"></script>
 </head>
 <body>
 <script>
 const { db, save, $, $$, icon, esc, page, can, badge, L, toast, audit, me, nowStamp, confirm, session, permsFor, historyDrawer } = UI;
 const OPT = 'admin.security.roles';
-const role = L.role(UI.param('id'));
-if (!role) location.replace('roles.html');
+/* Opened without an id (for example from the screen map): show the first editable role. */
+const role = L.role(UI.param('id')) || db.roles.find(r => !r.protected) || db.roles[0];
 const readOnly = !can(OPT, 'edit') || role.protected;
 const KEYS = db.ACTION_KEYS;
 // ROL-03 grant authority: Admin Access on Role Master grants everything; otherwise only what the editor holds in this context.

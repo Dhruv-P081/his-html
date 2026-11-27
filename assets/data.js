@@ -256,6 +256,8 @@
         { id: 'admin.security.roles', name: 'Role Master', acts: CRUD.concat(['approve', 'admin']), page: 'roles.html', icon: 'shield' },
         { id: 'admin.security.users', name: 'User Master', acts: CRUD.concat(['admin']), page: 'users.html', icon: 'users' },
         { id: 'admin.security.mapping', name: 'Access Mapping', acts: ['add', 'edit', 'view', 'cancel', 'approve'], page: 'access-mapping.html', icon: 'key-round' } ] },
+      { id: 'admin.system', name: 'System', opts: [
+        { id: 'admin.system.settings', name: 'App Settings', acts: ['view', 'edit', 'approve'], page: 'settings.html', icon: 'settings' } ] },
       { id: 'admin.reports', name: 'Reports and audit', opts: [
         { id: 'admin.reports.view', name: 'Administration Reports', acts: ['view', 'print'], page: 'reports.html', icon: 'chart-column' },
         { id: 'admin.reports.audit', name: 'Audit Log', acts: ['view'], page: 'audit.html', icon: 'history' } ] } ] },

@@ -8,7 +8,7 @@ A clickable design prototype of the Tibbi Orbit Hospital Information System staf
 
 ## Open it
 
-- Hosted: GitLab Pages. The `pages` job in `.gitlab-ci.yml` publishes the site on every push to `main`.
+- Hosted: GitHub Pages from the `main` branch root: <https://dhruv-p081.github.io/his-html/>
 - Locally: run `python3 -m http.server 8765` in this folder, then open <http://localhost:8765/index.html>.
 
 `index.html` is the screen map, and `home.html` is the portal launchpad.

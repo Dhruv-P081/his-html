@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Administration · Tibbi Orbit</title>
 <link rel="stylesheet" href="assets/styles.css">
-<script src="assets/icons.js"></script><script src="assets/data.js"></script><script src="assets/data-core.js"></script><script src="assets/ui.js"></script><script src="assets/kit.js"></script>
+<script src="assets/icons.js"></script><script src="assets/data.js"></script><script src="assets/data-core.js"></script><script src="assets/data-settings.js"></script><script src="assets/ui.js"></script><script src="assets/kit.js"></script>
 <style>
 .adm-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
 .adm-tile { flex-direction: row; align-items: center; gap: 14px; min-height: 0; padding: 16px 18px; }
@@ -36,6 +36,7 @@ if (page({ active: 'admin.html', title: 'Administration', crumbs: [['Home', 'hom
     ['admin.security.mapping', 'access-mapping.html', 'key-round', 't-mint', 'Access Mapping', 'Who can work where, with which role', db.assignments.filter(a => a.status === 'Active').length + ' active assignments'],
     ['admin.reports.view', 'reports.html', 'chart-column', 't-peach', 'Administration Reports', 'Access certification and setup reports', db.reports.length + ' reports'],
     ['admin.reports.audit', 'audit.html', 'history', 't-rose', 'Audit Log', 'Who changed what, when and why', db.audit.length + ' events'],
+    ['admin.system.settings', 'settings.html', 'settings', 't-sky', 'App Settings', 'Colours and logo, versions and maintenance mode', 'Web v' + ((db.appSettings.channels.find(c => c.id === 'web') || {}).current || '-') + (UI.maintState('web').status === 'active' ? ' · maintenance on' : '')],
   ].filter(c => can(c[0], 'view'));
   const attention = [];
   const exp = db.assignments.filter(a => a.status === 'Active' && a.to && a.to >= UI.today() && a.to <= '2026-12-31').length;

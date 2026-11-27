@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sign in · Tibbi Orbit</title>
 <link rel="stylesheet" href="assets/styles.css">
-<script src="assets/icons.js"></script><script src="assets/data.js"></script><script src="assets/data-core.js"></script><script src="assets/ui.js"></script>
+<script src="assets/icons.js"></script><script src="assets/data.js"></script><script src="assets/data-core.js"></script><script src="assets/data-settings.js"></script><script src="assets/ui.js"></script>
 </head>
 <body>
 <div class="auth">
@@ -27,6 +27,9 @@
 
 <script>
 const { db, save, $, $$, icon, esc, toast, audit, setSession, contextsFor, effectiveRule, passwordRules, pwField, bindEyes, L } = UI;
+/* Brand logo and name from Administration > App Settings. */
+document.querySelectorAll('.auth-art .brand img').forEach(i => { i.src = UI.brandLogo(); });
+document.querySelectorAll('.auth-art .brand b').forEach(b => { b.textContent = UI.brandName(); });
 $('#f1').innerHTML = icon('shield-check') + 'Access checked on every action';
 $('#f2').innerHTML = icon('building-2') + 'Company, branch and department aware';
 $('#f3').innerHTML = icon('history') + 'Every change is audited';
@@ -46,7 +49,8 @@ let pending = null; // user who passed the password step
 
 function viewLogin() {
   $('#card').innerHTML = `
-    <h2>Sign in</h2><p class="sub">Use your Tibbi Orbit staff account.</p>
+    <h2>Sign in</h2><p class="sub">Use your ${esc(UI.brandName())} staff account.</p>
+    ${(() => { const ms = UI.maintState('web'); return ms.status === 'active' ? `<div class="banner warn" style="margin-bottom:16px">${icon('construction')}<span><b>Under maintenance until ${esc(UI.fmtLocal(ms.m.to))}.</b> ${esc(ms.m.msgEn)} Only administrators can sign in.</span></div>` : ms.status === 'scheduled' ? `<div class="banner info" style="margin-bottom:16px">${icon('calendar-clock')}<span>Planned maintenance from ${esc(UI.fmtLocal(ms.m.from))} to ${esc(UI.fmtLocal(ms.m.to))}.</span></div>` : ''; })()}
     ${notice ? `<div class="banner ${notice[0]}" style="margin-bottom:16px">${icon(notice[1])}<span>${notice[2]}</span></div>` : ''}
     <div class="banner err hidden" id="authErr" role="alert">${icon('circle-alert')}<span>The username or password is not correct, or the account cannot sign in right now. Please try again or contact the IT Helpdesk.</span></div>
     <form class="stack" id="f" novalidate autocomplete="on" style="margin-top:14px">

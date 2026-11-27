@@ -5,14 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>User · Tibbi Orbit</title>
 <link rel="stylesheet" href="assets/styles.css">
-<script src="assets/icons.js"></script><script src="assets/data.js"></script><script src="assets/data-core.js"></script><script src="assets/ui.js"></script><script src="assets/mapping.js"></script>
+<script src="assets/icons.js"></script><script src="assets/data.js"></script><script src="assets/data-core.js"></script><script src="assets/data-settings.js"></script><script src="assets/ui.js"></script><script src="assets/mapping.js"></script>
 </head>
 <body>
 <script>
 const { db, save, $, $$, icon, esc, page, can, drawer, field, showErrors, badge, L, toast, audit, me, nowStamp, fmtDate, confirm, today, tupleText, assignmentUsable, historyDrawer } = UI;
 const OPT = 'admin.security.users';
-const u = L.user(UI.param('id'));
-if (!u) location.replace('users.html');
+/* Opened without an id (for example from the screen map): show the first user. */
+const u = L.user(UI.param('id')) || db.users[0];
 const canEdit = can(OPT, 'edit'), canAdmin = can(OPT, 'admin'), canMap = can('admin.security.mapping', 'add');
 const emp = u.empId ? L.emp(u.empId) : null;
 let tab = UI.param('tab') || 'profile';

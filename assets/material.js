@@ -225,16 +225,20 @@
 
   /* Grouped bar chart: groupBars({ labels, series: [{ name, color, values }], height, fmt }) */
   function groupBars(o) {
-    const W = 640, H = o.height || 200, Lm = 48, T = 10, B = 26, n = o.labels.length, k = o.series.length;
     const all = o.series.reduce((a, s) => a.concat(s.values), []);
     if (!all.some(v => v > 0)) return `<div class="empty">${icon('chart-column')}<b>No movement in this period</b><span>Receipts and issues of your stores will appear here.</span></div>`;
+    return K.fitChart(groupSvg, o, `<div class="legend" style="margin-top:6px">${o.series.map(s => `<span><i style="background:${s.color}"></i>${esc(s.name)}</span>`).join('')}</div>`);
+  }
+  function groupSvg(o) {
+    const W = o.width || 640, H = o.height || 200, Lm = 48, T = 10, B = 26, n = o.labels.length, k = o.series.length;
+    const all = o.series.reduce((a, s) => a.concat(s.values), []);
     const max = Math.max.apply(null, all.concat([1])) * 1.1, bw = (W - Lm - 10) / n, fmt = o.fmt || ((v) => K.num(v));
     const y = (v) => T + (H - T - B) * (1 - v / max);
-    const step = Math.max(1, Math.ceil(n / 8));
+    const step = Math.max(1, Math.ceil(n / Math.max(2, Math.min(8, Math.floor((W - Lm) / 56)))));
     return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(o.title || 'Bar chart')}">
       ${[0, 0.5, 1].map(f => `<line class="grid-l" x1="${Lm}" x2="${W - 10}" y1="${y(max * f)}" y2="${y(max * f)}"/><text class="axis-t" x="${Lm - 6}" y="${y(max * f) + 3}" text-anchor="end">${esc(fmt(max * f))}</text>`).join('')}
       ${o.labels.map((lb, i) => o.series.map((s, j) => { const v = s.values[i] || 0; const w = bw * 0.7 / k; const x = Lm + i * bw + bw * 0.15 + j * w; return v ? `<rect x="${x.toFixed(1)}" y="${y(v).toFixed(1)}" width="${(w - 1).toFixed(1)}" height="${(H - B - y(v)).toFixed(1)}" rx="3" fill="${s.color}"><title>${esc(s.name)} ${esc(lb)}: ${esc(fmt(v))}</title></rect>` : ''; }).join('') + ((i % step === 0 && n - 1 - i >= step) || i === n - 1 ? `<text class="axis-t" x="${Lm + i * bw + bw / 2}" y="${H - 8}" text-anchor="middle">${esc(lb)}</text>` : '')).join('')}
-    </svg><div class="legend" style="margin-top:6px">${o.series.map(s => `<span><i style="background:${s.color}"></i>${esc(s.name)}</span>`).join('')}</div>`;
+    </svg>`;
   }
 
   /* ---------- Small view helpers ---------- */

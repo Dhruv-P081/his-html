@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Module · Tibbi Orbit</title>
 <link rel="stylesheet" href="assets/styles.css">
-<script src="assets/icons.js"></script><script src="assets/data.js"></script><script src="assets/data-core.js"></script><script src="assets/ui.js"></script>
+<script src="assets/icons.js"></script><script src="assets/data.js"></script><script src="assets/data-core.js"></script><script src="assets/data-settings.js"></script><script src="assets/ui.js"></script>
 </head>
 <body>
 <script>
@@ -14,7 +14,8 @@ const s = session();
 const m = db.modules.find(x => x.id === param('m'));
 const perms = s && s.ctx ? permsFor(s.userId, s.ctx) : {};
 const allowed = m && m.subs.some(sb => sb.opts.some(o => (perms[o.id] || []).length));
-if (s && s.ctx && (!m || !allowed)) location.replace('access-denied.html?from=' + encodeURIComponent(m ? m.name : 'Module'));
+if (!m) location.replace('home.html');
+else if (s && s.ctx && !allowed) location.replace('access-denied.html?from=' + encodeURIComponent(m ? m.name : 'Module'));
 else if (page({ active: '', title: m.name, crumbs: [['Home', 'home.html'], [m.name]], subtitle: esc(m.desc), body: '' })) {
   $('#page').innerHTML = `<div class="banner info" style="margin-bottom:16px">${icon('info')}<span>Module screens are outside this FRD. This page shows which screens and actions your current context allows.</span></div>
   <div class="grid g2">${m.subs.map(sb => {
