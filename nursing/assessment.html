@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Nursing assessments · Tibbi Orbit</title>
-<link rel="stylesheet" href="../assets/styles.css?v=f4b6d878dc">
-<script src="../assets/icons.js?v=f4b6d878dc"></script><script src="../assets/data.js?v=f4b6d878dc"></script><script src="../assets/data-core.js?v=f4b6d878dc"></script><script src="../assets/data-settings.js?v=f4b6d878dc"></script><script src="../assets/i18n-ar.js?v=f4b6d878dc"></script><script src="../assets/i18n.js?v=f4b6d878dc"></script><script src="../assets/data-nursing.js?v=f4b6d878dc"></script><script src="../assets/ui.js?v=f4b6d878dc"></script><script src="../assets/kit.js?v=f4b6d878dc"></script><script src="../assets/nursing.js?v=f4b6d878dc"></script>
+<link rel="stylesheet" href="../assets/styles.css?v=23fe09aeec">
+<script src="../assets/icons.js?v=23fe09aeec"></script><script src="../assets/data.js?v=23fe09aeec"></script><script src="../assets/data-core.js?v=23fe09aeec"></script><script src="../assets/data-settings.js?v=23fe09aeec"></script><script src="../assets/i18n-ar.js?v=23fe09aeec"></script><script src="../assets/i18n.js?v=23fe09aeec"></script><script src="../assets/data-nursing.js?v=23fe09aeec"></script><script src="../assets/ui.js?v=23fe09aeec"></script><script src="../assets/kit.js?v=23fe09aeec"></script><script src="../assets/nursing.js?v=23fe09aeec"></script>
 <style>
   .score-box { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px; background: var(--raised); border: 1px solid var(--line); margin: 6px 0 14px; }
   .score-box b.sc { font-size: 22px; font-weight: 800; min-width: 34px; }
@@ -180,7 +180,7 @@
       ${(a.carePlan || []).length ? `<dt>Nursing diagnoses</dt><dd>${a.carePlan.map(c => esc(dxOf(c.diagnosisId).name)).join('; ')}</dd>` : ''}</dl>`;
     UI.drawer({ title: t.name, sub: esc(p.name) + ' · ' + esc(a.no), wide: true, body: html,
       foot: `<button class="btn" data-close>Close</button><button class="btn primary" id="vPr" ${canPrint ? '' : 'disabled title="Needs Print permission"'}>${icon('printer')} Print</button>`,
-      onMount: (el) => $('#vPr', el).addEventListener('click', () => Kit.printDoc({ title: t.name, sub: `${p.name} · ${p.mrn} · Bed ${Nursing.bedNo(e)} · ${e.no}`, html: html.replace(/<span class="badge[^>]*>/g, '<b>').replace(/<\/span>/g, '</b>') })) });
+      onMount: (el) => $('#vPr', el).addEventListener('click', () => Kit.printDoc({ title: t.name, sub: `${p.name} · ${p.mrn} · Bed ${Nursing.bedNo(e)} · ${e.no}`, html: html.replace(/<span class="badge[^>]*>/g, '<b>').replace(/<\/span>/g, '</b>') + Kit.signBlock('Assessed by (nurse)', 'Reviewed by (charge nurse)') })) });
   }
 
   /* ---------- Care plan ---------- */

@@ -102,7 +102,7 @@
       ${(iv.lines || []).map(l => `<tr><td>${esc(iv.no)}</td><td>${esc(l.desc)} x ${l.qty}</td><td style="text-align:end">${Kit.money(l.qty * l.price)}</td></tr>`).join('')}</tbody></table>
       <table style="margin-top:10px"><tr><td>Invoice total</td><td style="text-align:end">${Kit.money(iv.total)}</td></tr><tr><td>Payer share</td><td style="text-align:end">${Kit.money(iv.payerAmount)}</td></tr><tr><td>Patient share</td><td style="text-align:end">${Kit.money(iv.patientAmount)}</td></tr>
       <tr><td><b>Paid now (${esc(pay.mode)}${pay.ref ? ', ' + esc(pay.ref) : ''})</b></td><td style="text-align:end"><b>${Kit.money(pay.amount)}</b></td></tr><tr><td>Balance due</td><td style="text-align:end">${Kit.money(balance(iv))}</td></tr></table>
-      <div style="margin-top:14px;font-size:11px;color:#555">Cashier: ${esc(pay.by)}. Kuwait has no VAT in force; tax shown as 0.000.</div>` });
+      <div style="margin-top:14px;font-size:11px;color:#555">Cashier: ${esc(pay.by)}. Kuwait has no VAT in force; tax shown as 0.000.</div>${Kit.signBlock('Cashier', 'Received by')}` });
   }
 
   /* ---------- Invoices and cashier ---------- */
@@ -479,7 +479,7 @@
       <tr><td><b>Doctor</b></td><td>${esc(e ? Kit.docName(e.attendingId || e.doctorId) : '')}</td><td><b>Diagnosis</b></td><td>${esc(e ? e.reason || '' : '')}</td></tr></table>
       <p style="margin-top:12px">${surg ? 'I consent to the operation or procedure named above. The doctor explained the nature, the expected benefits, the material risks including bleeding, infection and anaesthesia risks, and the alternatives. I consent to anaesthesia and to blood transfusion if needed, unless I state otherwise below.' : 'I consent to admission to the hospital and to routine investigations, nursing care and treatment that the treating team considers necessary. I was told about the room rates, the payer coverage and my estimated share, and I agree to pay amounts not covered by my payer.'}</p>
       <p>Exceptions or refusals: ______________________________________________</p>
-      <table style="margin-top:18px"><tr><td style="height:46px;vertical-align:bottom">Patient or guardian signature</td><td style="vertical-align:bottom">Relation</td><td style="vertical-align:bottom">Doctor signature</td><td style="vertical-align:bottom">Witness</td></tr>
+      <table class="doc-sign" style="margin-top:18px"><tr><td style="height:46px;vertical-align:bottom">Patient or guardian signature</td><td style="vertical-align:bottom">Relation</td><td style="vertical-align:bottom">Doctor signature</td><td style="vertical-align:bottom">Witness</td></tr>
       <tr><td>Date and time: ____________</td><td></td><td>${esc(e ? Kit.docName(e.attendingId || e.doctorId) : '')}</td><td>${esc(myName())}</td></tr></table>`,
       extra: `<span class="grow"></span><span class="scope-note">${icon('info')} E-signature capture and email are subject to agreement</span>` });
     audit('Generated ' + (surg ? 'surgical' : 'admission') + ' consent', 'Encounter', { id: e ? e.id : p.id, label: (e ? e.no + ' ' : '') + p.name });

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Incident Case · Tibbi Orbit</title>
-<link rel="stylesheet" href="../assets/styles.css?v=f4b6d878dc">
+<link rel="stylesheet" href="../assets/styles.css?v=23fe09aeec">
 <style>
   .steps-row { display: flex; gap: 0; align-items: center; flex-wrap: wrap; }
   .steps-row .stp { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 700; color: var(--mute); }
@@ -15,7 +15,7 @@
   .itm { padding: 12px 18px; border-bottom: 1px solid var(--line); }
   .itm:last-child { border-bottom: 0; }
 </style>
-<script src="../assets/icons.js?v=f4b6d878dc"></script><script src="../assets/data.js?v=f4b6d878dc"></script><script src="../assets/data-core.js?v=f4b6d878dc"></script><script src="../assets/data-settings.js?v=f4b6d878dc"></script><script src="../assets/i18n-ar.js?v=f4b6d878dc"></script><script src="../assets/i18n.js?v=f4b6d878dc"></script><script src="../assets/data-incident.js?v=f4b6d878dc"></script><script src="../assets/ui.js?v=f4b6d878dc"></script><script src="../assets/kit.js?v=f4b6d878dc"></script><script src="../assets/incident.js?v=f4b6d878dc"></script>
+<script src="../assets/icons.js?v=23fe09aeec"></script><script src="../assets/data.js?v=23fe09aeec"></script><script src="../assets/data-core.js?v=23fe09aeec"></script><script src="../assets/data-settings.js?v=23fe09aeec"></script><script src="../assets/i18n-ar.js?v=23fe09aeec"></script><script src="../assets/i18n.js?v=23fe09aeec"></script><script src="../assets/data-incident.js?v=23fe09aeec"></script><script src="../assets/ui.js?v=23fe09aeec"></script><script src="../assets/kit.js?v=23fe09aeec"></script><script src="../assets/incident.js?v=23fe09aeec"></script>
 </head>
 <body>
 <script>
@@ -159,7 +159,7 @@
         ${c.decisions.length ? `<h4>Decisions</h4><ul>${c.decisions.map(d => `<li>${esc(d.text)} (${esc(d.by)})</li>`).join('')}</ul>` : ''}
         ${c.actions.length ? `<h4>Actions</h4><ul>${c.actions.map(a => `<li>${esc(a.text)}, ${esc(a.owner)}, due ${esc(a.due)}: ${esc(a.status)}</li>`).join('')}</ul>` : ''}
         ${c.status === 'Closed' ? `<h4>Closure</h4><p><b>${esc(c.outcome)}</b>. ${esc(c.closureSummary)}</p>` : ''}
-        <h4>History</h4><table><tbody>${c.history.map(h => `<tr><td>${esc(h.at)}</td><td>${esc(h.by)}</td><td>${esc(h.action)} ${esc(h.from ? h.from + ' → ' : '')}${esc(h.to)}</td><td>${esc(h.reason)}</td></tr>`).join('')}</tbody></table>` });
+        <h4>History</h4><table><tbody>${c.history.map(h => `<tr><td>${esc(h.at)}</td><td>${esc(h.by)}</td><td>${esc(h.action)} ${esc(h.from ? h.from + ' → ' : '')}${esc(h.to)}</td><td>${esc(h.reason)}</td></tr>`).join('')}</tbody></table>${Kit.signBlock('Investigated by', 'Quality and patient safety')}` });
     audit('Incident case printed', 'Incident', { id: c.id, label: c.no }, []);
   }
   draw();

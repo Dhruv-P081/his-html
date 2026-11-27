@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>IPD medication orders · Tibbi Orbit</title>
-<link rel="stylesheet" href="../assets/styles.css?v=f4b6d878dc">
-<script src="../assets/icons.js?v=f4b6d878dc"></script><script src="../assets/data.js?v=f4b6d878dc"></script><script src="../assets/data-core.js?v=f4b6d878dc"></script><script src="../assets/data-settings.js?v=f4b6d878dc"></script><script src="../assets/i18n-ar.js?v=f4b6d878dc"></script><script src="../assets/i18n.js?v=f4b6d878dc"></script><script src="../assets/data-pharmacy.js?v=f4b6d878dc"></script><script src="../assets/ui.js?v=f4b6d878dc"></script><script src="../assets/kit.js?v=f4b6d878dc"></script><script src="../assets/pharmacy.js?v=f4b6d878dc"></script>
+<link rel="stylesheet" href="../assets/styles.css?v=23fe09aeec">
+<script src="../assets/icons.js?v=23fe09aeec"></script><script src="../assets/data.js?v=23fe09aeec"></script><script src="../assets/data-core.js?v=23fe09aeec"></script><script src="../assets/data-settings.js?v=23fe09aeec"></script><script src="../assets/i18n-ar.js?v=23fe09aeec"></script><script src="../assets/i18n.js?v=23fe09aeec"></script><script src="../assets/data-pharmacy.js?v=23fe09aeec"></script><script src="../assets/ui.js?v=23fe09aeec"></script><script src="../assets/kit.js?v=23fe09aeec"></script><script src="../assets/pharmacy.js?v=23fe09aeec"></script>
 <style>
   .bedrow { display: grid; grid-template-columns: 84px minmax(0, 1.1fr) minmax(0, 2fr); gap: 14px; padding: 12px 18px; border-bottom: 1px solid var(--line); align-items: start; }
   .bedrow:last-child { border-bottom: 0; }
@@ -77,7 +77,7 @@
   $('#prSup').addEventListener('click', () => {
     const due = orders().filter(o => P.ipdState(o) === 'Due for supply');
     Kit.printDoc({ title: 'Ward supply list', sub: `Due for supply · ${Kit.day(T)} · Inpatient Pharmacy`,
-      html: `<table><thead><tr><th>Ward</th><th>Bed</th><th>Patient</th><th>Medication</th><th>Dose</th><th>Frequency</th><th>Packed</th></tr></thead><tbody>${due.map(o => { const b = Kit.bed((Kit.enc(o.encounterId) || {}).bedId) || {}; return `<tr><td>${esc((Kit.ward(b.wardId) || {}).code || '')}</td><td>${esc(b.no || '')}</td><td>${esc(Kit.ptName(o.patientId))}</td><td>${esc(o.name)}</td><td>${esc(o.dose)}</td><td>${esc(o.frequency)}</td><td>☐</td></tr>`; }).join('')}</tbody></table>` });
+      html: `<table><thead><tr><th>Ward</th><th>Bed</th><th>Patient</th><th>Medication</th><th>Dose</th><th>Frequency</th><th>Packed</th></tr></thead><tbody>${due.map(o => { const b = Kit.bed((Kit.enc(o.encounterId) || {}).bedId) || {}; return `<tr><td>${esc((Kit.ward(b.wardId) || {}).code || '')}</td><td>${esc(b.no || '')}</td><td>${esc(Kit.ptName(o.patientId))}</td><td>${esc(o.name)}</td><td>${esc(o.dose)}</td><td>${esc(o.frequency)}</td><td>☐</td></tr>`; }).join('')}</tbody></table>${Kit.signBlock('Issued by (pharmacy)', 'Received by (ward)')}` });
   });
 })();
 </script>

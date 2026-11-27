@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Progress notes · Tibbi Orbit</title>
-<link rel="stylesheet" href="../assets/styles.css?v=f4b6d878dc">
-<script src="../assets/icons.js?v=f4b6d878dc"></script><script src="../assets/data.js?v=f4b6d878dc"></script><script src="../assets/data-core.js?v=f4b6d878dc"></script><script src="../assets/data-settings.js?v=f4b6d878dc"></script><script src="../assets/i18n-ar.js?v=f4b6d878dc"></script><script src="../assets/i18n.js?v=f4b6d878dc"></script><script src="../assets/data-nursing.js?v=f4b6d878dc"></script><script src="../assets/ui.js?v=f4b6d878dc"></script><script src="../assets/kit.js?v=f4b6d878dc"></script><script src="../assets/nursing.js?v=f4b6d878dc"></script>
+<link rel="stylesheet" href="../assets/styles.css?v=23fe09aeec">
+<script src="../assets/icons.js?v=23fe09aeec"></script><script src="../assets/data.js?v=23fe09aeec"></script><script src="../assets/data-core.js?v=23fe09aeec"></script><script src="../assets/data-settings.js?v=23fe09aeec"></script><script src="../assets/i18n-ar.js?v=23fe09aeec"></script><script src="../assets/i18n.js?v=23fe09aeec"></script><script src="../assets/data-nursing.js?v=23fe09aeec"></script><script src="../assets/ui.js?v=23fe09aeec"></script><script src="../assets/kit.js?v=23fe09aeec"></script><script src="../assets/nursing.js?v=23fe09aeec"></script>
 <style>
   .day-h { font-size: 12px; font-weight: 800; color: var(--mute); text-transform: uppercase; letter-spacing: .05em; margin: 18px 0 8px; }
   .day-h:first-child { margin-top: 0; }
@@ -42,7 +42,7 @@
         <div class="card-pad">${list.length ? Object.keys(groups).sort().reverse().map(d => `<div class="day-h">${Kit.day(d)}${d === curDay ? ' · current nursing day' : ''}</div>${groups[d].map(noteHtml).join('')}`).join('') : `<div class="empty">${icon('notebook-pen')}<b>No notes</b><span>Add the first progress note for this shift.</span></div>`}</div></div>`;
     Kit.seg($('#sf', host), [['all', 'All shifts'], ['Morning', 'Morning'], ['Evening', 'Evening'], ['Night', 'Night']], shiftF, (v) => { shiftF = v; render(e, host); });
     $('#addN', host).addEventListener('click', () => edit(e, null));
-    $('#prN', host).addEventListener('click', () => Kit.printDoc({ title: 'Nursing progress notes', sub: `${p.name} · ${p.mrn} · Bed ${Nursing.bedNo(e)} · ${e.no}`, html: all.map(n => `<div style="border-bottom:1px solid #ddd;padding:8px 0"><b>${esc(Kit.day(n.date))} · ${esc(n.shift)} shift · ${esc(n.type)}</b> <span style="color:#555">${esc(n.at)} · ${esc(n.by)}</span><div><b>D:</b> ${esc(n.data)}</div>${n.action ? `<div><b>A:</b> ${esc(n.action)}</div>` : ''}${n.response ? `<div><b>R:</b> ${esc(n.response)}</div>` : ''}${(n.addenda || []).map(a => `<div style="color:#555"><i>Addendum ${esc(a.at)} ${esc(a.by)}:</i> ${esc(a.text)}</div>`).join('')}</div>`).join('') }));
+    $('#prN', host).addEventListener('click', () => Kit.printDoc({ title: 'Nursing progress notes', sub: `${p.name} · ${p.mrn} · Bed ${Nursing.bedNo(e)} · ${e.no}`, html: all.map(n => `<div style="border-bottom:1px solid #ddd;padding:8px 0"><b>${esc(Kit.day(n.date))} · ${esc(n.shift)} shift · ${esc(n.type)}</b> <span style="color:#555">${esc(n.at)} · ${esc(n.by)}</span><div><b>D:</b> ${esc(n.data)}</div>${n.action ? `<div><b>A:</b> ${esc(n.action)}</div>` : ''}${n.response ? `<div><b>R:</b> ${esc(n.response)}</div>` : ''}${(n.addenda || []).map(a => `<div style="color:#555"><i>Addendum ${esc(a.at)} ${esc(a.by)}:</i> ${esc(a.text)}</div>`).join('')}</div>`).join('') + Kit.signBlock('Nurse in charge') }));
     $$('[data-edit]', host).forEach(b => b.addEventListener('click', () => edit(e, db.nursingNotes.find(n => n.id === b.dataset.edit))));
     $$('[data-add]', host).forEach(b => b.addEventListener('click', () => addendum(e, db.nursingNotes.find(n => n.id === b.dataset.add))));
   }

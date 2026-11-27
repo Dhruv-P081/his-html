@@ -64,7 +64,7 @@
       ${r.critical ? `<div style="margin-top:10px;padding:8px 10px;border:1px solid #C0261B;border-radius:6px;color:#C0261B;font-weight:700">Critical finding: ${esc(r.criticalText || '')}</div>` : ''}
       ${block('CLINICAL INFORMATION', o.notes || window.Kit.enc(o.encounterId) && window.Kit.enc(o.encounterId).complaint || '')}${block('TECHNIQUE', r.technique)}${block('FINDINGS', r.findings)}${block('IMPRESSION', r.impression)}
       ${r.attachment ? `<div style="margin-top:8px;font-size:11px;color:#555">Attachment: ${esc(r.attachment.name)}</div>` : ''}
-      <div style="display:flex;justify-content:space-between;gap:16px;margin-top:22px;padding-top:10px;border-top:1px solid #ccc;font-size:11.5px">
+      <div class="doc-sign" style="display:flex;justify-content:space-between;gap:16px;margin-top:22px;padding-top:10px;border-top:1px solid #ccc;font-size:11.5px">
         <div>Reported by: <b>${esc(r.author || '-')}</b><br>Verified by: <b>${esc(r.verifiedBy || '-')}</b></div>
         <div style="text-align:end">${final ? `<span style="font-family:'Brush Script MT',cursive;font-size:20px;color:#16325C">${esc((r.approvedBy || '').replace(/^Dr\.\s*/, ''))}</span><br>Electronically signed by <b>${esc(r.signature || r.approvedBy || '')}</b><br>${esc(fmtDate(r.approvedAt || ''))}` : '<b style="color:#A55A06">Awaiting radiologist approval</b>'}</div></div>
       <div style="margin-top:10px;font-size:10px;color:#777">Images are available in the hospital PACS. Electronically signed reports are valid without a handwritten signature.</div>`;

@@ -194,14 +194,44 @@
   /* ---------- Notes, scope and print ---------- */
   function scopeNote(text, ref) { return `<span class="scope-note">${icon('info')}${esc(text)}${ref ? ` <span class="req-ref">${esc(ref)}</span>` : ''}</span>`; }
   function phase2(text) { return `<div class="banner info">${icon('calendar-clock')}<span>${esc(text || 'This function is in the SOW V4 2nd phase scope. Shown for context only.')}</span></div>`; }
-  /* printDoc({ title, sub, html }) shows a printable document (label, wristband, report, receipt). */
+  /* printDoc({ title, sub, html, a4 }) shows a printable document (label, wristband, report, receipt).
+   * Documents print on A4. The signature and sign-off lines (the trailing blocks that mention
+   * "signed", "signature", "prepared by", "approved by" ...) always sit at the bottom of the page.
+   * Labels, wristbands, cards and tokens keep their own small size. */
+  const SMALL_DOC = /label|wristband|patient card|token/i;
+  /* signBlock('Prepared by', 'Approved by', ...) - signature lines for a printed document.
+   * printDoc always places it at the bottom of the A4 page. */
+  function signBlock(...labels) {
+    return `<div class="doc-sign" style="display:flex;gap:32px;margin-top:36px;font-size:11px;color:#555;break-inside:avoid">${labels.map(l => `<div style="flex:1;min-width:0"><div style="height:30px"></div><div style="border-top:1px solid #999;padding-top:4px">${esc(l)}</div><div style="margin-top:2px;color:#888">Signature and date</div></div>`).join('')}</div>`;
+  }
+  const SIGN_RE = /signed|signature|prepared by|approved by|received by|checked by|verified by|authori[sz]ed|reported by|performed by|witness|stamp/i;
   function printDoc(o) {
     const br = window.UI.L.branch((window.UI.session() || {}).ctx ? window.UI.session().ctx.branchId : '') || {};
+    const a4 = o.a4 != null ? o.a4 : !SMALL_DOC.test(o.title || '');
     const el = document.createElement('div');
     el.className = 'modal wide';
     el.innerHTML = `<div class="row" style="margin-bottom:12px"><h2 class="grow" style="margin:0">${esc(o.title)}</h2><button class="icon-btn" data-x aria-label="Close">${icon('x')}</button></div>
-      <div class="print-sheet" id="printArea"><div class="row" style="border-bottom:2px solid ${UI.themeColours((db.appSettings || {}).theme).primary};padding-bottom:8px;margin-bottom:12px"><img src="${esc(UI.brandLogo())}" alt="" style="width:34px;height:34px;object-fit:contain"><div class="grow"><b style="font-size:14px">${esc(br.name || UI.brandName())}</b><div style="font-size:11px;color:#555">${esc(o.sub || '')}</div></div><div style="font-size:11px;color:#555;text-align:end">Printed ${esc(fmtDate(nowStamp()))}<br>by ${esc((me() || {}).displayName || '')}</div></div>${o.html}</div>
+      <div class="print-sheet ${a4 ? 'a4' : ''}" id="printArea"><div class="row pd-head" style="border-bottom:2px solid ${UI.themeColours((db.appSettings || {}).theme).primary};padding-bottom:8px;margin-bottom:12px"><img src="${esc(UI.brandLogo())}" alt="" style="width:34px;height:34px;object-fit:contain"><div class="grow"><b style="font-size:14px">${esc(br.name || UI.brandName())}</b><div style="font-size:11px;color:#555">${esc(o.sub || '')}</div></div><div style="font-size:11px;color:#555;text-align:end">Printed ${esc(fmtDate(nowStamp()))}<br>by ${esc((me() || {}).displayName || '')}</div></div><div class="pd-body">${o.html}</div></div>
       <div class="m-foot"><button class="btn" data-x>Close</button>${o.extra || ''}<button class="btn primary" data-p>${icon('printer')} Print</button></div>`;
+    if (a4) {
+      // Move the signature / sign-off block, and any small notes after it, into a footer pinned to the bottom of the page.
+      // Marked blocks (class "doc-sign", see signBlock) win; otherwise the last short block that reads like a sign-off.
+      const body = $('.pd-body', el), kids = Array.from(body.children);
+      let start = -1;
+      const marked = body.querySelector('.doc-sign');
+      if (marked) { let top = marked; while (top.parentElement !== body) top = top.parentElement; start = kids.indexOf(top); }
+      else {
+        for (let i = kids.length - 1; i >= Math.max(1, kids.length - 2); i--) {
+          const k = kids[i], t = k.textContent || '';
+          if (!k.querySelector('table, ul, ol, h1, h2, h3, h4') && t.length < 400 && SIGN_RE.test(t)) start = i;
+        }
+      }
+      if (start > 0 || (start === 0 && marked && kids.length > 1 && kids[0] !== marked)) {
+        const foot = document.createElement('div'); foot.className = 'pd-foot';
+        if (start === 0) { foot.appendChild(marked); } else kids.slice(start).forEach(k => foot.appendChild(k));
+        $('#printArea', el).appendChild(foot);
+      }
+    }
     const scrim = document.createElement('div'); scrim.className = 'scrim';
     document.body.appendChild(scrim); document.body.appendChild(el);
     const close = () => { scrim.remove(); el.remove(); };
@@ -209,8 +239,26 @@
     $('[data-p]', el).addEventListener('click', () => {
       const w = window.open('', '_blank', 'width=900,height=700');
       if (!w) { toast('Allow pop-ups to print.', 'err'); return; }
-      w.document.write(`<html><head><title>${esc(o.title)}</title><style>body{font-family:Manrope,Arial,sans-serif;font-size:12.5px;color:#111;padding:24px}table{width:100%;border-collapse:collapse}td,th{border-bottom:1px solid #ddd;padding:6px;text-align:start}img{max-width:40px}</style></head><body>${$('#printArea', el).innerHTML}</body></html>`);
-      w.document.close(); w.focus(); w.print();
+      // Same fonts as the portal (Arabic included); image paths made absolute for the new window.
+      const area = $('#printArea', el).cloneNode(true);
+      area.querySelectorAll('img').forEach(i => { i.setAttribute('src', i.src); });
+      const faces = [];
+      Array.from(document.styleSheets).forEach(s => { try { Array.from(s.cssRules).forEach(r => { if (r.type === CSSRule.FONT_FACE_RULE) faces.push(r.cssText.replace(/url\("?([^")]+)"?\)/g, (m, u) => `url("${new URL(u, s.href || location.href).href}")`)); }); } catch (e) { /* other origin */ } });
+      const html = document.documentElement;
+      w.document.write(`<html lang="${html.lang || 'en'}" dir="${html.dir || 'ltr'}"><head><title>${esc($('h2', el).textContent || o.title)}</title><style>${faces.join('\n')}
+        body{font-family:Manrope,"IBM Plex Sans Arabic",Arial,sans-serif;font-size:12.5px;color:#111;margin:0}
+        table{width:100%;border-collapse:collapse}td,th{border-bottom:1px solid #ddd;padding:6px;text-align:start}.pd-head img{max-width:40px}
+        .row{display:flex;align-items:center;gap:10px}.grow{flex:1;min-width:0}
+        ${a4 ? `@page{size:A4;margin:14mm}
+        .sheet{display:flex;flex-direction:column;min-height:calc(297mm - 28mm - 1px)}
+        .pd-body{flex:1 0 auto}.pd-foot{margin-top:auto;padding-top:16px;break-inside:avoid}
+        @media screen{body{background:#eef1f5}.sheet{width:210mm;min-height:297mm;box-sizing:border-box;padding:14mm;margin:12px auto;background:#fff;box-shadow:0 2px 10px rgba(0,0,0,.15)}}` : 'body{padding:16px}'}
+        </style></head><body><div class="sheet">${area.innerHTML}</div></body></html>`);
+      w.document.close(); w.focus();
+      // Print once the fonts (Manrope, IBM Plex Sans Arabic) have loaded, otherwise the page prints in a fallback font.
+      let done = false; const go = () => { if (!done) { done = true; w.print(); } };
+      setTimeout(() => { try { w.document.fonts.ready.then(go, go); } catch (e) { go(); } }, 60);
+      setTimeout(go, 2500);
     });
     return close;
   }
@@ -309,6 +357,6 @@
   function groupBy(list, f) { return list.reduce((m, x) => { const k = f(x); (m[k] = m[k] || []).push(x); return m; }, {}); }
 
   window.Kit = { money, num, time, dt, day, when, minsSince, addDays, nextNo, by, pt, doc, enc, item, bed, ward, payer, plan, vendor, docName, ptName, age, sexAge, payerLabel, stockOf,
-    status, triage, priority, avatar, patientCell, patientBanner, pickPatient, kpi, lineChart, barChart, fitChart, barList, donut, PALETTE, tabs, seg, scopeNote, phase2, printDoc, csv,
+    status, triage, priority, avatar, patientCell, patientBanner, pickPatient, kpi, lineChart, barChart, fitChart, barList, donut, PALETTE, tabs, seg, scopeNote, phase2, printDoc, signBlock, csv,
     reportCatalog, masters, opts, sumBy, groupBy };
 })();

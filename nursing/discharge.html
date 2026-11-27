@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Discharge planning · Tibbi Orbit</title>
-<link rel="stylesheet" href="../assets/styles.css?v=f4b6d878dc">
-<script src="../assets/icons.js?v=f4b6d878dc"></script><script src="../assets/data.js?v=f4b6d878dc"></script><script src="../assets/data-core.js?v=f4b6d878dc"></script><script src="../assets/data-settings.js?v=f4b6d878dc"></script><script src="../assets/i18n-ar.js?v=f4b6d878dc"></script><script src="../assets/i18n.js?v=f4b6d878dc"></script><script src="../assets/data-nursing.js?v=f4b6d878dc"></script><script src="../assets/ui.js?v=f4b6d878dc"></script><script src="../assets/kit.js?v=f4b6d878dc"></script><script src="../assets/nursing.js?v=f4b6d878dc"></script>
+<link rel="stylesheet" href="../assets/styles.css?v=23fe09aeec">
+<script src="../assets/icons.js?v=23fe09aeec"></script><script src="../assets/data.js?v=23fe09aeec"></script><script src="../assets/data-core.js?v=23fe09aeec"></script><script src="../assets/data-settings.js?v=23fe09aeec"></script><script src="../assets/i18n-ar.js?v=23fe09aeec"></script><script src="../assets/i18n.js?v=23fe09aeec"></script><script src="../assets/data-nursing.js?v=23fe09aeec"></script><script src="../assets/ui.js?v=23fe09aeec"></script><script src="../assets/kit.js?v=23fe09aeec"></script><script src="../assets/nursing.js?v=23fe09aeec"></script>
 <style>
   .ck { display: flex; gap: 12px; align-items: flex-start; padding: 14px 18px; border-bottom: 1px solid var(--line); }
   .ck:last-child { border-bottom: 0; }
@@ -116,7 +116,7 @@
   function print(e, d) {
     const p = Kit.pt(e.patientId);
     Kit.printDoc({ title: 'Discharge planning checklist', sub: `${p.name} · ${p.mrn} · Bed ${Nursing.bedNo(e)} · ${e.no}`,
-      html: `<p>Planned discharge <b>${esc(Kit.day(d.plannedDate))}</b> · ${esc(Kit.docName(e.doctorId))} · ${esc(e.reason)}</p><table><thead><tr><th>Item</th><th>Status</th><th>By</th><th>Details</th></tr></thead><tbody>${ITEMS.map(([k, t]) => { const it = d.items[k] || {}; return `<tr><td>${esc(t)}</td><td>${it.done ? 'Done' : 'Open'}</td><td>${esc(it.by || '')} ${esc(it.at || '')}</td><td>${esc([(it.topics || []).join(', '), it.date, it.mode, it.note].filter(Boolean).join(' · '))}</td></tr>`; }).join('')}<tr><td>Billing clearance</td><td>${esc(e.clearance || 'Pending')}</td><td></td><td></td></tr></tbody></table>${d.signedBy ? `<p>Nursing sign-off: <b>${esc(d.signedBy)}</b> at ${esc(d.signedAt)}</p>` : '<p>Nursing sign-off: ______________________</p>'}` });
+      html: `<p>Planned discharge <b>${esc(Kit.day(d.plannedDate))}</b> · ${esc(Kit.docName(e.doctorId))} · ${esc(e.reason)}</p><table><thead><tr><th>Item</th><th>Status</th><th>By</th><th>Details</th></tr></thead><tbody>${ITEMS.map(([k, t]) => { const it = d.items[k] || {}; return `<tr><td>${esc(t)}</td><td>${it.done ? 'Done' : 'Open'}</td><td>${esc(it.by || '')} ${esc(it.at || '')}</td><td>${esc([(it.topics || []).join(', '), it.date, it.mode, it.note].filter(Boolean).join(' · '))}</td></tr>`; }).join('')}<tr><td>Billing clearance</td><td>${esc(e.clearance || 'Pending')}</td><td></td><td></td></tr></tbody></table>${d.signedBy ? `<p class="doc-sign">Nursing sign-off: <b>${esc(d.signedBy)}</b> at ${esc(d.signedAt)}</p>` : '<p class="doc-sign">Nursing sign-off: ______________________</p>'}` });
   }
 })();
 </script>

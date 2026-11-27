@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Controlled drug register · Tibbi Orbit</title>
-<link rel="stylesheet" href="../assets/styles.css?v=f4b6d878dc">
-<script src="../assets/icons.js?v=f4b6d878dc"></script><script src="../assets/data.js?v=f4b6d878dc"></script><script src="../assets/data-core.js?v=f4b6d878dc"></script><script src="../assets/data-settings.js?v=f4b6d878dc"></script><script src="../assets/i18n-ar.js?v=f4b6d878dc"></script><script src="../assets/i18n.js?v=f4b6d878dc"></script><script src="../assets/data-pharmacy.js?v=f4b6d878dc"></script><script src="../assets/ui.js?v=f4b6d878dc"></script><script src="../assets/kit.js?v=f4b6d878dc"></script><script src="../assets/pharmacy.js?v=f4b6d878dc"></script>
+<link rel="stylesheet" href="../assets/styles.css?v=23fe09aeec">
+<script src="../assets/icons.js?v=23fe09aeec"></script><script src="../assets/data.js?v=23fe09aeec"></script><script src="../assets/data-core.js?v=23fe09aeec"></script><script src="../assets/data-settings.js?v=23fe09aeec"></script><script src="../assets/i18n-ar.js?v=23fe09aeec"></script><script src="../assets/i18n.js?v=23fe09aeec"></script><script src="../assets/data-pharmacy.js?v=23fe09aeec"></script><script src="../assets/ui.js?v=23fe09aeec"></script><script src="../assets/kit.js?v=23fe09aeec"></script><script src="../assets/pharmacy.js?v=23fe09aeec"></script>
 </head>
 <body>
 <script>
@@ -102,7 +102,7 @@
     const it = Kit.item(itemId), es = P.cdEntries(itemId, wh);
     Kit.printDoc({ title: 'Controlled drug register', sub: `${it.name} (${it.brand}) · ${it.schedule} · ${P.WH_NAME[wh]}`,
       html: `<table><thead><tr><th>Date</th><th>Movement</th><th>Reference</th><th>In</th><th>Out</th><th>Balance</th><th>By</th><th>Witness</th><th>Verified</th></tr></thead><tbody>${es.map(e => `<tr><td>${esc(Kit.day(e.at))} ${esc(Kit.time(e.at))}</td><td>${esc(e.type)}</td><td>${esc(e.ref)}${e.patientId ? ' · ' + esc(Kit.ptName(e.patientId)) : ''}</td><td>${e.sign > 0 ? e.qty : ''}</td><td>${e.sign < 0 ? e.qty : ''}</td><td><b>${e.balance}</b></td><td>${esc(e.by)}</td><td>${esc(e.witness)}</td><td>${esc(e.verifiedBy || '')}</td></tr>`).join('')}</tbody></table>
-        <div style="margin-top:24px;display:flex;gap:60px"><div>Pharmacist in charge: ____________________</div><div>Date: ____________</div></div>` });
+        <div class="doc-sign" style="margin-top:24px;display:flex;gap:60px"><div>Pharmacist in charge: ____________________</div><div>Date: ____________</div></div>` });
   });
 })();
 </script>

@@ -802,3 +802,9 @@ table.tbl { width: 100%; border-collapse: separate; border-spacing: 0; }
 [dir="rtl"] .mono, [dir="rtl"] kbd { unicode-bidi: isolate; }
 [dir="rtl"] input[type="email"], [dir="rtl"] input[type="tel"], [dir="rtl"] input[type="url"], [dir="rtl"] input[type="number"] { direction: ltr; text-align: right; }
 @media (max-width: 1100px) { [dir="rtl"] .side { transform: translateX(120%); } [dir="rtl"] body.nav-open .side { transform: none; } }
+/* Printable A4 documents: the preview keeps the A4 shape and the signature sits at the bottom of the page. */
+.print-sheet.a4 { display: flex; flex-direction: column; aspect-ratio: 210 / 297; min-height: 0; padding: 26px 26px 22px; }
+.print-sheet.a4 .pd-body { flex: 1 0 auto; }
+.print-sheet .pd-foot { margin-top: auto; padding-top: 16px; }
+.print-sheet table { width: 100%; border-collapse: collapse; }
+.print-sheet th, .print-sheet td { border-bottom: 1px solid #ddd; padding: 6px; text-align: start; }

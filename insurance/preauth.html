@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Pre-authorizations · Tibbi Orbit</title>
-<link rel="stylesheet" href="../assets/styles.css?v=f4b6d878dc">
-<script src="../assets/icons.js?v=f4b6d878dc"></script><script src="../assets/data.js?v=f4b6d878dc"></script><script src="../assets/data-core.js?v=f4b6d878dc"></script><script src="../assets/data-settings.js?v=f4b6d878dc"></script><script src="../assets/i18n-ar.js?v=f4b6d878dc"></script><script src="../assets/i18n.js?v=f4b6d878dc"></script><script src="../assets/data-insurance.js?v=f4b6d878dc"></script><script src="../assets/ui.js?v=f4b6d878dc"></script><script src="../assets/kit.js?v=f4b6d878dc"></script><script src="../assets/insurance.js?v=f4b6d878dc"></script>
+<link rel="stylesheet" href="../assets/styles.css?v=23fe09aeec">
+<script src="../assets/icons.js?v=23fe09aeec"></script><script src="../assets/data.js?v=23fe09aeec"></script><script src="../assets/data-core.js?v=23fe09aeec"></script><script src="../assets/data-settings.js?v=23fe09aeec"></script><script src="../assets/i18n-ar.js?v=23fe09aeec"></script><script src="../assets/i18n.js?v=23fe09aeec"></script><script src="../assets/data-insurance.js?v=23fe09aeec"></script><script src="../assets/ui.js?v=23fe09aeec"></script><script src="../assets/kit.js?v=23fe09aeec"></script><script src="../assets/insurance.js?v=23fe09aeec"></script>
 <style>
 .pa-steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
 .pa-steps > div { display: flex; flex-direction: column; gap: 6px; font-size: 12px; font-weight: 700; color: var(--mute); }
@@ -206,7 +206,7 @@
         <tr><td><b>Diagnosis</b></td><td colspan="3">${a.diagnosis.map(d => esc(d + ' ' + I.icdName(d))).join('; ')}</td></tr><tr><td><b>Urgency</b></td><td>${esc(a.urgency)}</td><td><b>Status</b></td><td>${esc(a.status)}</td></tr></table>
         <h3 style="margin-top:14px">Requested services</h3><table><tr><th>Code</th><th>Service</th><th>Qty</th><th>Amount (KWD)</th></tr>${a.lines.map(l => `<tr><td>${esc(l.code)}</td><td>${esc(l.desc)}</td><td>${l.qty}</td><td>${Kit.money(l.qty * l.price, false)}</td></tr>`).join('')}<tr><td colspan="3"><b>Total</b></td><td><b>${Kit.money(a.amount, false)}</b></td></tr></table>
         <h3 style="margin-top:14px">Clinical justification</h3><p>${esc(a.clinicalNote)}</p>
-        <h3>Attachments</h3><ul>${a.attachments.filter(x => x.included).map(x => `<li>${esc(x.type)}: ${esc(x.name)}</li>`).join('')}</ul>` });
+        <h3>Attachments</h3><ul>${a.attachments.filter(x => x.included).map(x => `<li>${esc(x.type)}: ${esc(x.name)}</li>`).join('')}</ul>${Kit.signBlock('Treating doctor signature and stamp', 'Insurance office')}` });
     audit('Printed pre-authorization package', 'Pre-authorization', { id: a.id, label: a.no }, []);
   }
 

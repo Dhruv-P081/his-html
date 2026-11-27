@@ -261,7 +261,7 @@
       ${sens ? `<div style="font-weight:800;margin:12px 0 4px">Antibiotic sensitivity</div><table style="width:60%;border-collapse:collapse;font-size:12px">${sens}</table>` : ''}
       ${o.comments ? `<div style="margin-top:12px"><b>Comments:</b> ${esc(o.comments)}</div>` : ''}
       ${o.attachment ? `<div style="margin-top:6px;font-size:11px;color:#555">Attachment: ${esc(o.attachment.name)}</div>` : ''}
-      <div style="display:flex;justify-content:space-between;gap:16px;margin-top:22px;padding-top:10px;border-top:1px solid #ccc;font-size:11.5px">
+      <div class="doc-sign" style="display:flex;justify-content:space-between;gap:16px;margin-top:22px;padding-top:10px;border-top:1px solid #ccc;font-size:11.5px">
         <div>Performed by: <b>${esc(o.resultedBy || '-')}</b><br>Technically verified by: <b>${esc(o.techVerifiedBy || '-')}</b> ${o.techVerifiedAt ? esc(fmtDate(o.techVerifiedAt)) : ''}</div>
         <div style="text-align:end">${final ? `<span style="font-family:'Brush Script MT',cursive;font-size:20px;color:#16325C">${esc((o.verifiedBy || '').replace(/^Dr\.\s*/, ''))}</span><br>Electronically signed by <b>${esc(o.signature || o.verifiedBy || '')}</b><br>${esc(fmtDate(o.verifiedAt || ''))}` : '<b style="color:#A55A06">Awaiting pathologist approval</b>'}</div></div>
       <div style="margin-top:10px;font-size:10px;color:#777">Results relate only to the sample received. Electronically signed reports are valid without a handwritten signature. H high, L low.</div>`;

@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Cashier and shift · Tibbi Orbit</title>
-<link rel="stylesheet" href="../assets/styles.css?v=f4b6d878dc">
-<script src="../assets/icons.js?v=f4b6d878dc"></script><script src="../assets/data.js?v=f4b6d878dc"></script><script src="../assets/data-core.js?v=f4b6d878dc"></script><script src="../assets/data-settings.js?v=f4b6d878dc"></script><script src="../assets/i18n-ar.js?v=f4b6d878dc"></script><script src="../assets/i18n.js?v=f4b6d878dc"></script><script src="../assets/data-reception.js?v=f4b6d878dc"></script><script src="../assets/ui.js?v=f4b6d878dc"></script><script src="../assets/kit.js?v=f4b6d878dc"></script><script src="../assets/reception.js?v=f4b6d878dc"></script>
+<link rel="stylesheet" href="../assets/styles.css?v=23fe09aeec">
+<script src="../assets/icons.js?v=23fe09aeec"></script><script src="../assets/data.js?v=23fe09aeec"></script><script src="../assets/data-core.js?v=23fe09aeec"></script><script src="../assets/data-settings.js?v=23fe09aeec"></script><script src="../assets/i18n-ar.js?v=23fe09aeec"></script><script src="../assets/i18n.js?v=23fe09aeec"></script><script src="../assets/data-reception.js?v=23fe09aeec"></script><script src="../assets/ui.js?v=23fe09aeec"></script><script src="../assets/kit.js?v=23fe09aeec"></script><script src="../assets/reception.js?v=23fe09aeec"></script>
 <style>.denom { width: 100%; border-collapse: collapse; } .denom td, .denom th { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: start; font-size: 13px; } .denom input { width: 90px; } .denom td.r, .denom th.r { text-align: end; }</style>
 </head>
 <body>
@@ -159,7 +159,7 @@
       ${sh.denoms ? `<h3 style="margin:14px 0 6px">Denominations</h3><table>${Object.entries(sh.denoms).map(([d, n]) => `<tr><td>KWD ${esc(d)} x ${n}</td><td style="text-align:end">${Kit.money(d * n)}</td></tr>`).join('')}</table>` : ''}
       ${tot.pays.length ? `<h3 style="margin:14px 0 6px">Receipts (${tot.pays.length})</h3><table><thead><tr><th>Receipt</th><th>Time</th><th>Patient</th><th>Mode</th><th style="text-align:end">Amount</th></tr></thead><tbody>${tot.pays.map(p => `<tr><td>${esc(p.no)}</td><td>${esc(Kit.time(p.at))}</td><td>${esc(Kit.ptName(p.patientId))}</td><td>${esc(p.mode)}</td><td style="text-align:end">${Kit.money(p.amount)}</td></tr>`).join('')}</tbody></table>` : ''}
       ${refunds.length ? `<h3 style="margin:14px 0 6px">Refunds</h3><table>${refunds.map(r => `<tr><td>${esc(r.no)}</td><td>${esc(r.status)}</td><td>${esc(r.reason)}</td><td style="text-align:end">${Kit.money(r.amount)}</td></tr>`).join('')}</table>` : ''}
-      <table style="margin-top:24px"><tr><td style="height:40px;vertical-align:bottom">Cashier signature</td><td style="vertical-align:bottom">Supervisor signature</td></tr></table>` });
+      <table class="doc-sign" style="margin-top:24px"><tr><td style="height:40px;vertical-align:bottom">Cashier signature</td><td style="vertical-align:bottom">Supervisor signature</td></tr></table>` });
   }
   function refund(pay) {
     const sh = Rc.myShift(); const left = +(pay.amount - refundedOf(pay)).toFixed(3);

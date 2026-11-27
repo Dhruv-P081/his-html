@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Cash receipts and payments · Tibbi Orbit</title>
-<link rel="stylesheet" href="../assets/styles.css?v=f4b6d878dc">
+<link rel="stylesheet" href="../assets/styles.css?v=23fe09aeec">
 <style>.nw{white-space:nowrap}</style>
-<script src="../assets/icons.js?v=f4b6d878dc"></script><script src="../assets/data.js?v=f4b6d878dc"></script><script src="../assets/data-core.js?v=f4b6d878dc"></script><script src="../assets/data-settings.js?v=f4b6d878dc"></script><script src="../assets/i18n-ar.js?v=f4b6d878dc"></script><script src="../assets/i18n.js?v=f4b6d878dc"></script><script src="../assets/data-finance.js?v=f4b6d878dc"></script><script src="../assets/ui.js?v=f4b6d878dc"></script><script src="../assets/kit.js?v=f4b6d878dc"></script><script src="../assets/finance.js?v=f4b6d878dc"></script>
+<script src="../assets/icons.js?v=23fe09aeec"></script><script src="../assets/data.js?v=23fe09aeec"></script><script src="../assets/data-core.js?v=23fe09aeec"></script><script src="../assets/data-settings.js?v=23fe09aeec"></script><script src="../assets/i18n-ar.js?v=23fe09aeec"></script><script src="../assets/i18n.js?v=23fe09aeec"></script><script src="../assets/data-finance.js?v=23fe09aeec"></script><script src="../assets/ui.js?v=23fe09aeec"></script><script src="../assets/kit.js?v=23fe09aeec"></script><script src="../assets/finance.js?v=23fe09aeec"></script>
 </head>
 <body>
 <script>
@@ -252,7 +252,7 @@
         <div class="card" style="margin-top:14px"><div class="card-head"><h3>${icon('file-output')} Payments made</h3></div><div class="list-rows pad">${pays.map(p => `<div><div class="grow"><b class="mono small">${esc(p.no)}</b><div class="xs muted">${esc(p.payee)}</div></div><b class="num">${Fin.amt(p.amount)}</b></div>`).join('') || '<div class="muted small">None</div>'}</div></div>`;
     };
     $('#bkSel', host).addEventListener('change', go); $('#bkDate', host).addEventListener('change', go);
-    $('#bkPrint', host).addEventListener('click', () => Kit.printDoc({ title: 'Daily cash book', sub: $('#bkSel', host).selectedOptions[0].textContent + ' · ' + Kit.day($('#bkDate', host).value), html: $('#bkCard', host).innerHTML }));
+    $('#bkPrint', host).addEventListener('click', () => Kit.printDoc({ title: 'Daily cash book', sub: $('#bkSel', host).selectedOptions[0].textContent + ' · ' + Kit.day($('#bkDate', host).value), html: $('#bkCard', host).innerHTML + Kit.signBlock('Cashier', 'Checked by', 'Finance manager') }));
     go();
   }
 

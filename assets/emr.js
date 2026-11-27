@@ -281,7 +281,7 @@
         <div style="font-size:26px;font-weight:800;font-family:serif;margin:4px 0 6px">℞</div>
         <table><thead><tr><th>#</th><th>Medicine</th><th>Dose</th><th>Route</th><th>Frequency</th><th>Days</th><th>Qty</th></tr></thead><tbody>${live.map((l, i) => `<tr><td>${i + 1}</td><td><b>${esc(l.name)}</b>${l.notes ? `<div style="font-size:11px;color:#555">${esc(l.notes)}</div>` : ''}</td><td>${esc(l.dose)}</td><td>${esc(l.route)}</td><td>${esc(l.frequency)}</td><td>${esc(l.days)}</td><td>${esc(l.qty)}</td></tr>`).join('')}</tbody></table>
         ${lines.length > live.length ? `<div style="margin-top:6px;font-size:11px;color:#555">${lines.length - live.length} cancelled line(s) not printed.</div>` : ''}
-        <div style="display:flex;justify-content:space-between;margin-top:28px;align-items:flex-end"><div style="font-size:11px;color:#555">Electronically signed. Valid for 7 days from the date of issue.<br>Dispense at any Tibbi pharmacy. Barcode: ${esc(rxNo.replace(/\D/g, ''))}</div><div style="text-align:center"><div style="font-family:cursive;font-size:18px">${esc(d.name || '')}</div><div style="border-top:1px solid #999;padding-top:3px;font-size:11px">${esc(d.name || '')}, ${esc(d.specialty || '')}<br>MOH licence ${esc('KW-MD-' + (10400 + parseInt(String(d.id || '0').replace(/\D/g, ''), 10)))}</div></div></div>` });
+        <div class="doc-sign" style="display:flex;justify-content:space-between;margin-top:28px;align-items:flex-end"><div style="font-size:11px;color:#555">Electronically signed. Valid for 7 days from the date of issue.<br>Dispense at any Tibbi pharmacy. Barcode: ${esc(rxNo.replace(/\D/g, ''))}</div><div style="text-align:center"><div style="font-family:cursive;font-size:18px">${esc(d.name || '')}</div><div style="border-top:1px solid #999;padding-top:3px;font-size:11px">${esc(d.name || '')}, ${esc(d.specialty || '')}<br>MOH licence ${esc('KW-MD-' + (10400 + parseInt(String(d.id || '0').replace(/\D/g, ''), 10)))}</div></div></div>` });
     audit('e-Prescription printed', 'Prescription', { id: rxNo, label: rxNo + ' · ' + p.name }, []);
   }
   function noteHtml(n) {
@@ -297,7 +297,7 @@
       <p><b>Diagnoses:</b> ${(n.diagnoses || []).map(x => `${esc(x.code)} ${esc(x.name)}${x.primary ? ' (primary)' : ''}`).join('; ') || '-'}</p>
       <p><b>Orders:</b> ${ords.map(o => esc(o.name)).join(', ') || 'None'}</p>
       <p><b>Follow-up:</b> ${n.followUpDays ? 'In ' + esc(n.followUpDays) + ' days' : 'As needed'}. ${esc(n.instructions || '')}</p>
-      <div style="margin-top:20px;font-size:11px;color:#555">${n.status === 'Signed' ? `Electronically signed by ${esc(n.signedBy)} on ${esc(window.UI.fmtDate(n.signedAt))}` : 'DRAFT, not signed'}</div>`;
+      <div class="doc-sign" style="margin-top:20px;font-size:11px;color:#555">${n.status === 'Signed' ? `Electronically signed by ${esc(n.signedBy)} on ${esc(window.UI.fmtDate(n.signedAt))}` : 'DRAFT, not signed'}</div>`;
   }
 
   /* Kit charts draw on a fixed 640-unit viewBox, so axis text grows on wide cards. Keep it at about 11px on screen. */

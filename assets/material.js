@@ -220,7 +220,7 @@
       html: `<div style="display:flex;justify-content:space-between;gap:20px;margin-bottom:14px"><div><h3 style="margin:0 0 4px">${esc(o.heading || o.title)}</h3>${(o.left || []).map(([k, v]) => `<div><span style="color:#555">${esc(k)}:</span> <b>${esc(v)}</b></div>`).join('')}</div><div style="text-align:end">${(o.right || []).map(([k, v]) => `<div><span style="color:#555">${esc(k)}:</span> <b>${esc(v)}</b></div>`).join('')}</div></div>
         <table><thead><tr>${o.columns.map(c => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${o.rows.map(r => `<tr>${r.map(v => `<td>${esc(v)}</td>`).join('')}</tr>`).join('')}</tbody>${o.foot ? `<tfoot><tr>${o.foot.map(v => `<td><b>${esc(v)}</b></td>`).join('')}</tr></tfoot>` : ''}</table>
         ${o.note ? `<p style="margin-top:12px;color:#333">${esc(o.note)}</p>` : ''}
-        <div style="display:grid;grid-template-columns:repeat(${(o.sign || ['Prepared by', 'Approved by']).length},1fr);gap:24px;margin-top:40px">${(o.sign || ['Prepared by', 'Approved by']).map(s => `<div style="border-top:1px solid #999;padding-top:6px;font-size:11px;color:#555">${esc(s)}</div>`).join('')}</div>` });
+        <div class="doc-sign" style="display:grid;grid-template-columns:repeat(${(o.sign || ['Prepared by', 'Approved by']).length},1fr);gap:24px;margin-top:40px">${(o.sign || ['Prepared by', 'Approved by']).map(s => `<div style="border-top:1px solid #999;padding-top:6px;font-size:11px;color:#555">${esc(s)}</div>`).join('')}</div>` });
   }
 
   /* Grouped bar chart: groupBars({ labels, series: [{ name, color, values }], height, fmt }) */
